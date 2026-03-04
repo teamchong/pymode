@@ -1,0 +1,35 @@
+name = "zigpython-worker"
+main = "bridge/worker.ts"
+compatibility_date = "2024-01-01"
+
+# WASM module binding
+[wasm_modules]
+PYTHON = "build/python.wasm"
+
+# R2 bucket for file storage (Python open() calls)
+[[r2_buckets]]
+binding = "STORAGE"
+bucket_name = "zigpython-storage"
+
+# KV namespace for key-value storage (Python shelve/dbm)
+[[kv_namespaces]]
+binding = "KV"
+id = ""
+
+# D1 database for SQL (Python sqlite3)
+[[d1_databases]]
+binding = "DB"
+database_name = "zigpython-db"
+database_id = ""
+
+[vars]
+HANDLER = "handler"
+PYTHONDONTWRITEBYTECODE = "1"
+
+# Build settings
+[build]
+command = "./scripts/build-phase2.sh"
+watch_dir = ["bridge/", "zig-modules/"]
+
+# Size limits: paid Workers plan allows 10MB
+# Target: < 10MB WASM binary (vs Pyodide's 20MB+)

@@ -1,0 +1,79 @@
+# config.site for wasm32-wasi cross-compilation
+# Pre-answers for configure checks that can't run on the host
+
+# WASI doesn't have fork/exec
+ac_cv_func_fork=no
+ac_cv_func_fork_works=no
+ac_cv_func_vfork=no
+ac_cv_func_vfork_works=no
+ac_cv_func_execv=no
+ac_cv_func_fexecve=no
+ac_cv_func_getegid=no
+ac_cv_func_geteuid=no
+ac_cv_func_getgid=no
+ac_cv_func_getgroups=no
+ac_cv_func_getlogin=no
+ac_cv_func_getpgid=no
+ac_cv_func_getpgrp=no
+ac_cv_func_getpid=no
+ac_cv_func_getppid=no
+ac_cv_func_getuid=no
+ac_cv_func_kill=no
+ac_cv_func_killpg=no
+ac_cv_func_openpty=no
+ac_cv_func_setsid=no
+ac_cv_func_setuid=no
+ac_cv_func_setgid=no
+ac_cv_func_wait=no
+ac_cv_func_wait3=no
+ac_cv_func_wait4=no
+ac_cv_func_waitpid=no
+
+# No signals
+ac_cv_func_sigaction=no
+ac_cv_func_siginterrupt=no
+ac_cv_func_signal=no
+ac_cv_func_sigpending=no
+ac_cv_func_sigrelse=no
+ac_cv_func_alarm=no
+ac_cv_func_pause=no
+
+# No networking
+ac_cv_func_socket=no
+ac_cv_func_socketpair=no
+ac_cv_func_bind=no
+ac_cv_func_listen=no
+ac_cv_func_accept=no
+ac_cv_func_connect=no
+ac_cv_func_getaddrinfo=no
+ac_cv_func_getnameinfo=no
+ac_cv_func_gethostbyname=no
+ac_cv_func_gethostbyaddr=no
+ac_cv_func_inet_aton=no
+ac_cv_func_inet_pton=no
+
+# No threading
+ac_cv_func_pthread_init=no
+ac_cv_pthread=no
+
+# No shared memory
+ac_cv_func_shm_open=no
+ac_cv_func_shm_unlink=no
+ac_cv_func_mmap=no
+ac_cv_func_munmap=no
+
+# No dynamic loading
+ac_cv_func_dlopen=no
+
+# System
+ac_cv_func_pipe=no
+ac_cv_func_pipe2=no
+ac_cv_func_mkfifo=no
+ac_cv_func_mknod=no
+ac_cv_func_chown=no
+ac_cv_func_fchown=no
+ac_cv_func_lchown=no
+ac_cv_func_chmod=no
+ac_cv_func_fchmod=no
+ac_cv_func_symlink=no
+ac_cv_func_link=no

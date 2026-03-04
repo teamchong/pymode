@@ -1,0 +1,32 @@
+# Build artifacts
+build/
+cross-build/
+
+# CPython source (cloned by build script)
+cpython/
+
+# WASM outputs
+*.wasm
+*.wasm.map
+
+# Node
+node_modules/
+dist/
+
+# OS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Claude
+.claude/
+
+# WASI SDK
+wasi-sdk-*/
+
+# Zig
+zig-cache/
+zig-out/
+.zig-cache/
