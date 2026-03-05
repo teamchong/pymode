@@ -1,6 +1,6 @@
 name = "pymode"
 main = "src/worker.ts"
-compatibility_date = "2024-01-01"
+compatibility_date = "2024-04-03"
 
 [limits]
 cpu_ms = 30000
@@ -19,3 +19,14 @@ globs = ["**/*.zip"]
 # [[kv_namespaces]]
 # binding = "PYMODE_DATA"
 # id = "YOUR_KV_NAMESPACE_ID"
+
+# Durable Object for persistent TCP connections (database drivers, etc.)
+# Connections survive across trampoline rounds — no conversation replay needed.
+[durable_objects]
+bindings = [
+  { name = "TCP_POOL", class_name = "TcpPoolDO" },
+]
+
+[[migrations]]
+tag = "v1"
+new_classes = ["TcpPoolDO"]
