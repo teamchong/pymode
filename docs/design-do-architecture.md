@@ -1,576 +1,776 @@
-# Design: Durable Object Architecture for PyMode
+# Design: PythonDO — Full Python Runtime in a Durable Object
 
-## Problem
+## Summary
 
-Cloudflare Workers have hard limits that constrain PyMode:
+Run the entire CPython WASM instance inside a Durable Object. The DO holds the
+interpreter, TCP connections, and CF binding access in one place. Host-provided
+WASM imports replace the VFS trampoline. JSPI suspends/resumes the WASM stack
+for async I/O. Deploy-time Wizer snapshots eliminate import overhead.
 
-| Limit | Value | Impact |
-|-------|-------|--------|
-| CPU time per request | 30s (paid), 10ms (free) | Long-running Python scripts timeout |
-| Memory per isolate | 128MB shared | CPython WASM + JS heap must fit |
-| Concurrent connections | 6 per invocation | Can't open many DB connections |
-| Re-execution trampoline | N rounds for N recv() calls | Each DB query = full Python restart |
+This matches CF Python Workers (Pyodide) on every dimension and exceeds them
+on binary size (5.7MB vs 20MB+) and portability (WASI vs Emscripten).
 
-The trampoline is especially expensive for database protocols. A PostgreSQL
-`SELECT 1` requires ~5 trampoline rounds (SSL negotiation, auth, query, result,
-ready-for-query). Each round re-executes the entire Python program from scratch.
-
-## Proposed Architecture
-
-Map each logical concern to a Durable Object:
+## Architecture
 
 ```
-                    ┌─────────────────┐
-     HTTP request → │  PyMode Worker  │ (stateless entry point)
-                    │  (WASI shim)    │
-                    └────────┬────────┘
-                             │ RPC
-              ┌──────────────┼──────────────┐
-              ▼              ▼              ▼
-     ┌────────────┐  ┌────────────┐  ┌────────────┐
-     │ TcpPoolDO  │  │ ComputeWorker  │  │ ComputeWorker  │
-     │ "pg:5432"  │  │ "thread-1" │  │ "thread-2" │
-     │            │  │            │  │            │
-     │ persistent │  │ runs WASM  │  │ runs WASM  │
-     │ TCP socket │  │ (30s CPU)  │  │ (30s CPU)  │
-     └────────────┘  └────────────┘  └────────────┘
+┌──────────────────────────────────────────────────┐
+│                  PythonDO                        │
+│              (Durable Object)                    │
+│                                                  │
+│  ┌──────────────────┐    ┌────────────────────┐  │
+│  │   python.wasm    │    │  In-Memory State   │  │
+│  │   (CPython)      │    │                    │  │
+│  │                  │    │  TCP connections    │  │
+│  │  WASM imports:   │    │  Response buffers  │  │
+│  │   pymode.*  ─────┼───→│  Interpreter state │  │
+│  │   wasi_*         │    │                    │  │
+│  └──────────────────┘    └────────────────────┘  │
+│           │                        │             │
+│    host import calls         JS implements       │
+│           ↓                        ↓             │
+│  ┌──────────────────────────────────────────┐    │
+│  │  cloudflare:sockets  │  env.KV           │    │
+│  │  global fetch()      │  env.R2           │    │
+│  │  env.D1              │  env.AI           │    │
+│  └──────────────────────────────────────────┘    │
+└──────────────────────────────────────────────────┘
+          ↑
+          │ RPC (1 billed request per session)
+          │
+┌──────────────────┐
+│  PyMode Worker   │  (stateless entry point)
+│  routes to DO    │
+└──────────────────┘
+          ↑
+          │ HTTP
+      [Client]
 ```
 
-### Three DO Classes
+### Why WASM Lives Inside the DO
 
-**1. PyModeWorker (stateless Worker — NOT a DO)**
-- Entry point. Receives HTTP request, loads python.wasm, starts execution.
-- On `pthread_create` → fans out to ComputeWorker via RPC.
-- On TCP `connect()` → routes to TcpPoolDO via RPC.
-- Remains the orchestrator; does not hold connections or threads.
+| Concern | WASM in Worker (old) | WASM in DO (new) |
+|---------|---------------------|-------------------|
+| TCP connections | Separate TcpPoolDO, RPC per socket op | Same memory space, direct access |
+| Interpreter state | Lost each request | Persists 70-140s (warm interpreter) |
+| Trampoline cost | Re-execute entire Python per I/O op | In-process (microseconds) or zero with JSPI |
+| CF bindings | VFS file passing | Direct host import calls |
+| Connection pool | DO holds socket, Worker holds WASM — two hops | One DO holds both — zero hops |
+| Cold start | Every request | Only after 70-140s idle |
 
-**2. TcpPoolDO (persistent TCP connections)**
-- One DO instance per `host:port` pair (e.g., `"db.example.com:5432"`).
-- Holds the `cloudflare:sockets` TCP connection as in-memory state.
-- Connection persists across multiple RPC calls while the DO is alive (70-140s idle timeout).
-- Exposes RPC methods: `connect()`, `send(data)`, `recv(bufsize)`, `close()`.
-- No more trampoline replay — the connection is real and stateful.
+## Three Layers
 
-**3. ComputeWorker (parallel thread execution via Service Bindings)**
-- Stateless Worker connected via Service Binding (NOT a DO — no state needed).
-- Each invocation gets its own 30s CPU budget, 128MB memory.
-- Runs a subset of the WASM module (the thread function + its closure).
-- Reports results back to PyModeWorker via RPC return value.
-- Service Bindings have ~0ms overhead (same thread, same server) vs DO network hop.
-- Max 32 Worker invocations per request chain.
+### Layer 1: Host Imports (`pymode` WASM namespace)
 
-**Why Service Bindings over DOs for compute:** Threads are stateless — they run
-a function and return a result. DOs add unnecessary overhead (network hop to
-pinned colo, duration billing). Service Bindings run on the same machine with
-zero latency and bill only CPU time.
-
-## How TCP Changes
-
-### Before (trampoline replay)
-
-```
-Round 1: Python runs → connect() → send(SSL) → recv() → EXIT 254
-         JS replays: connect, send, recv → writes response to VFS
-Round 2: Python runs → connect() → send(SSL) → recv(cached) → send(auth) → recv() → EXIT 254
-         JS replays: connect, send, recv(skip), send, recv → writes response
-Round 3: ... (5+ rounds for a single query)
-```
-
-Each round re-executes the entire Python program. For a script that does 10 DB
-queries, each with 5 handshake rounds, that's 50 full re-executions.
-
-### After (TcpPoolDO)
-
-```
-Python runs → connect() → RPC to TcpPoolDO.connect("db:5432")
-           → send(SSL)  → RPC to TcpPoolDO.send(data)   [~0ms if same colo]
-           → recv()      → RPC to TcpPoolDO.recv(8192)   [waits for real data]
-           → send(auth)  → RPC to TcpPoolDO.send(data)
-           → recv()      → RPC to TcpPoolDO.recv(8192)
-           → ... continues without restart
-```
-
-Zero re-executions. The Python program runs once, start to finish. Each socket
-operation is a synchronous-looking RPC call.
-
-### The Async Bridge Problem
-
-Python (in WASM) is synchronous. RPC calls are async (return Promises). There
-are three ways to bridge this:
-
-**Option A: Asyncify / Stack Switching (ideal but complex)**
-Compile CPython with Asyncify or use JSPI (JavaScript Promise Integration).
-When Python calls `recv()`, the WASM stack is suspended, the Promise resolves,
-and the stack resumes. This is what Pyodide does with Emscripten's Asyncify.
-
-- JSPI is available in V8 (Chrome 123+, workerd likely supports it).
-- Requires `--experimental-wasm-stack-switching` or the newer standardized JSPI.
-- Zero overhead when not suspended. ~50us per suspend/resume.
-- **Status**: workerd has V8, JSPI proposal is Phase 4. Worth investigating.
-
-**Option B: Single-operation trampoline (pragmatic)**
-Keep the exit-254 trampoline but make each round do only ONE operation via
-TcpPoolDO, instead of replaying the entire conversation:
-
-```
-Round 1: Python → connect("db:5432") → EXIT 254
-         JS → TcpPoolDO.connect() → re-run Python
-Round 2: Python → connect(cached) → send(SSL) → EXIT 254
-         JS → TcpPoolDO.send() → re-run Python
-Round 3: Python → ... → recv() → EXIT 254
-         JS → TcpPoolDO.recv() → re-run Python
-```
-
-Still O(N) rounds, but each round is a single RPC call (not a full TCP replay).
-And the TcpPoolDO holds the connection, so handshake state isn't lost.
-
-**Option C: Batch operations (middle ground)**
-Python records a batch of operations up to the first recv(), sends them all at
-once, then exits. JS replays the batch on TcpPoolDO, gets the response, re-runs.
-
-This reduces rounds to O(recv_count) instead of O(total_ops), which is what
-the current trampoline already does. The improvement is that TcpPoolDO holds
-the persistent connection, so no conversation replay is needed.
-
-**Recommendation**: Start with Option B (simplest, works today), pursue Option A
-(JSPI) as it becomes stable in workerd. Option C is the current behavior with
-the benefit of persistent connections — this is the minimum viable change.
-
-## How Threading Changes
-
-### Before (single-threaded pthread shim)
+WASM imports provided by JS when instantiating `python.wasm`. These are the
+only way Python communicates with the outside world. No VFS file passing.
 
 ```c
-// pthread.c shim — runs function inline on calling thread
-int pthread_create(pthread_t *thread, ..., void *(*fn)(void *), void *arg) {
-    *thread = next_thread_id++;
-    fn(arg);  // blocks the caller
-    return 0;
-}
+// In CPython C code — imported from the JS host
+
+// TCP
+__attribute__((import_module("pymode"), import_name("tcp_connect")))
+int32_t pymode_tcp_connect(const char* host, int32_t host_len, int32_t port);
+
+__attribute__((import_module("pymode"), import_name("tcp_send")))
+int32_t pymode_tcp_send(int32_t conn_id, const uint8_t* data, int32_t len);
+
+__attribute__((import_module("pymode"), import_name("tcp_recv")))
+int32_t pymode_tcp_recv(int32_t conn_id, uint8_t* buf, int32_t buf_len);
+
+__attribute__((import_module("pymode"), import_name("tcp_close")))
+void pymode_tcp_close(int32_t conn_id);
+
+// HTTP
+__attribute__((import_module("pymode"), import_name("http_fetch")))
+int32_t pymode_http_fetch(
+    const char* url, int32_t url_len,
+    const char* method, int32_t method_len,
+    const uint8_t* body, int32_t body_len,
+    const char* headers_json, int32_t headers_len);
+
+__attribute__((import_module("pymode"), import_name("http_response_status")))
+int32_t pymode_http_response_status(int32_t response_id);
+
+__attribute__((import_module("pymode"), import_name("http_response_read")))
+int32_t pymode_http_response_read(int32_t response_id, uint8_t* buf, int32_t buf_len);
+
+__attribute__((import_module("pymode"), import_name("http_response_header")))
+int32_t pymode_http_response_header(
+    int32_t response_id,
+    const char* name, int32_t name_len,
+    char* buf, int32_t buf_len);
+
+// KV
+__attribute__((import_module("pymode"), import_name("kv_get")))
+int32_t pymode_kv_get(const char* key, int32_t key_len, uint8_t* buf, int32_t buf_len);
+
+__attribute__((import_module("pymode"), import_name("kv_put")))
+void pymode_kv_put(const char* key, int32_t key_len, const uint8_t* val, int32_t val_len);
+
+__attribute__((import_module("pymode"), import_name("kv_delete")))
+void pymode_kv_delete(const char* key, int32_t key_len);
+
+// R2
+__attribute__((import_module("pymode"), import_name("r2_get")))
+int32_t pymode_r2_get(const char* key, int32_t key_len, uint8_t* buf, int32_t buf_len);
+
+__attribute__((import_module("pymode"), import_name("r2_put")))
+void pymode_r2_put(const char* key, int32_t key_len, const uint8_t* val, int32_t val_len);
+
+// D1 (SQL)
+__attribute__((import_module("pymode"), import_name("d1_exec")))
+int32_t pymode_d1_exec(
+    const char* sql, int32_t sql_len,
+    const char* params_json, int32_t params_len,
+    char* result_buf, int32_t result_buf_len);
+
+// Environment
+__attribute__((import_module("pymode"), import_name("env_get")))
+int32_t pymode_env_get(const char* key, int32_t key_len, char* buf, int32_t buf_len);
+
+// Logging
+__attribute__((import_module("pymode"), import_name("console_log")))
+void pymode_console_log(const char* msg, int32_t msg_len);
 ```
 
-Everything is serial. No parallelism possible.
+### Layer 2: Python Shim Modules
 
-### After (ComputeWorker fan-out via Service Bindings)
+Thin Python modules that call host imports. Installed as part of the stdlib.
 
+```python
+# pymode/tcp.py — calls host imports directly
+
+import ctypes
+
+_lib = ctypes.CDLL(None)  # access WASM exports/imports
+
+def _tcp_connect(host: str, port: int) -> int:
+    host_bytes = host.encode()
+    return _lib.pymode_tcp_connect(host_bytes, len(host_bytes), port)
+
+def _tcp_send(conn_id: int, data: bytes) -> int:
+    return _lib.pymode_tcp_send(conn_id, data, len(data))
+
+def _tcp_recv(conn_id: int, bufsize: int) -> bytes:
+    buf = ctypes.create_string_buffer(bufsize)
+    n = _lib.pymode_tcp_recv(conn_id, buf, bufsize)
+    return buf.raw[:n]
+
+def _tcp_close(conn_id: int):
+    _lib.pymode_tcp_close(conn_id)
+
+
+class PyModeSocket:
+    def __init__(self, family=2, type=1, proto=0, fileno=None):
+        self._conn_id = -1
+        self._timeout = None
+
+    def connect(self, addr):
+        host, port = addr[0], addr[1]
+        self._conn_id = _tcp_connect(host, port)
+
+    def send(self, data, flags=0):
+        raw = data if isinstance(data, bytes) else bytes(data)
+        return _tcp_send(self._conn_id, raw)
+
+    def sendall(self, data, flags=0):
+        raw = data if isinstance(data, bytes) else bytes(data)
+        _tcp_send(self._conn_id, raw)
+
+    def recv(self, bufsize, flags=0):
+        return _tcp_recv(self._conn_id, bufsize)
+
+    def close(self):
+        if self._conn_id >= 0:
+            _tcp_close(self._conn_id)
+            self._conn_id = -1
+
+    # ... rest of socket API (settimeout, makefile, etc.)
 ```
-Python calls pthread_create(fn, arg)
-  → pthread shim records: thread_id, fn_pointer, arg_pointer
-  → writes thread request to VFS: /tmp/_pymode_threads/{thread_id}.json
-  → EXIT 254
 
-JS catches exit 254:
-  → reads thread requests from VFS
-  → for each thread:
-      promises.push(env.COMPUTE.execute(wasmModule, fnPtr, argPtr, memorySnapshot))
-  → await Promise.all(promises)   // real parallelism, same machine!
-  → write results to VFS
-  → re-run Python
+```python
+# pymode/env.py — access CF bindings
 
-Python resumes:
-  → pthread_join reads result from VFS
-  → continues execution
+import ctypes
+import json
+
+_lib = ctypes.CDLL(None)
+
+class KV:
+    @staticmethod
+    def get(key: str) -> bytes | None:
+        key_bytes = key.encode()
+        buf = ctypes.create_string_buffer(1024 * 1024)  # 1MB max
+        n = _lib.pymode_kv_get(key_bytes, len(key_bytes), buf, len(buf))
+        if n < 0:
+            return None
+        return buf.raw[:n]
+
+    @staticmethod
+    def put(key: str, value: bytes):
+        key_bytes = key.encode()
+        _lib.pymode_kv_put(key_bytes, len(key_bytes), value, len(value))
+
+    @staticmethod
+    def delete(key: str):
+        key_bytes = key.encode()
+        _lib.pymode_kv_delete(key_bytes, len(key_bytes))
+
+
+class R2:
+    @staticmethod
+    def get(key: str) -> bytes | None:
+        key_bytes = key.encode()
+        buf = ctypes.create_string_buffer(10 * 1024 * 1024)  # 10MB max
+        n = _lib.pymode_r2_get(key_bytes, len(key_bytes), buf, len(buf))
+        if n < 0:
+            return None
+        return buf.raw[:n]
+
+    @staticmethod
+    def put(key: str, value: bytes):
+        key_bytes = key.encode()
+        _lib.pymode_r2_put(key_bytes, len(key_bytes), value, len(value))
+
+
+class D1:
+    @staticmethod
+    def execute(sql: str, params=None) -> list[dict]:
+        sql_bytes = sql.encode()
+        params_json = json.dumps(params or []).encode()
+        buf = ctypes.create_string_buffer(10 * 1024 * 1024)
+        n = _lib.pymode_d1_exec(
+            sql_bytes, len(sql_bytes),
+            params_json, len(params_json),
+            buf, len(buf))
+        if n <= 0:
+            return []
+        return json.loads(buf.raw[:n])
+
+
+def get_env(key: str) -> str | None:
+    key_bytes = key.encode()
+    buf = ctypes.create_string_buffer(8192)
+    n = _lib.pymode_env_get(key_bytes, len(key_bytes), buf, len(buf))
+    if n < 0:
+        return None
+    return buf.raw[:n].decode()
 ```
 
-Each ComputeWorker invocation gets:
-- Its own 30s CPU budget (separate from the main Worker's)
-- Its own 128MB memory
-- A copy of the WASM module + relevant memory pages
-- ~0ms RPC overhead (Service Binding = same thread, same server)
-
-### Data Serialization Between DOs
-
-WASM linear memory cannot be shared between isolates. Thread arguments and
-return values must be serialized:
-
-```typescript
-// In PyModeWorker, before fanning out:
-const memorySnapshot = new Uint8Array(wasmInstance.exports.memory.buffer);
-const threadArg = memorySnapshot.slice(argPtr, argPtr + argSize);
-
-// In ComputeWorker (Service Binding, NOT a DO):
-class ComputeWorker extends WorkerEntrypoint {
-  async execute(wasmBytes: ArrayBuffer, fnPtr: number, arg: Uint8Array): Promise<Uint8Array> {
-    const instance = await WebAssembly.instantiate(wasmBytes, imports);
-    // Copy arg into new instance's memory
-    new Uint8Array(instance.exports.memory.buffer).set(arg, argPtr);
-    // Call the thread function
-    instance.exports.__pymode_thread_entry(fnPtr, argPtr);
-    // Return modified memory region
-    return new Uint8Array(instance.exports.memory.buffer, resultPtr, resultSize);
-  }
-}
-```
-
-**Limitation**: Sharing full WASM memory (e.g., 40MB CPython heap) over RPC
-is expensive. This works for compute tasks with small inputs/outputs (e.g.,
-hash a chunk, parse a JSON blob) but not for tasks that need shared mutable
-state across threads.
-
-## CF Platform Constraints
-
-### Durable Object Limits
-
-| Resource | Limit |
-|----------|-------|
-| CPU time per request | 30s (configurable up to 5min) |
-| Memory per isolate | 128MB shared with JS heap |
-| Requests per DO | ~1,000/s soft limit |
-| Storage per DO (SQLite) | 10GB per object |
-| Storage per account | Unlimited (paid) |
-| DO classes per account | 500 (paid) |
-| Idle before hibernation | 10s (hibernatable) or 70-140s (non-hibernatable) |
-| WebSocket message size | 32 MiB |
-
-### RPC Characteristics
-
-| Property | Value |
-|----------|-------|
-| Same-colo latency | ~0ms (same thread, same server) |
-| Cross-colo latency | Network RTT (DO is pinned to first-access colo) |
-| Promise pipelining | Yes — chain calls in 1 round trip |
-| Max service binding calls | 32 per request chain |
-| Max subrequests (paid) | 10,000 per invocation |
-| Max RPC payload | 32 MiB (use ReadableStream for larger) |
-| Session billing | 1 DO request per RPC session; sub-calls on returned RpcTarget are free |
-| Supported types | Structured Cloneable (ArrayBuffer, Uint8Array, Map, etc.) + ReadableStream + RpcTarget |
-
-### TCP Socket Rules
-
-- `cloudflare:sockets` `connect()` creates outbound TCP connections.
-- Sockets must be created within handlers (fetch, alarm, etc.), not global scope.
-- **In a DO**: sockets persist as in-memory state between RPC calls, as long as
-  the DO isn't evicted. An active TCP connection prevents hibernation, so the DO
-  stays alive for 70-140s after last use.
-- 6 concurrent connections per invocation (but a DO can hold connections across
-  multiple incoming RPC calls).
-- **Outgoing TCP connections prevent hibernation** — a DO with an open socket
-  stays pinned in memory (70-140s idle timeout), incurring duration charges
-  ($12.50/M GB-s). This is acceptable for connection pools that are actively
-  used, but idle connections should be closed explicitly.
-
-### Pricing
-
-| Component | Included (paid plan) | Overage |
-|-----------|---------------------|---------|
-| Worker requests | 10M/month | $0.30/M |
-| Worker CPU | 30M ms/month | $0.02/M ms |
-| DO requests | 1M/month | $0.15/M |
-| DO duration | 400K GB-s/month | $12.50/M GB-s |
-| DO storage (writes) | 1M/month | $1.00/M |
-| DO storage (reads) | — | $0.20/M |
-
-**Cost model for a DB query** (Option B, single-op trampoline):
-- A PostgreSQL `SELECT 1` = ~10 socket operations = 10 trampoline rounds
-- But all 10 calls go to the same TcpPoolDO via the same RPC session = **1 billed DO request**
-  (sub-calls on a returned RpcTarget within the same session are free)
-- 1000 queries/day = 1000 DO requests/day = 30K/month → well within free tier
-
-**Alternative: Hyperdrive** — CF's dedicated connection pooler for PostgreSQL/MySQL.
-Eliminates 7 round trips (TCP handshake, TLS, auth) with a managed pool colocated
-near your database. If the user's DB is PostgreSQL or MySQL, Hyperdrive is the
-recommended path. TcpPoolDO is for protocols Hyperdrive doesn't support (Redis,
-MQTT, custom protocols, etc.).
-
-**Cost model for threading** (ComputeWorker fan-out):
-- Each `pthread_create` = 1 DO instantiation + execution
-- 4-thread parallel compute = 4 DO requests + 4 x CPU time
-- If each thread runs 1s CPU: 4 x 1000ms = 4000ms → $0.00008
-
-## TcpPoolDO Design
+### Layer 3: JS Host Implementation (inside PythonDO)
 
 ```typescript
 import { DurableObject } from "cloudflare:workers";
 import { connect } from "cloudflare:sockets";
 
-export class TcpPoolDO extends DurableObject {
-  private socket: Socket | null = null;
-  private reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
-  private writer: WritableStreamDefaultWriter<Uint8Array> | null = null;
+interface PythonDOEnv {
+  KV?: KVNamespace;
+  R2?: R2Bucket;
+  D1?: D1Database;
+  AI?: any;
+  [key: string]: unknown;
+}
 
-  async tcpConnect(host: string, port: number, tls: boolean): Promise<void> {
-    const addr = `${host}:${port}`;
-    this.socket = connect(addr, {
-      secureTransport: tls ? "on" : "off",
+export class PythonDO extends DurableObject<PythonDOEnv> {
+  private wasmInstance: WebAssembly.Instance | null = null;
+  private wasmMemory: WebAssembly.Memory | null = null;
+
+  // Persistent TCP connections — survive across RPC calls
+  private tcpConns = new Map<number, {
+    socket: any;
+    reader: ReadableStreamDefaultReader<Uint8Array>;
+    writer: WritableStreamDefaultWriter<Uint8Array>;
+  }>();
+  private nextConnId = 1;
+
+  // HTTP response buffer — stores fetch results for Python to read
+  private httpResponses = new Map<number, {
+    status: number;
+    headers: Headers;
+    body: Uint8Array;
+    offset: number;
+  }>();
+  private nextResponseId = 1;
+
+  // Shared buffer for passing data between host imports and WASM
+  // (Used when JSPI is not available — trampoline writes here)
+  private pendingResult: ArrayBuffer | null = null;
+
+  private getMemory(): DataView {
+    return new DataView(this.wasmMemory!.buffer);
+  }
+
+  private getMemBytes(): Uint8Array {
+    return new Uint8Array(this.wasmMemory!.buffer);
+  }
+
+  private readString(ptr: number, len: number): string {
+    return new TextDecoder().decode(this.getMemBytes().subarray(ptr, ptr + len));
+  }
+
+  private writeBytes(ptr: number, data: Uint8Array, maxLen: number): number {
+    const n = Math.min(data.length, maxLen);
+    this.getMemBytes().set(data.subarray(0, n), ptr);
+    return n;
+  }
+
+  private createHostImports(): Record<string, Function> {
+    return {
+      // --- TCP ---
+      tcp_connect: (hostPtr: number, hostLen: number, port: number): number => {
+        const host = this.readString(hostPtr, hostLen);
+        const connId = this.nextConnId++;
+        const socket = connect({ hostname: host, port });
+        const writer = socket.writable.getWriter();
+        const reader = socket.readable.getReader();
+        this.tcpConns.set(connId, { socket, writer, reader });
+        return connId;
+      },
+
+      tcp_send: (connId: number, dataPtr: number, dataLen: number): number => {
+        const conn = this.tcpConns.get(connId);
+        if (!conn) return -1;
+        const data = this.getMemBytes().slice(dataPtr, dataPtr + dataLen);
+        conn.writer.write(data);  // fire-and-forget for sends
+        return dataLen;
+      },
+
+      tcp_recv: (connId: number, bufPtr: number, bufLen: number): number => {
+        // With JSPI: this function is marked Suspending — it returns a Promise
+        // that the WASM stack awaits transparently.
+        // Without JSPI: this triggers the in-process trampoline.
+        const conn = this.tcpConns.get(connId);
+        if (!conn) return -1;
+        // JSPI path — return Promise, WASM suspends
+        // (see JSPI section below for how this is wired)
+        throw new Error("tcp_recv requires JSPI or trampoline");
+      },
+
+      tcp_close: (connId: number): void => {
+        const conn = this.tcpConns.get(connId);
+        if (!conn) return;
+        try { conn.writer.releaseLock(); } catch {}
+        try { conn.reader.releaseLock(); } catch {}
+        try { conn.socket.close(); } catch {}
+        this.tcpConns.delete(connId);
+      },
+
+      // --- HTTP ---
+      http_fetch: (
+        urlPtr: number, urlLen: number,
+        methodPtr: number, methodLen: number,
+        bodyPtr: number, bodyLen: number,
+        headersPtr: number, headersLen: number
+      ): number => {
+        // With JSPI: suspendable. Without: trampoline.
+        throw new Error("http_fetch requires JSPI or trampoline");
+      },
+
+      http_response_status: (responseId: number): number => {
+        const resp = this.httpResponses.get(responseId);
+        return resp ? resp.status : -1;
+      },
+
+      http_response_read: (responseId: number, bufPtr: number, bufLen: number): number => {
+        const resp = this.httpResponses.get(responseId);
+        if (!resp) return -1;
+        const remaining = resp.body.length - resp.offset;
+        const n = Math.min(remaining, bufLen);
+        this.getMemBytes().set(resp.body.subarray(resp.offset, resp.offset + n), bufPtr);
+        resp.offset += n;
+        return n;
+      },
+
+      http_response_header: (
+        responseId: number,
+        namePtr: number, nameLen: number,
+        bufPtr: number, bufLen: number
+      ): number => {
+        const resp = this.httpResponses.get(responseId);
+        if (!resp) return -1;
+        const name = this.readString(namePtr, nameLen);
+        const value = resp.headers.get(name);
+        if (!value) return -1;
+        const encoded = new TextEncoder().encode(value);
+        return this.writeBytes(bufPtr, encoded, bufLen);
+      },
+
+      // --- KV ---
+      kv_get: (keyPtr: number, keyLen: number, bufPtr: number, bufLen: number): number => {
+        // Suspendable with JSPI
+        throw new Error("kv_get requires JSPI or trampoline");
+      },
+
+      kv_put: (keyPtr: number, keyLen: number, valPtr: number, valLen: number): void => {
+        // Suspendable with JSPI
+        throw new Error("kv_put requires JSPI or trampoline");
+      },
+
+      kv_delete: (keyPtr: number, keyLen: number): void => {
+        // Suspendable with JSPI
+        throw new Error("kv_delete requires JSPI or trampoline");
+      },
+
+      // --- R2 ---
+      r2_get: (keyPtr: number, keyLen: number, bufPtr: number, bufLen: number): number => {
+        throw new Error("r2_get requires JSPI or trampoline");
+      },
+
+      r2_put: (keyPtr: number, keyLen: number, valPtr: number, valLen: number): void => {
+        throw new Error("r2_put requires JSPI or trampoline");
+      },
+
+      // --- D1 ---
+      d1_exec: (
+        sqlPtr: number, sqlLen: number,
+        paramsPtr: number, paramsLen: number,
+        resultPtr: number, resultLen: number
+      ): number => {
+        throw new Error("d1_exec requires JSPI or trampoline");
+      },
+
+      // --- Environment ---
+      env_get: (keyPtr: number, keyLen: number, bufPtr: number, bufLen: number): number => {
+        const key = this.readString(keyPtr, keyLen);
+        const value = this.env[key];
+        if (value === undefined || value === null) return -1;
+        const encoded = new TextEncoder().encode(String(value));
+        return this.writeBytes(bufPtr, encoded, bufLen);
+      },
+
+      // --- Logging ---
+      console_log: (msgPtr: number, msgLen: number): void => {
+        console.log(this.readString(msgPtr, msgLen));
+      },
+    };
+  }
+
+  async run(code: string, wasmModule: WebAssembly.Module): Promise<{
+    stdout: string;
+    stderr: string;
+    exitCode: number;
+  }> {
+    const hostImports = this.createHostImports();
+
+    // Instantiate WASM with both WASI and pymode host imports
+    this.wasmInstance = await WebAssembly.instantiate(wasmModule, {
+      wasi_snapshot_preview1: this.createWasiImports(),
+      pymode: hostImports,
     });
-    this.reader = this.socket.readable.getReader();
-    this.writer = this.socket.writable.getWriter();
+    this.wasmMemory = this.wasmInstance.exports.memory as WebAssembly.Memory;
+
+    // Run Python
+    const start = this.wasmInstance.exports._start as () => void;
+    try {
+      start();
+      return { stdout: this.getStdout(), stderr: this.getStderr(), exitCode: 0 };
+    } catch (e: any) {
+      if (e.code !== undefined) {
+        return { stdout: this.getStdout(), stderr: this.getStderr(), exitCode: e.code };
+      }
+      throw e;
+    }
   }
 
-  async tcpSend(dataBase64: string): Promise<void> {
-    if (!this.writer) throw new Error("not connected");
-    const data = Uint8Array.from(atob(dataBase64), c => c.charCodeAt(0));
-    await this.writer.write(data);
-  }
-
-  async tcpRecv(bufsize: number): Promise<string> {
-    if (!this.reader) throw new Error("not connected");
-    const { value, done } = await this.reader.read();
-    if (done || !value) return "";
-    // Return base64-encoded response
-    const bytes = value.slice(0, bufsize);
-    return btoa(String.fromCharCode(...bytes));
-  }
-
-  async tcpClose(): Promise<void> {
-    try { this.writer?.close(); } catch {}
-    try { this.reader?.cancel(); } catch {}
-    try { this.socket?.close(); } catch {}
-    this.socket = null;
-    this.reader = null;
-    this.writer = null;
-  }
+  // ... createWasiImports() is the existing WASI shim from worker.ts
+  // ... getStdout() / getStderr() collect from fd_write buffers
 }
 ```
 
-### Connection Keepalive
+## JSPI: Bridging Sync Python to Async JS
 
-The TcpPoolDO holds an open TCP socket as in-memory state. As long as the DO
-receives at least one RPC call every 70-140 seconds, it stays alive in memory
-and the connection persists. For database connection pooling:
+JSPI (JavaScript Promise Integration) is a WASM proposal (Phase 4, available
+in V8 since Chrome 123) that lets WASM imports return Promises. When a WASM
+function calls such an import, the WASM stack suspends. When the Promise
+resolves, the stack resumes with the result.
 
-1. **Active use**: Python makes queries → RPC calls keep the DO alive.
-2. **Idle period**: After 70-140s with no calls, DO is evicted, socket closes.
-3. **Next request**: New DO instance, new TCP connection (cold connect).
-
-For long-lived connection pools, use the alarm API as a heartbeat:
+### How JSPI Wires Up
 
 ```typescript
-async tcpConnect(host: string, port: number, tls: boolean): Promise<void> {
-  // ... connect ...
-  // Keep alive: schedule alarm every 60s
-  await this.ctx.storage.setAlarm(Date.now() + 60_000);
-}
+// Without JSPI — host import must be synchronous:
+tcp_recv(connId, bufPtr, bufLen) { /* can't await here */ }
 
-async alarm(): Promise<void> {
-  if (this.socket) {
-    // Reschedule to prevent eviction
-    await this.ctx.storage.setAlarm(Date.now() + 60_000);
+// With JSPI — host import returns a Promise, WASM suspends:
+const suspendingRecv = new WebAssembly.Suspending(
+  async (connId: number, bufPtr: number, bufLen: number): Promise<number> => {
+    const conn = this.tcpConns.get(connId)!;
+    const { value, done } = await conn.reader.read();  // real async await
+    if (done || !value) return 0;
+    const n = Math.min(value.length, bufLen);
+    this.getMemBytes().set(value.subarray(0, n), bufPtr);
+    return n;
   }
+);
+
+// When instantiating WASM:
+const instance = await WebAssembly.instantiate(wasmModule, {
+  pymode: {
+    tcp_connect: hostImports.tcp_connect,  // sync — no await needed
+    tcp_send: hostImports.tcp_send,        // sync — fire and forget
+    tcp_recv: suspendingRecv,              // SUSPENDING — returns Promise
+    tcp_close: hostImports.tcp_close,      // sync
+    http_fetch: suspendingFetch,           // SUSPENDING
+    kv_get: suspendingKvGet,              // SUSPENDING
+    kv_put: suspendingKvPut,              // SUSPENDING
+    // ... all async ops are Suspending
+  },
+});
+
+// The _start export must be wrapped as Promising:
+const promisingStart = WebAssembly.promising(
+  instance.exports._start as () => void
+);
+
+// Now calling promisingStart() returns a Promise.
+// When Python calls tcp_recv(), WASM suspends, JS awaits the socket,
+// WASM resumes. From Python's perspective, recv() is synchronous.
+await promisingStart();
+```
+
+### Async Import Classification
+
+| Host Import | Sync/Async | Why |
+|-------------|-----------|-----|
+| `tcp_connect` | Sync | `cloudflare:sockets` `connect()` returns synchronously |
+| `tcp_send` | Sync | `writer.write()` buffers, doesn't need to await |
+| `tcp_recv` | **Async (Suspending)** | Must await `reader.read()` |
+| `tcp_close` | Sync | Cleanup, no await needed |
+| `http_fetch` | **Async (Suspending)** | Must await `fetch()` + body |
+| `http_response_status` | Sync | Reads from in-memory buffer |
+| `http_response_read` | Sync | Reads from in-memory buffer |
+| `http_response_header` | Sync | Reads from in-memory buffer |
+| `kv_get` | **Async (Suspending)** | Must await `env.KV.get()` |
+| `kv_put` | **Async (Suspending)** | Must await `env.KV.put()` |
+| `kv_delete` | **Async (Suspending)** | Must await `env.KV.delete()` |
+| `r2_get` | **Async (Suspending)** | Must await `env.R2.get()` |
+| `r2_put` | **Async (Suspending)** | Must await `env.R2.put()` |
+| `d1_exec` | **Async (Suspending)** | Must await `env.D1.prepare().all()` |
+| `env_get` | Sync | Reads from env object |
+| `console_log` | Sync | Calls console.log() |
+
+### Fallback Without JSPI
+
+If workerd doesn't support JSPI, async imports use the in-process trampoline:
+
+1. Python calls `tcp_recv()` → host import sets a pending-op marker and throws
+2. The `run()` method catches the throw, sees the pending op
+3. JS `await`s the async operation (socket read, KV get, etc.)
+4. JS writes the result into WASM memory at the designated buffer
+5. JS re-invokes `_start` — Python replays to the same point, finds the result
+
+This is the same trampoline pattern but in-process (no RPC, no network,
+microseconds not milliseconds) because WASM and connections live in the same DO.
+
+## Wizer: Deploy-Time Memory Snapshots
+
+Wizer pre-initializes WASM modules by running init code and snapshotting the
+resulting linear memory. This eliminates CPython import overhead at runtime.
+
+### Build Pipeline
+
+```
+zig cc → python.wasm → wizer → python-snapshot.wasm → deploy
+```
+
+### CPython Entry Point Split
+
+```c
+// Modules/main.c — modified for Wizer support
+
+// Phase 1: Initialize interpreter + import stdlib
+// Called by Wizer at build time. Memory is snapshotted after this returns.
+__attribute__((export_name("__wizer_initialize")))
+void __wizer_initialize(void) {
+    // Minimal init — no user code
+    Py_InitializeEx(0);
+
+    // Pre-import commonly used modules so they're in the snapshot
+    PyImport_ImportModule("sys");
+    PyImport_ImportModule("os");
+    PyImport_ImportModule("io");
+    PyImport_ImportModule("json");
+    PyImport_ImportModule("re");
+    PyImport_ImportModule("collections");
+    PyImport_ImportModule("functools");
+    PyImport_ImportModule("itertools");
+    PyImport_ImportModule("pathlib");
+    PyImport_ImportModule("typing");
+    PyImport_ImportModule("dataclasses");
+    // Pre-import pymode shims
+    PyImport_ImportModule("pymode.tcp");
+    PyImport_ImportModule("pymode.http");
+    PyImport_ImportModule("pymode.env");
+}
+
+// Phase 2: Run user code on the pre-initialized interpreter
+// Called at request time. Interpreter is already warm from the snapshot.
+__attribute__((export_name("__pymode_run")))
+int __pymode_run(const char* code, int code_len) {
+    PyObject* result = PyRun_StringFlags(code, Py_file_input, globals, locals, NULL);
+    if (!result) {
+        PyErr_Print();
+        return 1;
+    }
+    Py_DECREF(result);
+    return 0;
 }
 ```
 
-**Cost of keepalive**: 1 alarm/60s = 1440/day = ~43K/month DO requests per
-connection. Well within free tier for a few connections.
+### Wizer Command
 
-## Python-Side Changes (pymode.tcp)
-
-The TCP module needs a new mode: instead of writing ops to VFS and exiting,
-it writes a single pending RPC request and exits. On re-run, it reads the
-cached response.
-
-```python
-# pymode/tcp.py — DO mode
-
-PENDING_RPC_PATH = "/stdlib/tmp/_pymode_tcp_rpc.json"
-RESPONSE_DIR = "/stdlib/tmp/_pymode_tcp_responses"
-
-class PyModeSocket:
-    _ops_counter = 0  # global, resets on re-execution (correct)
-
-    def connect(self, addr):
-        op_id = PyModeSocket._ops_counter
-        PyModeSocket._ops_counter += 1
-        resp_path = f"{RESPONSE_DIR}/{op_id}"
-
-        if os.path.exists(resp_path):
-            return  # already connected in a previous round
-
-        # Request the connection via RPC
-        _request_rpc({
-            "op": "connect",
-            "connId": self._conn_id,
-            "host": addr[0],
-            "port": addr[1],
-            "opId": op_id,
-        })
-
-    def send(self, data):
-        op_id = PyModeSocket._ops_counter
-        PyModeSocket._ops_counter += 1
-        resp_path = f"{RESPONSE_DIR}/{op_id}"
-
-        if os.path.exists(resp_path):
-            return len(data)  # already sent
-
-        _request_rpc({
-            "op": "send",
-            "connId": self._conn_id,
-            "dataBase64": base64.b64encode(data).decode("ascii"),
-            "opId": op_id,
-        })
-
-    def recv(self, bufsize):
-        op_id = PyModeSocket._ops_counter
-        PyModeSocket._ops_counter += 1
-        resp_path = f"{RESPONSE_DIR}/{op_id}"
-
-        if os.path.exists(resp_path):
-            with open(resp_path, "rb") as f:
-                data = json.load(f)
-            return base64.b64decode(data["dataBase64"])[:bufsize]
-
-        _request_rpc({
-            "op": "recv",
-            "connId": self._conn_id,
-            "bufsize": bufsize,
-            "opId": op_id,
-        })
-
-
-def _request_rpc(op):
-    """Write a single RPC request and exit for JS to handle."""
-    with open(PENDING_RPC_PATH, "w") as f:
-        json.dump(op, f)
-    sys.exit(254)
+```bash
+wizer python.wasm -o python-snapshot.wasm \
+  --allow-wasi \
+  --wasm-bulk-memory true \
+  --init-func __wizer_initialize \
+  --mapdir /stdlib::./lib/python3.13
 ```
 
-### JS Trampoline (DO mode)
+### Cold Start Impact
 
-```typescript
-async function runPythonWithDO(
-  wasmModule: WebAssembly.Module,
-  env: Env,
-  files: Record<string, Uint8Array>,
-): Promise<WasiResult> {
-  const writtenFiles = new Map<string, Uint8Array>();
-  let opCounter = 0;
+| Phase | Without Wizer | With Wizer |
+|-------|--------------|------------|
+| Load WASM binary | ~5ms | ~5ms |
+| Py_Initialize | ~10ms | 0ms (in snapshot) |
+| Import stdlib | ~8ms | 0ms (in snapshot) |
+| Import user deps | ~5ms | 0ms (if pre-imported) |
+| Run user code | varies | varies |
+| **Total cold start** | **~28ms + user deps** | **~5ms** |
 
-  // Map of connId → TcpPoolDO handle
-  const connHandles = new Map<string, DurableObjectNamespace>();
+## Threading: Each Thread = Separate DO
 
-  while (true) {
-    const result = runWasm(wasmModule, files, writtenFiles);
+When Python calls `pthread_create`, the DO spawns a child DO (or Service
+Binding Worker) to run the thread function in parallel.
 
-    if (result.exitCode !== 254) return result;
-
-    // Read pending RPC request
-    const rpcData = writtenFiles.get("/stdlib/tmp/_pymode_tcp_rpc.json");
-    if (!rpcData) return result; // no RPC pending, actual exit 254
-
-    const op = JSON.parse(new TextDecoder().decode(rpcData));
-    writtenFiles.delete("/stdlib/tmp/_pymode_tcp_rpc.json");
-
-    // Get or create TcpPoolDO for this connection
-    let doHandle = connHandles.get(op.connId);
-    if (!doHandle && op.op === "connect") {
-      const id = env.TCP_POOL.idFromName(`${op.host}:${op.port}`);
-      doHandle = env.TCP_POOL.get(id);
-      connHandles.set(op.connId, doHandle);
-    }
-
-    // Execute the RPC
-    let response: any;
-    switch (op.op) {
-      case "connect":
-        await doHandle!.tcpConnect(op.host, op.port, false);
-        response = { ok: true };
-        break;
-      case "send":
-        await doHandle!.tcpSend(op.dataBase64);
-        response = { ok: true };
-        break;
-      case "recv":
-        const data = await doHandle!.tcpRecv(op.bufsize);
-        response = { dataBase64: data };
-        break;
-      case "close":
-        await doHandle!.tcpClose();
-        connHandles.delete(op.connId);
-        response = { ok: true };
-        break;
-    }
-
-    // Write response to VFS for Python to find on re-run
-    const respPath = `/stdlib/tmp/_pymode_tcp_responses/${op.opId}`;
-    const respBytes = new TextEncoder().encode(JSON.stringify(response));
-    writtenFiles.set(respPath, respBytes);
-  }
-}
+```
+┌──────────────────┐
+│    PythonDO      │  (main thread)
+│  python.wasm     │
+│                  │
+│  pthread_create ─┼──→ RPC ──→ ┌──────────────┐
+│  pthread_create ─┼──→ RPC ──→ │ ThreadDO #1  │  (own 30s CPU)
+│  ...             │            │ python.wasm  │
+│  pthread_join  ←─┼──← RPC ──←│ runs fn(arg) │
+│                  │            └──────────────┘
+│  pthread_join  ←─┼──← RPC ──←┌──────────────┐
+│                  │            │ ThreadDO #2  │
+└──────────────────┘            └──────────────┘
 ```
 
-## wrangler.toml Configuration
+Each ThreadDO:
+- Gets its own 30s CPU budget, 128MB memory
+- Runs a copy of python.wasm with the thread function
+- Receives serialized arguments via RPC (Uint8Array)
+- Returns serialized results via RPC
+
+Limitations:
+- No shared mutable memory (each DO has its own WASM linear memory)
+- Only embarrassingly parallel workloads (map, independent I/O)
+- 32 max fan-out per request chain (service binding limit)
+- Arguments/results must be serializable (no pointers, no shared objects)
+
+## wrangler.toml
 
 ```toml
-name = "pymode-worker"
+name = "pymode"
 main = "src/worker.ts"
-compatibility_date = "2024-12-01"
+compatibility_date = "2024-04-03"
 
-# Durable Object bindings (for stateful TCP connections)
+[limits]
+cpu_ms = 30000
+
+[[rules]]
+type = "CompiledWasm"
+globs = ["**/*.wasm"]
+
 [durable_objects]
 bindings = [
-  { name = "TCP_POOL", class_name = "TcpPoolDO" },
+  { name = "PYTHON_DO", class_name = "PythonDO" },
 ]
 
-# Service Binding (for stateless parallel compute)
-[[services]]
-binding = "COMPUTE"
-service = "pymode-compute"
-
-# DO migrations
 [[migrations]]
-tag = "v1"
-new_classes = ["TcpPoolDO"]
+tag = "v2"
+new_classes = ["PythonDO"]
+deleted_classes = ["TcpPoolDO"]
+
+[vars]
+# Environment variables accessible via pymode.env.get_env()
 ```
 
 ## Implementation Order
 
-### Phase 1: TcpPoolDO (highest value, simplest)
-1. Create `TcpPoolDO` class with `tcpConnect`, `tcpSend`, `tcpRecv`, `tcpClose`.
-2. Modify JS trampoline to detect DO mode and route TCP ops to TcpPoolDO.
-3. Update `pymode/tcp.py` to use single-op RPC pattern.
-4. Test with PostgreSQL `SELECT 1` — should work in ~10 rounds (one per socket op)
-   instead of ~50 rounds (full replay per recv).
+### Phase 1: Host imports for TCP (replace VFS trampoline)
 
-### Phase 2: Connection reuse across requests
-1. Add alarm-based keepalive to TcpPoolDO.
-2. Name DOs by `host:port` so the same connection is reused.
-3. Add connection health check (attempt read, reconnect if socket is dead).
+**Goal**: Python calls `pymode_tcp_recv()` as a WASM import instead of writing
+to VFS and exiting 254. Use in-process trampoline (no JSPI yet).
 
-### Phase 3: ComputeWorker (threading via Service Bindings)
-1. Create `pymode-compute` Worker with `WorkerEntrypoint` and `execute()` method.
-2. Modify pthread shim to write thread requests to VFS instead of inline exec.
-3. JS catches exit 254 with thread requests, fans out via `Promise.all` to Service Binding.
-4. Python reads results from VFS on re-run.
+1. Define `pymode` WASM import namespace in C header (`pymode_imports.h`)
+2. Build CPython with the `pymode` imports linked (zig cc `-Wl,--allow-undefined`)
+3. JS provides `pymode.*` functions when instantiating WASM
+4. Move `python.wasm` instantiation into PythonDO
+5. Implement `tcp_connect`, `tcp_send`, `tcp_close` as sync host imports
+6. Implement `tcp_recv` with in-process trampoline (throw → catch → await → re-run)
+7. Rewrite `pymode/tcp.py` to call host imports via ctypes instead of VFS
 
-### Phase 4: JSPI investigation
-1. Test if workerd supports `WebAssembly.Suspending` / `WebAssembly.Promising`.
-2. If yes: wrap TcpPoolDO RPC calls as suspendable imports.
-3. This eliminates the trampoline entirely — Python runs once, every RPC call
-   suspends/resumes the WASM stack transparently.
+**Files changed:**
+- `lib/pymode-imports/pymode_imports.h` (new — C declarations)
+- `lib/pymode-imports/pymode_imports.c` (new — Python C module wrapping the imports)
+- `worker/src/python-do.ts` (new — PythonDO class)
+- `worker/src/worker.ts` (modified — route to PythonDO)
+- `lib/pymode/tcp.py` (rewritten — call host imports)
+- `scripts/build-phase2.sh` (modified — link pymode imports)
+- `worker/wrangler.toml` (modified — PythonDO binding)
 
-## Tradeoffs and Risks
+### Phase 2: Host imports for HTTP, KV, R2, D1
 
-### Advantages
-- **Persistent connections**: DB handshake happens once, not every request.
-- **Real parallelism**: Each DO = separate CPU budget, separate memory.
-- **Cost-effective**: DO requests are $0.15/M, much cheaper than Lambda.
-- **No replay overhead**: TcpPoolDO eliminates conversation replay entirely.
+**Goal**: Full CF binding access from Python via host imports.
 
-### Risks
-- **DO cold start**: First RPC to a new DO instance adds latency (~5-10ms).
-  Mitigated by connection reuse (same `host:port` = same DO = warm).
-- **Memory serialization**: Copying WASM memory for ComputeWorker is expensive.
-  Only viable for small-input/small-output compute tasks.
-- **6 concurrent connections**: Each DO invocation can open 6 connections.
-  For connection pools, each TcpPoolDO manages one connection; multiple DOs
-  for multiple connections.
-- **DO location pinning**: A DO is pinned to its first-access colo. If the
-  user is in US-East and the DB is in EU-West, the DO is in US-East and TCP
-  to the DB crosses the Atlantic. Consider naming DOs to hint at location.
-- **No shared mutable state**: Threads in ComputeWorkers cannot share memory.
-  This breaks `threading.Lock`, shared queues, etc. Only embarrassingly
-  parallel workloads benefit (data-parallel map, independent HTTP fetches).
-- **32 service binding calls per request**: Limits fan-out to 32 threads max
-  per incoming request. Sufficient for most Python threading use cases.
+1. Implement `http_fetch` + response reading (in-process trampoline)
+2. Implement `kv_get`, `kv_put`, `kv_delete`
+3. Implement `r2_get`, `r2_put`
+4. Implement `d1_exec`
+5. Write `pymode/env.py` with KV, R2, D1 classes
+6. Rewrite `pymode/http.py` to call host imports
 
-## Comparison: Before and After
+### Phase 3: JSPI integration
 
-| Metric | Trampoline (current) | TcpPoolDO | JSPI (future) |
-|--------|---------------------|-----------|---------------|
-| DB query rounds | 5-10 per query | 10 per query (1 per op) | 0 (no trampoline) |
-| Python re-executions | 5-10 per query | 10 per query | 0 |
-| Connection reuse | No (new each round) | Yes (DO in-memory) | Yes |
-| Threading | Serial (inline) | Parallel (ComputeWorker) | Parallel |
-| Complexity | Low | Medium | High |
-| CF dependency | Worker only | Worker + DO | Worker + DO + JSPI |
+**Goal**: Replace in-process trampoline with JSPI. Zero re-executions.
+
+1. Test JSPI availability in workerd: `typeof WebAssembly.Suspending`
+2. Wrap async host imports with `new WebAssembly.Suspending(asyncFn)`
+3. Wrap `_start` with `WebAssembly.promising()`
+4. Remove trampoline fallback code paths
+
+### Phase 4: Wizer deploy-time snapshots
+
+**Goal**: 5ms cold starts.
+
+1. Split CPython main into `__wizer_initialize` + `__pymode_run`
+2. Add Wizer to build pipeline
+3. Pre-import stdlib + pymode shims in snapshot
+4. Measure cold start improvement
+
+### Phase 5: Threading via child DOs
+
+**Goal**: Real parallelism for `pthread_create`.
+
+1. Implement ThreadDO class
+2. Modify pthread shim to call host import `pymode_thread_create`
+3. PythonDO spawns ThreadDO via RPC, passes serialized args
+4. `pthread_join` awaits ThreadDO result via host import
+
+## Comparison: PyMode vs CF Python Workers (Target State)
+
+| | CF Python Workers | PyMode (target) |
+|---|---|---|
+| Runtime | Pyodide (Emscripten) | CPython (zig cc, WASI) |
+| Binary size | ~20MB+ | 5.7MB |
+| Cold start | ~50ms (snapshot) | ~5ms (Wizer snapshot) |
+| Async bridge | Asyncify | JSPI |
+| FFI to CF services | Pyodide FFI (JS ↔ Python) | Host imports (WASM ↔ JS) |
+| TCP connections | `cloudflare:sockets` via FFI | `cloudflare:sockets` via host import |
+| DB access | Direct (Hyperdrive, D1) | Direct (host imports for KV, R2, D1) |
+| Package support | 280+ (dynamic loading) | Static profiles + zipimport |
+| Threading | None (`asyncio.gather`) | Real parallelism (child DOs) |
+| Portability | CF only (Emscripten) | Any WASI host (portable) |
+| Interpreter reuse | Per-request (stateless) | Persistent in DO (warm) |
