@@ -10,6 +10,30 @@ import { watch, readFileSync, existsSync } from "fs";
 import { join, resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 
+function loadDevVars(projectDir) {
+  // Load .dev.vars (same convention as wrangler) for project-specific env vars
+  const devVarsPath = join(projectDir, ".dev.vars");
+  const vars = {};
+  if (existsSync(devVarsPath)) {
+    const content = readFileSync(devVarsPath, "utf-8");
+    for (const line of content.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      const eq = trimmed.indexOf("=");
+      if (eq === -1) continue;
+      const key = trimmed.slice(0, eq).trim();
+      let value = trimmed.slice(eq + 1).trim();
+      // Strip surrounding quotes
+      if ((value.startsWith('"') && value.endsWith('"')) ||
+          (value.startsWith("'") && value.endsWith("'"))) {
+        value = value.slice(1, -1);
+      }
+      vars[key] = value;
+    }
+  }
+  return vars;
+}
+
 function findPymodeLib() {
   // Look for lib/pymode relative to CLI package, then in the repo
   const cliDir = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -83,6 +107,7 @@ function runHandler(projectDir, pymodeLib, entryModule, requestJson) {
 export async function dev(args) {
   let port = 8787;
   let entryOverride = null;
+  const cliEnvVars = {};
 
   // Parse args
   for (let i = 0; i < args.length; i++) {
@@ -91,6 +116,12 @@ export async function dev(args) {
       i++;
     } else if (args[i] === "--entry" && args[i + 1]) {
       entryOverride = args[i + 1].replace(/\.py$/, "").replace(/\//g, ".");
+      i++;
+    } else if (args[i] === "--env" && args[i + 1]) {
+      const eq = args[i + 1].indexOf("=");
+      if (eq !== -1) {
+        cliEnvVars[args[i + 1].slice(0, eq)] = args[i + 1].slice(eq + 1);
+      }
       i++;
     }
   }
@@ -117,12 +148,16 @@ export async function dev(args) {
     process.exit(1);
   }
 
+  // Load .dev.vars for project-specific env vars/secrets
+  const devVars = loadDevVars(projectDir);
+  const devVarsCount = Object.keys(devVars).length;
+
   console.log(`
   PyMode dev server
 
   Entry:   ${entryModule}
   Project: ${projectDir}
-  Runtime: ${pymodeLib}
+  Runtime: ${pymodeLib}${devVarsCount ? `\n  Env:     ${devVarsCount} var(s) from .dev.vars` : ""}
   `);
 
   // Watch for .py file changes
@@ -157,7 +192,13 @@ export async function dev(args) {
       headers[req.rawHeaders[i]] = req.rawHeaders[i + 1];
     }
 
-    // Serialize request
+    // Serialize request — pass .dev.vars + CLI --env + PYMODE_*/CF_* from shell
+    const envVars = { ...devVars, ...cliEnvVars };
+    for (const [k, v] of Object.entries(process.env)) {
+      if (k.startsWith("PYMODE_") || k.startsWith("CF_")) {
+        envVars[k] = v;
+      }
+    }
     const requestJson = JSON.stringify({
       request: {
         method: req.method,
@@ -165,7 +206,7 @@ export async function dev(args) {
         headers,
         body,
       },
-      env: process.env,
+      env: envVars,
     });
 
     try {

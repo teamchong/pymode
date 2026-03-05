@@ -94,11 +94,23 @@ def _run():
             response = Response(str(result) if result is not None else "")
 
     except Exception as e:
-        _error_response(500, f"Handler error: {traceback.format_exc()}")
+        _error_response(500, f"Handler error: {_format_user_traceback(e)}")
         return
 
     # Serialize response to stdout
     _write_response(response)
+
+
+def _format_user_traceback(exc):
+    """Format traceback with only user code frames (filter out pymode internals)."""
+    tb_lines = traceback.format_exception(type(exc), exc, exc.__traceback__)
+    filtered = []
+    for line in tb_lines:
+        # Skip frames from pymode internals
+        if "pymode/_handler.py" in line or "pymode\\_handler.py" in line:
+            continue
+        filtered.append(line)
+    return "".join(filtered) if filtered else traceback.format_exc()
 
 
 def _write_response(response):

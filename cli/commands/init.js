@@ -50,8 +50,19 @@ def on_fetch(request, env):
         return Response.json({
             "message": "Hello from ${name}!",
             "method": request.method,
-            "path": request.path,
+            "url": request.url,
         })
+
+    if request.path == "/echo":
+        if request.method == "POST":
+            return Response(request.text(), headers={
+                "Content-Type": request.headers.get("content-type", "text/plain"),
+            })
+        return Response("Send a POST request to /echo", status=405)
+
+    if request.path == "/greet":
+        name = request.query.get("name", ["World"])[0]
+        return Response(f"Hello, {name}!")
 
     return Response("Not Found", status=404)
 `
