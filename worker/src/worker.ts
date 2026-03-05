@@ -5,6 +5,10 @@ import { stdlibFS } from "./stdlib-fs.js";
 // Unlike @cloudflare/workers-wasi, this doesn't need asyncify because
 // all syscalls are backed by an in-memory filesystem with zero I/O.
 
+interface Env {
+  PYMODE_DATA?: KVNamespace;
+}
+
 class ProcExit extends Error {
   code: number;
   constructor(code: number) {
@@ -33,9 +37,11 @@ function createWasi(
   const FD_STDIN = 0;
   const FD_STDOUT = 1;
   const FD_STDERR = 2;
-  const FD_PREOPEN = 3;
+  const FD_PREOPEN = 3;       // /stdlib (read-only stdlib + pymode runtime)
+  const FD_DATA_PREOPEN = 4;  // /data (read-write, backed by CF KV)
 
   const preopenPath = "/stdlib";
+  const dataPreopenPath = "/data";
 
   interface OpenFile {
     path: string;
@@ -46,7 +52,7 @@ function createWasi(
   }
 
   const openFiles = new Map<number, OpenFile>();
-  let nextFd = FD_PREOPEN + 1;
+  let nextFd = FD_DATA_PREOPEN + 1;
 
   const stdoutChunks: Uint8Array[] = [];
   const stderrChunks: Uint8Array[] = [];
@@ -80,6 +86,13 @@ function createWasi(
     dirChildren.set("tmp", []);
     const root = dirChildren.get("")!;
     if (!root.includes("tmp")) root.push("tmp");
+  }
+
+  // Ensure /data directory exists for persistent storage
+  if (!dirChildren.has("data")) {
+    dirChildren.set("data", []);
+    const root = dirChildren.get("")!;
+    if (!root.includes("data")) root.push("data");
   }
 
   function isDir(path: string): boolean {
@@ -141,6 +154,7 @@ function createWasi(
 
   function resolvePath(dirFd: number, relPath: string): string | null {
     if (dirFd === FD_PREOPEN) return normalizePath(relPath);
+    if (dirFd === FD_DATA_PREOPEN) return normalizePath("data/" + relPath);
     const dir = openFiles.get(dirFd);
     if (!dir) return null;
     if (dir.path === "") return normalizePath(relPath);
@@ -282,24 +296,34 @@ function createWasi(
     },
 
     fd_close(fd: number): number {
-      if (fd <= FD_PREOPEN) return ESUCCESS;
+      if (fd <= FD_DATA_PREOPEN) return ESUCCESS;
       openFiles.delete(fd);
       return ESUCCESS;
     },
 
     fd_prestat_get(fd: number, retPtr: number): number {
-      if (fd === FD_PREOPEN) {
+      const preopens: Record<number, string> = {
+        [FD_PREOPEN]: preopenPath,
+        [FD_DATA_PREOPEN]: dataPreopenPath,
+      };
+      const path = preopens[fd];
+      if (path !== undefined) {
         const v = view();
         v.setUint8(retPtr, 0); // PREOPENTYPE_DIR
-        v.setUint32(retPtr + 4, encoder.encode(preopenPath).length, true);
+        v.setUint32(retPtr + 4, encoder.encode(path).length, true);
         return ESUCCESS;
       }
       return EBADF;
     },
 
     fd_prestat_dir_name(fd: number, pathPtr: number, pathLen: number): number {
-      if (fd === FD_PREOPEN) {
-        mem().set(encoder.encode(preopenPath).subarray(0, pathLen), pathPtr);
+      const preopens: Record<number, string> = {
+        [FD_PREOPEN]: preopenPath,
+        [FD_DATA_PREOPEN]: dataPreopenPath,
+      };
+      const path = preopens[fd];
+      if (path !== undefined) {
+        mem().set(encoder.encode(path).subarray(0, pathLen), pathPtr);
         return ESUCCESS;
       }
       return EBADF;
@@ -316,7 +340,7 @@ function createWasi(
         v.setBigUint64(retPtr + 16, BigInt(0x1FF), true);
         return ESUCCESS;
       }
-      if (fd === FD_PREOPEN) {
+      if (fd === FD_PREOPEN || fd === FD_DATA_PREOPEN) {
         v.setUint8(retPtr, 3); // DIRECTORY
         v.setBigUint64(retPtr + 8, BigInt(0x1FFFFFF), true);
         v.setBigUint64(retPtr + 16, BigInt(0x1FFFFFF), true);
@@ -409,7 +433,7 @@ function createWasi(
         v.setBigUint64(retPtr + 24, BigInt(1), true);
         return ESUCCESS;
       }
-      if (fd === FD_PREOPEN) {
+      if (fd === FD_PREOPEN || fd === FD_DATA_PREOPEN) {
         v.setUint8(retPtr + 16, 3);
         v.setBigUint64(retPtr + 24, BigInt(1), true);
         return ESUCCESS;
@@ -427,8 +451,8 @@ function createWasi(
       cookie: bigint, retPtr: number
     ): number {
       const file = openFiles.get(fd);
-      if (!file && fd !== FD_PREOPEN) return EBADF;
-      const dirPath = fd === FD_PREOPEN ? "" : file!.path;
+      if (!file && fd !== FD_PREOPEN && fd !== FD_DATA_PREOPEN) return EBADF;
+      const dirPath = fd === FD_PREOPEN ? "" : fd === FD_DATA_PREOPEN ? "data" : file!.path;
       const entries = dirChildren.get(dirPath) || [];
       const v = view();
       const m = mem();
@@ -673,13 +697,51 @@ const FETCH_RESPONSES_DIR = "tmp/_pymode_fetch_responses";
 const PENDING_TCP_PATH = "tmp/_pymode_pending_tcp.json";
 const TCP_RESPONSES_DIR = "tmp/_pymode_tcp";
 
+const DATA_PREFIX = "data/";
+
+// Load /data files from CF KV into the VFS
+async function loadDataFromKV(
+  kv: KVNamespace,
+  files: Record<string, Uint8Array>
+): Promise<void> {
+  const list = await kv.list();
+  const fetches = list.keys.map(async (key) => {
+    const value = await kv.get(key.name, "arrayBuffer");
+    if (value) {
+      files[`${DATA_PREFIX}${key.name}`] = new Uint8Array(value);
+    }
+  });
+  await Promise.all(fetches);
+}
+
+// Flush dirty /data files from VFS back to CF KV
+async function flushDataToKV(
+  kv: KVNamespace,
+  writtenFiles: Map<string, Uint8Array>
+): Promise<void> {
+  const writes: Promise<void>[] = [];
+  writtenFiles.forEach((data, path) => {
+    if (path.startsWith(DATA_PREFIX)) {
+      const key = path.slice(DATA_PREFIX.length);
+      writes.push(kv.put(key, data));
+    }
+  });
+  await Promise.all(writes);
+}
+
 async function runPythonWithFetch(
   code: string,
-  baseFiles: Record<string, Uint8Array>
+  baseFiles: Record<string, Uint8Array>,
+  kv?: KVNamespace
 ): Promise<{ stdout: Uint8Array; stderr: Uint8Array; exitCode: number }> {
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
   const files = { ...baseFiles };
+
+  // Load persistent /data from KV before first run
+  if (kv) {
+    await loadDataFromKV(kv, files);
+  }
 
   for (let round = 0; round < MAX_TRAMPOLINE_ROUNDS; round++) {
     const result = runWasm(
@@ -689,6 +751,10 @@ async function runPythonWithFetch(
     );
 
     if (result.exitCode !== EXIT_NEEDS_FETCH) {
+      // Flush dirty /data files to KV on final exit
+      if (kv) {
+        await flushDataToKV(kv, result.writtenFiles);
+      }
       return { stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode };
     }
 
@@ -796,7 +862,7 @@ async function runPythonWithFetch(
 }
 
 export default {
-  async fetch(request: Request): Promise<Response> {
+  async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     let code: string;
     if (request.method === "POST") {
@@ -815,7 +881,7 @@ export default {
     }
 
     try {
-      const result = await runPythonWithFetch(code, files);
+      const result = await runPythonWithFetch(code, files, env.PYMODE_DATA);
 
       if (result.exitCode === 0) {
         const output = decoder.decode(result.stdout);

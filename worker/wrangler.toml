@@ -8,3 +8,10 @@ cpu_ms = 30000
 [[rules]]
 type = "CompiledWasm"
 globs = ["**/*.wasm"]
+
+# Persistent /data directory backed by KV
+# Create with: wrangler kv namespace create PYMODE_DATA
+# Then update the id below with the actual namespace ID
+# [[kv_namespaces]]
+# binding = "PYMODE_DATA"
+# id = "YOUR_KV_NAMESPACE_ID"
