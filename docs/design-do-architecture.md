@@ -28,7 +28,7 @@ Map each logical concern to a Durable Object:
               ┌──────────────┼──────────────┐
               ▼              ▼              ▼
      ┌────────────┐  ┌────────────┐  ┌────────────┐
-     │ TcpPoolDO  │  │ ComputeDO  │  │ ComputeDO  │
+     │ TcpPoolDO  │  │ ComputeWorker  │  │ ComputeWorker  │
      │ "pg:5432"  │  │ "thread-1" │  │ "thread-2" │
      │            │  │            │  │            │
      │ persistent │  │ runs WASM  │  │ runs WASM  │
@@ -40,7 +40,7 @@ Map each logical concern to a Durable Object:
 
 **1. PyModeWorker (stateless Worker — NOT a DO)**
 - Entry point. Receives HTTP request, loads python.wasm, starts execution.
-- On `pthread_create` → fans out to ComputeDO via RPC.
+- On `pthread_create` → fans out to ComputeWorker via RPC.
 - On TCP `connect()` → routes to TcpPoolDO via RPC.
 - Remains the orchestrator; does not hold connections or threads.
 
@@ -51,11 +51,18 @@ Map each logical concern to a Durable Object:
 - Exposes RPC methods: `connect()`, `send(data)`, `recv(bufsize)`, `close()`.
 - No more trampoline replay — the connection is real and stateful.
 
-**3. ComputeDO (parallel thread execution)**
-- One DO instance per `pthread_create` call.
-- Each gets its own 30s CPU budget, 128MB memory.
+**3. ComputeWorker (parallel thread execution via Service Bindings)**
+- Stateless Worker connected via Service Binding (NOT a DO — no state needed).
+- Each invocation gets its own 30s CPU budget, 128MB memory.
 - Runs a subset of the WASM module (the thread function + its closure).
 - Reports results back to PyModeWorker via RPC return value.
+- Service Bindings have ~0ms overhead (same thread, same server) vs DO network hop.
+- Max 32 Worker invocations per request chain.
+
+**Why Service Bindings over DOs for compute:** Threads are stateless — they run
+a function and return a result. DOs add unnecessary overhead (network hop to
+pinned colo, duration billing). Service Bindings run on the same machine with
+zero latency and bill only CPU time.
 
 ## How TCP Changes
 
@@ -144,7 +151,7 @@ int pthread_create(pthread_t *thread, ..., void *(*fn)(void *), void *arg) {
 
 Everything is serial. No parallelism possible.
 
-### After (ComputeDO fan-out)
+### After (ComputeWorker fan-out via Service Bindings)
 
 ```
 Python calls pthread_create(fn, arg)
@@ -155,10 +162,8 @@ Python calls pthread_create(fn, arg)
 JS catches exit 254:
   → reads thread requests from VFS
   → for each thread:
-      const doId = env.COMPUTE.idFromName(`thread-${id}`)
-      const handle = env.COMPUTE.get(doId)
-      promises.push(handle.execute(wasmModule, fnPtr, argPtr, memorySnapshot))
-  → await Promise.all(promises)   // real parallelism!
+      promises.push(env.COMPUTE.execute(wasmModule, fnPtr, argPtr, memorySnapshot))
+  → await Promise.all(promises)   // real parallelism, same machine!
   → write results to VFS
   → re-run Python
 
@@ -167,10 +172,11 @@ Python resumes:
   → continues execution
 ```
 
-Each ComputeDO gets:
+Each ComputeWorker invocation gets:
 - Its own 30s CPU budget (separate from the main Worker's)
 - Its own 128MB memory
 - A copy of the WASM module + relevant memory pages
+- ~0ms RPC overhead (Service Binding = same thread, same server)
 
 ### Data Serialization Between DOs
 
@@ -182,8 +188,8 @@ return values must be serialized:
 const memorySnapshot = new Uint8Array(wasmInstance.exports.memory.buffer);
 const threadArg = memorySnapshot.slice(argPtr, argPtr + argSize);
 
-// In ComputeDO:
-class ComputeDO extends DurableObject {
+// In ComputeWorker (Service Binding, NOT a DO):
+class ComputeWorker extends WorkerEntrypoint {
   async execute(wasmBytes: ArrayBuffer, fnPtr: number, arg: Uint8Array): Promise<Uint8Array> {
     const instance = await WebAssembly.instantiate(wasmBytes, imports);
     // Copy arg into new instance's memory
@@ -223,8 +229,11 @@ state across threads.
 | Same-colo latency | ~0ms (same thread, same server) |
 | Cross-colo latency | Network RTT (DO is pinned to first-access colo) |
 | Promise pipelining | Yes — chain calls in 1 round trip |
-| Max service binding calls | 32 per request |
+| Max service binding calls | 32 per request chain |
 | Max subrequests (paid) | 10,000 per invocation |
+| Max RPC payload | 32 MiB (use ReadableStream for larger) |
+| Session billing | 1 DO request per RPC session; sub-calls on returned RpcTarget are free |
+| Supported types | Structured Cloneable (ArrayBuffer, Uint8Array, Map, etc.) + ReadableStream + RpcTarget |
 
 ### TCP Socket Rules
 
@@ -235,6 +244,10 @@ state across threads.
   stays alive for 70-140s after last use.
 - 6 concurrent connections per invocation (but a DO can hold connections across
   multiple incoming RPC calls).
+- **Outgoing TCP connections prevent hibernation** — a DO with an open socket
+  stays pinned in memory (70-140s idle timeout), incurring duration charges
+  ($12.50/M GB-s). This is acceptable for connection pools that are actively
+  used, but idle connections should be closed explicitly.
 
 ### Pricing
 
@@ -248,11 +261,18 @@ state across threads.
 | DO storage (reads) | — | $0.20/M |
 
 **Cost model for a DB query** (Option B, single-op trampoline):
-- A PostgreSQL `SELECT 1` = ~10 socket operations = 10 DO RPC calls
-- Each RPC call = 1 DO request ($0.15/M) + some CPU ms
-- 1000 queries/day = 10K DO requests/day = 300K/month → within free tier
+- A PostgreSQL `SELECT 1` = ~10 socket operations = 10 trampoline rounds
+- But all 10 calls go to the same TcpPoolDO via the same RPC session = **1 billed DO request**
+  (sub-calls on a returned RpcTarget within the same session are free)
+- 1000 queries/day = 1000 DO requests/day = 30K/month → well within free tier
 
-**Cost model for threading** (ComputeDO fan-out):
+**Alternative: Hyperdrive** — CF's dedicated connection pooler for PostgreSQL/MySQL.
+Eliminates 7 round trips (TCP handshake, TLS, auth) with a managed pool colocated
+near your database. If the user's DB is PostgreSQL or MySQL, Hyperdrive is the
+recommended path. TcpPoolDO is for protocols Hyperdrive doesn't support (Redis,
+MQTT, custom protocols, etc.).
+
+**Cost model for threading** (ComputeWorker fan-out):
 - Each `pthread_create` = 1 DO instantiation + execution
 - 4-thread parallel compute = 4 DO requests + 4 x CPU time
 - If each thread runs 1s CPU: 4 x 1000ms = 4000ms → $0.00008
@@ -476,17 +496,21 @@ name = "pymode-worker"
 main = "src/worker.ts"
 compatibility_date = "2024-12-01"
 
-# Durable Object bindings
+# Durable Object bindings (for stateful TCP connections)
 [durable_objects]
 bindings = [
   { name = "TCP_POOL", class_name = "TcpPoolDO" },
-  { name = "COMPUTE", class_name = "ComputeDO" },
 ]
+
+# Service Binding (for stateless parallel compute)
+[[services]]
+binding = "COMPUTE"
+service = "pymode-compute"
 
 # DO migrations
 [[migrations]]
 tag = "v1"
-new_classes = ["TcpPoolDO", "ComputeDO"]
+new_classes = ["TcpPoolDO"]
 ```
 
 ## Implementation Order
@@ -503,10 +527,10 @@ new_classes = ["TcpPoolDO", "ComputeDO"]
 2. Name DOs by `host:port` so the same connection is reused.
 3. Add connection health check (attempt read, reconnect if socket is dead).
 
-### Phase 3: ComputeDO (threading)
-1. Create `ComputeDO` class with `execute(wasmBytes, fnPtr, arg)`.
+### Phase 3: ComputeWorker (threading via Service Bindings)
+1. Create `pymode-compute` Worker with `WorkerEntrypoint` and `execute()` method.
 2. Modify pthread shim to write thread requests to VFS instead of inline exec.
-3. JS catches exit 254 with thread requests, fans out via `Promise.all`.
+3. JS catches exit 254 with thread requests, fans out via `Promise.all` to Service Binding.
 4. Python reads results from VFS on re-run.
 
 ### Phase 4: JSPI investigation
@@ -526,7 +550,7 @@ new_classes = ["TcpPoolDO", "ComputeDO"]
 ### Risks
 - **DO cold start**: First RPC to a new DO instance adds latency (~5-10ms).
   Mitigated by connection reuse (same `host:port` = same DO = warm).
-- **Memory serialization**: Copying WASM memory for ComputeDO is expensive.
+- **Memory serialization**: Copying WASM memory for ComputeWorker is expensive.
   Only viable for small-input/small-output compute tasks.
 - **6 concurrent connections**: Each DO invocation can open 6 connections.
   For connection pools, each TcpPoolDO manages one connection; multiple DOs
@@ -534,7 +558,7 @@ new_classes = ["TcpPoolDO", "ComputeDO"]
 - **DO location pinning**: A DO is pinned to its first-access colo. If the
   user is in US-East and the DB is in EU-West, the DO is in US-East and TCP
   to the DB crosses the Atlantic. Consider naming DOs to hint at location.
-- **No shared mutable state**: Threads in ComputeDOs cannot share memory.
+- **No shared mutable state**: Threads in ComputeWorkers cannot share memory.
   This breaks `threading.Lock`, shared queues, etc. Only embarrassingly
   parallel workloads benefit (data-parallel map, independent HTTP fetches).
 - **32 service binding calls per request**: Limits fan-out to 32 threads max
@@ -547,6 +571,6 @@ new_classes = ["TcpPoolDO", "ComputeDO"]
 | DB query rounds | 5-10 per query | 10 per query (1 per op) | 0 (no trampoline) |
 | Python re-executions | 5-10 per query | 10 per query | 0 |
 | Connection reuse | No (new each round) | Yes (DO in-memory) | Yes |
-| Threading | Serial (inline) | Parallel (ComputeDO) | Parallel |
+| Threading | Serial (inline) | Parallel (ComputeWorker) | Parallel |
 | Complexity | Low | Medium | High |
 | CF dependency | Worker only | Worker + DO | Worker + DO + JSPI |
