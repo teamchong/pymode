@@ -12,6 +12,17 @@ cpython/
 # Node
 node_modules/
 dist/
+package-lock.json
+
+# Wrangler
+.wrangler/
+
+# Generated stdlib (regenerate with scripts/generate-stdlib-fs.sh)
+worker/src/stdlib-fs.ts
+worker/src/stdlib-fs.mjs
+
+# WASM symlinks in worker
+worker/src/*.wasm
 
 # OS
 .DS_Store
