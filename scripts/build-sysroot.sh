@@ -131,12 +131,13 @@ build_openssl() {
     mkdir -p "$src" && tar xzf "$BUILD_DIR/openssl-3.4.0.tar.gz" -C "$src" --strip-components=1
 
     cd "$src"
-    # Use the generic32 target — no asm, no threads, no sockets
+    # linux-generic32 is the closest match — 32-bit, no asm
     CC="zig cc -target wasm32-wasi" \
     AR="$ZIG_AR" \
     RANLIB="$ZIG_RANLIB" \
-    ./Configure gcc \
+    ./Configure linux-generic32 \
         --prefix="$SYSROOT" \
+        --cross-compile-prefix="" \
         no-asm \
         no-threads \
         no-shared \
@@ -146,6 +147,7 @@ build_openssl() {
         no-tests \
         no-engine \
         no-dso \
+        no-posix-io \
         -Os \
         -DOPENSSL_NO_SECURE_MEMORY \
         -DOPENSSL_SYS_WASI \
@@ -230,11 +232,20 @@ build_libjpeg() {
 
     cd "$src"
     mkdir -p build && cd build
+    # Create a wrapper script for cmake to use zig cc
+    cat > "$BUILD_DIR/zig-cc-wasi" << 'ZIGCC'
+#!/usr/bin/env bash
+exec zig cc -target wasm32-wasi "$@"
+ZIGCC
+    chmod +x "$BUILD_DIR/zig-cc-wasi"
+
     cmake .. \
-        -DCMAKE_SYSTEM_NAME=WASI \
-        -DCMAKE_C_COMPILER="$(which zig)" \
-        -DCMAKE_C_COMPILER_ARG1="cc -target wasm32-wasi" \
+        -DCMAKE_SYSTEM_NAME=Generic \
+        -DCMAKE_SYSTEM_PROCESSOR=wasm32 \
+        -DCMAKE_C_COMPILER="$BUILD_DIR/zig-cc-wasi" \
         -DCMAKE_AR="$(which zig)" \
+        -DCMAKE_AR_FLAGS="ar rcs" \
+        -DCMAKE_RANLIB="$ZIG_RANLIB" \
         -DCMAKE_INSTALL_PREFIX="$SYSROOT" \
         -DCMAKE_C_FLAGS="-Os -DNDEBUG" \
         -DWITH_SIMD=OFF \

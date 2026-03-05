@@ -298,9 +298,13 @@ function createWasi(
       const file = openFiles.get(fd);
       if (!file) return EBADF;
       const off = Number(offset);
-      if (whence === 0) file.offset = off;
-      else if (whence === 1) file.offset += off;
-      else if (whence === 2) file.offset = file.data.length + off;
+      let newOffset: number;
+      if (whence === 0) newOffset = off;
+      else if (whence === 1) newOffset = file.offset + off;
+      else if (whence === 2) newOffset = file.data.length + off;
+      else return EINVAL;
+      if (newOffset < 0) return EINVAL;
+      file.offset = newOffset;
       view().setBigUint64(retPtr, BigInt(file.offset), true);
       return ESUCCESS;
     },
@@ -690,13 +694,10 @@ function base64Decode(str: string): Uint8Array {
   return bytes;
 }
 
-// Simple hash for cache keys (djb2)
-function hashKey(s: string): string {
-  let hash = 5381;
-  for (let i = 0; i < s.length; i++) {
-    hash = ((hash << 5) + hash + s.charCodeAt(i)) & 0xFFFFFFFF;
-  }
-  return hash.toString(16);
+// Response cache key: use request index from the pending array.
+// Avoids hash collisions and signed/unsigned mismatches between JS and Python.
+function responseKey(index: number): string {
+  return index.toString();
 }
 
 // Re-execution trampoline: run Python, catch exit 254, do fetches, re-run
@@ -714,14 +715,18 @@ async function loadDataFromKV(
   kv: KVNamespace,
   files: Record<string, Uint8Array>
 ): Promise<void> {
-  const list = await kv.list();
-  const fetches = list.keys.map(async (key) => {
-    const value = await kv.get(key.name, "arrayBuffer");
-    if (value) {
-      files[`${DATA_PREFIX}${key.name}`] = new Uint8Array(value);
-    }
-  });
-  await Promise.all(fetches);
+  let cursor: string | undefined;
+  do {
+    const list = await kv.list({ cursor });
+    const fetches = list.keys.map(async (key) => {
+      const value = await kv.get(key.name, "arrayBuffer");
+      if (value) {
+        files[`${DATA_PREFIX}${key.name}`] = new Uint8Array(value);
+      }
+    });
+    await Promise.all(fetches);
+    cursor = list.list_complete ? undefined : list.cursor;
+  } while (cursor);
 }
 
 // Flush dirty /data files from VFS back to CF KV
@@ -785,24 +790,32 @@ async function runPythonWithFetch(
 
     // Handle HTTP fetches
     if (pendingFetchRaw) {
-      const pending: Array<{ url: string; method: string; headers?: Record<string, string>; body?: string }> =
-        JSON.parse(decoder.decode(pendingFetchRaw));
+      const pending: Array<{
+        url: string; method: string; headers?: Record<string, string>;
+        body?: string; bodyIsBase64?: boolean;
+      }> = JSON.parse(decoder.decode(pendingFetchRaw));
 
       if (pending.length > 0) {
         const responses = await Promise.all(
-          pending.map((req) =>
-            fetch(req.url, {
+          pending.map((req) => {
+            let reqBody: string | Uint8Array | undefined = req.body ?? undefined;
+            if (req.bodyIsBase64 && req.body) {
+              reqBody = base64Decode(req.body);
+            }
+            return fetch(req.url, {
               method: req.method || "GET",
               headers: req.headers,
-              body: req.body,
-            })
-          )
+              body: reqBody,
+            });
+          })
         );
 
         for (let i = 0; i < pending.length; i++) {
-          const key = hashKey(`${pending[i].method || "GET"}:${pending[i].url}`);
+          const key = responseKey(i);
           const body = new Uint8Array(await responses[i].arrayBuffer());
           const meta = JSON.stringify({
+            url: pending[i].url,
+            method: pending[i].method || "GET",
             status: responses[i].status,
             headers: Object.fromEntries([...responses[i].headers.entries()]),
             bodyBase64: base64Encode(body),
@@ -834,16 +847,23 @@ async function runPythonWithFetch(
           await writer.write(sendData);
           writer.releaseLock();
 
-          // Read response
+          // Read response — read the first chunk(s) up to recvSize.
+          // Uses a 5-second timeout to prevent hanging on slow/stuck connections.
           const reader = socket.readable.getReader();
           const chunks: Uint8Array[] = [];
           let totalLen = 0;
-          while (totalLen < sess.recvSize) {
-            const { value, done } = await reader.read();
-            if (done || !value) break;
-            chunks.push(value);
-            totalLen += value.length;
-          }
+          const readWithTimeout = async () => {
+            const timeout = new Promise<{ value: undefined; done: true }>((resolve) =>
+              setTimeout(() => resolve({ value: undefined, done: true }), 5000)
+            );
+            while (totalLen < sess.recvSize) {
+              const result = await Promise.race([reader.read(), timeout]);
+              if (result.done || !result.value) break;
+              chunks.push(result.value);
+              totalLen += result.value.length;
+            }
+          };
+          await readWithTimeout();
           reader.releaseLock();
           await socket.close();
 

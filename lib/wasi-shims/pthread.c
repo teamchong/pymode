@@ -90,12 +90,24 @@ int pthread_mutexattr_destroy(pthread_mutexattr_t *attr) { (void)attr; return 0;
 int pthread_mutexattr_settype(pthread_mutexattr_t *attr, int type) { (void)attr; (void)type; return 0; }
 int pthread_mutexattr_gettype(const pthread_mutexattr_t *attr, int *type) { (void)attr; if (type) *type = 0; return 0; }
 
-/* Condition variables: signal/wait are no-ops (single-threaded) */
+/* Condition variables: signal sets the cond, wait checks and resets it.
+ * In single-threaded mode, if a signal hasn't been called before wait,
+ * the condition can never become true, so we return ETIMEDOUT to prevent
+ * infinite spin loops. */
 int pthread_cond_init(pthread_cond_t *cond, const pthread_condattr_t *attr) { (void)attr; if (cond) *cond = 0; return 0; }
 int pthread_cond_destroy(pthread_cond_t *cond) { (void)cond; return 0; }
-int pthread_cond_signal(pthread_cond_t *cond) { (void)cond; return 0; }
-int pthread_cond_broadcast(pthread_cond_t *cond) { (void)cond; return 0; }
-int pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex) { (void)cond; (void)mutex; return 0; }
+int pthread_cond_signal(pthread_cond_t *cond) { if (cond) *cond = 1; return 0; }
+int pthread_cond_broadcast(pthread_cond_t *cond) { if (cond) *cond = 1; return 0; }
+int pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex) {
+    (void)mutex;
+    if (cond && *cond) {
+        *cond = 0;  /* consume the signal */
+        return 0;
+    }
+    /* No signal pending — in single-threaded mode, no other thread can
+     * signal us, so return ETIMEDOUT to break spin loops. */
+    return 110;  /* ETIMEDOUT */
+}
 
 /* RWLock: no-ops */
 int pthread_rwlock_init(pthread_rwlock_t *rwlock, const pthread_rwlockattr_t *attr) { (void)attr; if (rwlock) *rwlock = 0; return 0; }

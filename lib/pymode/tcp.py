@@ -1,33 +1,37 @@
-"""PyMode TCP bridge — enables database drivers via re-execution trampoline.
+"""PyMode TCP bridge — enables single-round TCP via re-execution trampoline.
 
 Same pattern as pymode.http: Python queues TCP session requests to VFS,
 exits with code 254, and the JS host executes them via cloudflare:sockets.
 
+Limitation: Each trampoline round opens a NEW TCP connection. Multi-step
+protocols (e.g., PostgreSQL auth handshake) that require state across
+multiple send/recv cycles on the same connection are not supported until
+JSPI arrives. Simple request/response protocols (Redis GET, HTTP) work.
+
 Usage:
     import pymode.tcp
     pymode.tcp.install()  # patches socket module
-
-    # Then use any database driver normally:
-    import psycopg2
-    conn = psycopg2.connect(...)
 """
 
 import os
 import json
 import sys
 import base64
+import hashlib
 
 
 PENDING_PATH = "/stdlib/tmp/_pymode_pending_tcp.json"
 RESPONSE_DIR = "/stdlib/tmp/_pymode_tcp"
 
-_session_counter = 0
 
+def _next_session_id(host, port, send_data):
+    """Generate a deterministic session ID based on connection params and data.
 
-def _next_session_id():
-    global _session_counter
-    _session_counter += 1
-    return f"tcp_{_session_counter}"
+    Uses content-based hashing so the same request in a re-execution round
+    gets the same session ID and can find its cached response.
+    """
+    h = hashlib.md5(f"{host}:{port}:{send_data!r}".encode()).hexdigest()[:16]
+    return f"tcp_{h}"
 
 
 class TCPResponse:
@@ -62,7 +66,6 @@ class PyModeSocket:
         self.type = type
         self._host = None
         self._port = None
-        self._session_id = _next_session_id()
         self._send_buffer = []
         self._connected = False
         self._timeout = None
@@ -108,15 +111,17 @@ class PyModeSocket:
         return len(data)
 
     def recv(self, bufsize, flags=0):
-        resp_path = f"{RESPONSE_DIR}/{self._session_id}"
+        send_data = b"".join(self._send_buffer)
+        session_id = _next_session_id(self._host, self._port, send_data)
+        resp_path = f"{RESPONSE_DIR}/{session_id}"
 
         # Response already fetched by JS in a previous trampoline round
         if os.path.exists(resp_path):
             with open(resp_path, "rb") as f:
                 data = json.load(f)
+            if data.get("error"):
+                raise OSError(f"TCP error: {data['error']}")
             body = base64.b64decode(data["dataBase64"])
-            # Clear for next recv cycle
-            os.unlink(resp_path)
             self._send_buffer = []
             return body[:bufsize]
 
@@ -126,9 +131,8 @@ class PyModeSocket:
             with open(PENDING_PATH) as f:
                 pending = json.load(f)
 
-        send_data = b"".join(self._send_buffer)
         pending.append({
-            "sessionId": self._session_id,
+            "sessionId": session_id,
             "host": self._host,
             "port": self._port,
             "sendDataBase64": base64.b64encode(send_data).decode("ascii"),

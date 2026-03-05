@@ -20,18 +20,6 @@ PENDING_PATH = "/stdlib/tmp/_pymode_pending_fetches.json"
 RESPONSE_DIR = "/stdlib/tmp/_pymode_fetch_responses"
 
 
-def _hash_key(s):
-    """djb2 hash matching the JS-side hashKey function."""
-    h = 5381
-    for ch in s:
-        h = ((h << 5) + h + ord(ch)) & 0xFFFFFFFF
-    return format(h, 'x')
-
-
-def _response_key(method, url):
-    return _hash_key(f"{method}:{url}")
-
-
 class HTTPResponse:
     """Minimal response object compatible with urllib.request return values."""
 
@@ -79,19 +67,23 @@ def fetch(url, method="GET", headers=None, body=None):
     If a cached response exists in VFS, returns it immediately.
     Otherwise, queues the request and exits with code 254.
     """
-    key = _response_key(method, url)
-    resp_path = f"{RESPONSE_DIR}/{key}"
-
-    # Response already fetched by JS in a previous run
-    if os.path.exists(resp_path):
+    # Check all response files — key is the request index from the pending array
+    # Scan for a matching response by looking at each index's stored URL
+    idx = 0
+    while True:
+        resp_path = f"{RESPONSE_DIR}/{idx}"
+        if not os.path.exists(resp_path):
+            break
         with open(resp_path, "rb") as f:
             data = json.load(f)
-        body_bytes = base64.b64decode(data["bodyBase64"])
-        return HTTPResponse(
-            status=data["status"],
-            headers={k.lower(): v for k, v in data.get("headers", {}).items()},
-            body=body_bytes,
-        )
+        if data.get("url") == url and data.get("method", "GET") == method:
+            body_bytes = base64.b64decode(data["bodyBase64"])
+            return HTTPResponse(
+                status=data["status"],
+                headers={k.lower(): v for k, v in data.get("headers", {}).items()},
+                body=body_bytes,
+            )
+        idx += 1
 
     # First encounter — queue this fetch request
     pending = []
@@ -101,13 +93,17 @@ def fetch(url, method="GET", headers=None, body=None):
 
     req_body = None
     if body is not None:
-        req_body = body.decode("utf-8") if isinstance(body, bytes) else body
+        if isinstance(body, bytes):
+            req_body = base64.b64encode(body).decode("ascii")
+        else:
+            req_body = body
 
     pending.append({
         "method": method,
         "url": url,
         "headers": dict(headers or {}),
         "body": req_body,
+        "bodyIsBase64": isinstance(body, bytes),
     })
 
     pending_dir = os.path.dirname(PENDING_PATH)
