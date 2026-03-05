@@ -52,7 +52,7 @@ ac_cv_func_gethostbyaddr=no
 ac_cv_func_inet_aton=no
 ac_cv_func_inet_pton=no
 
-# No threading
+# No threading (WASI has no pthread implementation)
 ac_cv_func_pthread_init=no
 ac_cv_pthread=no
 
@@ -77,3 +77,66 @@ ac_cv_func_chmod=no
 ac_cv_func_fchmod=no
 ac_cv_func_symlink=no
 ac_cv_func_link=no
+
+# Headers that zig's musl sysroot has but are non-functional on WASI
+ac_cv_header_sys_resource_h=no
+ac_cv_header_sys_epoll_h=no
+ac_cv_header_sys_sendfile_h=no
+ac_cv_header_sys_sysmacros_h=no
+ac_cv_header_sys_timerfd_h=no
+ac_cv_header_sys_un_h=no
+ac_cv_header_sys_xattr_h=no
+ac_cv_header_sys_auxv_h=no
+ac_cv_header_syslog_h=no
+ac_cv_header_termios_h=no
+ac_cv_header_grp_h=no
+ac_cv_header_shadow_h=no
+ac_cv_header_spawn_h=no
+ac_cv_header_pty_h=no
+ac_cv_header_utmp_h=no
+ac_cv_header_libintl_h=no
+ac_cv_header_net_ethernet_h=no
+ac_cv_header_net_if_h=no
+ac_cv_header_netdb_h=no
+ac_cv_header_netpacket_packet_h=no
+
+# ncurses not available on WASI
+ac_cv_header_ncurses_h=no
+ac_cv_header_ncurses_ncurses_h=no
+ac_cv_header_ncurses_curses_h=no
+ac_cv_header_curses_h=no
+ac_cv_search_setupterm=no
+ac_cv_lib_ncursesw_setupterm=no
+ac_cv_lib_ncurses_setupterm=no
+
+# Functions that zig detects but don't work on WASI
+ac_cv_func_epoll_create1=no
+ac_cv_func_eventfd=no
+ac_cv_func_fchmodat=no
+ac_cv_func_fdopendir=no
+ac_cv_func_fstatvfs=no
+ac_cv_func_statvfs=no
+ac_cv_func_getprotobyname=no
+ac_cv_func_getservbyname=no
+ac_cv_func_getservbyport=no
+ac_cv_func_hstrerror=no
+ac_cv_func_preadv=no
+ac_cv_func_pwritev=no
+ac_cv_func_readv=no
+ac_cv_func_writev=no
+ac_cv_func_setgroups=no
+ac_cv_func_timerfd_create=no
+ac_cv_func_makedev=no
+
+# Misc features
+ac_cv_have_device_macros=no
+ac_cv_lib_b2_blake2b=no
+
+# Disable pkg-config to prevent finding host-native libraries (libb2, etc.)
+ac_cv_prog_ac_ct_PKG_CONFIG=false
+pkg_cv_LIBB2_CFLAGS=
+pkg_cv_LIBB2_LIBS=
+
+# Enable dynamic loading detection so importdl.c compiles the
+# _Py_ext_module_loader_* functions needed for builtin modules
+ac_cv_func_dlopen=yes

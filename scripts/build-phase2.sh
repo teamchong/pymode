@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # Phase 2: Build CPython for wasm32-wasi using zig cc (no WASI SDK)
-# Prerequisites: python3, wasmtime, zig
+# Uses ReleaseSmall equivalent: -Os, strip debug info, minimize binary size
+# Prerequisites: python3, wasmtime, zig, Phase 1 native build
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 CPYTHON_DIR="$ROOT_DIR/cpython"
 BUILD_DIR="$ROOT_DIR/build/zig-wasi"
+ZIG_WRAPPER_DIR="$ROOT_DIR/build/zig-wrappers"
 
 # Colors
 RED='\033[0;31m'
@@ -27,53 +29,88 @@ ZIG_VERSION=$(zig version)
 info "Using zig $ZIG_VERSION"
 
 # Ensure CPython source exists
-if [ ! -d "$CPYTHON_DIR" ]; then
-    error "CPython source not found. Run build-phase1.sh first to clone it."
+[ -d "$CPYTHON_DIR" ] || error "CPython source not found. Run build-phase1.sh first to clone it."
+
+# Step 1: Locate or build the native Python (needed for cross-compilation)
+NATIVE_PYTHON=""
+for candidate in \
+    "$CPYTHON_DIR/cross-build/build/python.exe" \
+    "$CPYTHON_DIR/cross-build/build/python" \
+    "$ROOT_DIR/build/native/python"; do
+    if [ -x "$candidate" ]; then
+        NATIVE_PYTHON="$candidate"
+        break
+    fi
+done
+
+if [ -z "$NATIVE_PYTHON" ]; then
+    info "No native Python found. Building one..."
+    mkdir -p "$ROOT_DIR/build/native"
+    cd "$CPYTHON_DIR"
+    make distclean 2>/dev/null || true
+    ./configure --prefix="$ROOT_DIR/build/native/install"
+    make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" python.exe
+    NATIVE_PYTHON="$CPYTHON_DIR/python.exe"
+    if [ ! -x "$NATIVE_PYTHON" ]; then
+        NATIVE_PYTHON="$CPYTHON_DIR/python"
+    fi
 fi
 
-# Step 1: Build a native CPython for cross-compilation
-# (CPython needs a host python to generate grammar/frozen modules)
-NATIVE_BUILD_DIR="$ROOT_DIR/build/native"
-if [ ! -f "$NATIVE_BUILD_DIR/python" ]; then
-    info "Building native CPython (needed for cross-compilation)..."
-    mkdir -p "$NATIVE_BUILD_DIR"
-    cd "$CPYTHON_DIR"
-    ./configure --prefix="$NATIVE_BUILD_DIR/install"
-    make -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu)" python
-    cp python "$NATIVE_BUILD_DIR/python"
-    make distclean || true
-else
-    info "Native CPython already built"
-fi
+info "Using native Python: $NATIVE_PYTHON"
 
 # Step 2: Create zig cc wrapper scripts
-# These wrappers handle zig cc quirks for autoconf compatibility
-ZIG_WRAPPER_DIR="$ROOT_DIR/build/zig-wrappers"
+# These filter out flags zig cc doesn't support and apply ReleaseSmall optimizations
 mkdir -p "$ZIG_WRAPPER_DIR"
 
 cat > "$ZIG_WRAPPER_DIR/zig-cc" << 'ZIGCC'
 #!/usr/bin/env bash
 # zig cc wrapper for wasm32-wasi cross-compilation
-# Filters out flags that zig cc doesn't support
+# Applies ReleaseSmall: -Os, strip, no debug info
 
 ARGS=()
+HAS_OPT=0
 for arg in "$@"; do
     case "$arg" in
-        # Skip flags zig cc doesn't understand
-        -pthread) continue ;;
-        -lpthread) continue ;;
-        -ldl) continue ;;
-        -lm) continue ;;
-        -lutil) continue ;;
-        -lrt) continue ;;
+        # Skip flags zig cc doesn't support for wasm32-wasi
+        -pthread|-ldl|-lutil|-lrt|-lpthread) continue ;;
+        # Keep -lm (zig provides this for wasm32-wasi)
+        -lm) ARGS+=("$arg") ;;
         -Wl,--version-script=*) continue ;;
-        -Wl,-export-dynamic) continue ;;
-        -Wl,--no-as-needed) continue ;;
-        # Skip optimization flags that cause issues
+        -Wl,-export-dynamic|-Wl,--no-as-needed) continue ;;
+        -Wl,-z,*) continue ;;
+        -Wl,--initial-memory=*) continue ;;
+        -Wl,--stack-first) continue ;;
+        -z) continue ;;  # next arg is the z-flag value
+        stack-size=*) continue ;;
+        # Replace optimization flags with -Os (ReleaseSmall)
+        -O0|-O1|-O2|-O3|-Og) ARGS+=("-Os"); HAS_OPT=1 ;;
         -flto=thin) ARGS+=("-flto") ;;
+        # Skip macOS-specific flags
+        -framework) continue ;;
+        CoreFoundation|SystemConfiguration) continue ;;
+        -Wl,-stack_size,*) continue ;;
+        # Skip dynamic linking flags (WASI is static)
+        -bundle|-undefined|-dynamic_lookup) continue ;;
+        -Wl,-undefined,*) continue ;;
+        # Skip native host library paths (not valid for cross-compilation)
+        -L/opt/homebrew/*|-L/usr/local/*) continue ;;
+        -lb2) continue ;;  # libb2 not available as WASM
+        # Pass everything else through
         *) ARGS+=("$arg") ;;
     esac
 done
+
+# Ensure -Os is always set for ReleaseSmall
+if [ "$HAS_OPT" -eq 0 ]; then
+    ARGS+=("-Os")
+fi
+
+# Strip debug info for smaller binary
+ARGS+=("-s")
+
+# WASI defines CLOCK_REALTIME/CLOCK_MONOTONIC as pointers, not integers.
+# Zig's clang treats -Wint-conversion as an error by default, so demote it.
+ARGS+=("-Wno-error=int-conversion" "-Wno-error=incompatible-pointer-types" "-Wno-error=date-time")
 
 exec zig cc -target wasm32-wasi "${ARGS[@]}"
 ZIGCC
@@ -91,48 +128,120 @@ exec zig ranlib "$@"
 ZIGRANLIB
 chmod +x "$ZIG_WRAPPER_DIR/zig-ranlib"
 
-# Step 3: Configure CPython with zig cc
-info "Configuring CPython with zig cc for wasm32-wasi..."
-mkdir -p "$BUILD_DIR"
-cd "$CPYTHON_DIR"
+# zig cc as CPP (preprocessor only)
+cat > "$ZIG_WRAPPER_DIR/zig-cpp" << 'ZIGCPP'
+#!/usr/bin/env bash
+ARGS=()
+for arg in "$@"; do
+    case "$arg" in
+        -pthread|-lpthread|-ldl|-lm|-lutil|-lrt) continue ;;
+        -framework|CoreFoundation|SystemConfiguration) continue ;;
+        *) ARGS+=("$arg") ;;
+    esac
+done
+exec zig cc -target wasm32-wasi -E "${ARGS[@]}"
+ZIGCPP
+chmod +x "$ZIG_WRAPPER_DIR/zig-cpp"
 
-# Clean previous builds
-make distclean 2>/dev/null || true
+# Step 3: Out-of-tree build with zig cc
+info "Configuring CPython with zig cc for wasm32-wasi (ReleaseSmall)..."
+mkdir -p "$BUILD_DIR"
+cd "$BUILD_DIR"
+
+# Clean previous zig-wasi build (including config cache)
+rm -rf "$BUILD_DIR"/*
+rm -f "$BUILD_DIR"/../config.cache 2>/dev/null
+
+BUILD_TRIPLE="$(uname -m)-apple-darwin"
 
 CONFIG_SITE="$ROOT_DIR/scripts/config.site-wasi" \
-./configure \
+PKG_CONFIG=false \
+"$CPYTHON_DIR/configure" \
     --host=wasm32-wasi \
-    --build="$(./config.guess)" \
-    --with-build-python="$NATIVE_BUILD_DIR/python" \
+    --build="$BUILD_TRIPLE" \
+    --with-build-python="$NATIVE_PYTHON" \
     CC="$ZIG_WRAPPER_DIR/zig-cc" \
+    CPP="$ZIG_WRAPPER_DIR/zig-cpp" \
     AR="$ZIG_WRAPPER_DIR/zig-ar" \
     RANLIB="$ZIG_WRAPPER_DIR/zig-ranlib" \
+    CFLAGS="-Os -DNDEBUG -fno-strict-aliasing" \
+    LDFLAGS="-s" \
     --disable-ipv6 \
     --disable-shared \
     --without-ensurepip \
     --without-pymalloc \
+    --disable-test-modules \
     --config-cache \
     ac_cv_file__dev_ptmx=no \
-    ac_cv_file__dev_ptc=no
+    ac_cv_file__dev_ptc=no \
+    py_cv_module__bz2=n/a \
+    py_cv_module__lzma=n/a \
+    py_cv_module_zlib=n/a \
+    py_cv_module_binascii=n/a \
+    py_cv_module__socket=n/a \
+    py_cv_module__ctypes=n/a \
+    py_cv_module_select=n/a \
+    py_cv_module_faulthandler=n/a \
+    py_cv_module_resource=n/a \
+    py_cv_module_grp=n/a \
+    py_cv_module_pwd=n/a \
+    py_cv_module_fcntl=n/a \
+    py_cv_module_mmap=n/a \
+    py_cv_module_termios=n/a \
+    py_cv_module_syslog=n/a \
+    py_cv_module__multiprocessing=n/a \
+    py_cv_module__posixsubprocess=n/a \
+    py_cv_module__posixshmem=n/a \
+    py_cv_module__curses=n/a \
+    py_cv_module__curses_panel=n/a \
+    py_cv_module__dbm=n/a \
+    py_cv_module__gdbm=n/a \
+    py_cv_module__tkinter=n/a \
+    py_cv_module__scproxy=n/a
+
+# Step 3b: Patch pyconfig.h - use CPython pthread types instead of musl
+info "Patching pyconfig.h for WASI..."
+sed -i '' 's/^#define HAVE_PTHREAD_H 1/\/* #undef HAVE_PTHREAD_H *\//' "$BUILD_DIR/pyconfig.h"
 
 # Step 4: Build
-info "Building CPython..."
-make -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu)" 2>&1 | tee "$BUILD_DIR/build.log"
+info "Building CPython with zig cc (ReleaseSmall)..."
+NCPU="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
+make -j"$NCPU" 2>&1 | tee "$BUILD_DIR/build.log"
 
-# Step 5: Copy output
-info "Copying build artifacts..."
-if [ -f python.wasm ] || [ -f python ]; then
-    cp python.wasm "$BUILD_DIR/python.wasm" 2>/dev/null || cp python "$BUILD_DIR/python.wasm" 2>/dev/null || true
+# Step 5: Verify python.wasm exists
+if [ ! -f "$BUILD_DIR/python.wasm" ]; then
+    # Some builds produce just 'python' without .wasm extension
+    if [ -f "$BUILD_DIR/python" ] && file "$BUILD_DIR/python" | grep -q "WebAssembly"; then
+        mv "$BUILD_DIR/python" "$BUILD_DIR/python.wasm"
+    else
+        error "python.wasm not found after build. Check $BUILD_DIR/build.log"
+    fi
 fi
 
-# Step 6: Create runner script
+# Step 6: Strip WASM with wasm-opt if available (additional size reduction)
+if command -v wasm-opt >/dev/null 2>&1; then
+    info "Running wasm-opt -Os for additional size reduction..."
+    ORIG_SIZE=$(stat -f%z "$BUILD_DIR/python.wasm" 2>/dev/null || stat -c%s "$BUILD_DIR/python.wasm")
+    wasm-opt -Os "$BUILD_DIR/python.wasm" -o "$BUILD_DIR/python.wasm.opt"
+    mv "$BUILD_DIR/python.wasm.opt" "$BUILD_DIR/python.wasm"
+    NEW_SIZE=$(stat -f%z "$BUILD_DIR/python.wasm" 2>/dev/null || stat -c%s "$BUILD_DIR/python.wasm")
+    info "wasm-opt: ${ORIG_SIZE} -> ${NEW_SIZE} bytes ($(( (ORIG_SIZE - NEW_SIZE) * 100 / ORIG_SIZE ))% reduction)"
+fi
+
+# Step 7: Create runner script
 cat > "$BUILD_DIR/python.sh" << RUNNER
 #!/usr/bin/env bash
-exec wasmtime run --dir=. --dir=/tmp "$BUILD_DIR/python.wasm" -- "\$@"
+# Run zig-compiled CPython WASM via wasmtime
+exec wasmtime run \\
+    --wasm max-wasm-stack=8388608 \\
+    --wasi preview2 \\
+    --dir "$CPYTHON_DIR"::/ \\
+    --env PYTHONPATH=/cross-build/wasm32-wasi/build/lib.wasi-wasm32-3.13 \\
+    "$BUILD_DIR/python.wasm" -- "\$@"
 RUNNER
 chmod +x "$BUILD_DIR/python.sh"
 
-# Step 7: Test
+# Step 8: Test
 info "Testing zig cc WASI build..."
 RESULT=$("$BUILD_DIR/python.sh" -c "import sys; print(f'Python {sys.version} on {sys.platform}')" 2>&1) || true
 if echo "$RESULT" | grep -q "Python"; then
@@ -142,12 +251,25 @@ else
     echo "$RESULT"
 fi
 
+# Report sizes
 echo ""
-info "Phase 2 complete. Zig-compiled CPython WASI build is at:"
-info "  $BUILD_DIR/python.sh"
+WASM_SIZE=$(du -h "$BUILD_DIR/python.wasm" | cut -f1)
+WASI_SDK_WASM=""
+for candidate in \
+    "$CPYTHON_DIR/cross-build/wasm32-wasi/python.wasm" \
+    "$CPYTHON_DIR/cross-build/wasm32-wasip1/python.wasm"; do
+    if [ -f "$candidate" ]; then
+        WASI_SDK_WASM=$(du -h "$candidate" | cut -f1)
+        break
+    fi
+done
 
-# Compare sizes
-if [ -f "$BUILD_DIR/python.wasm" ]; then
-    SIZE=$(du -h "$BUILD_DIR/python.wasm" | cut -f1)
-    info "WASM size: $SIZE"
+info "Phase 2 complete."
+info "  zig cc WASM size:   $WASM_SIZE"
+if [ -n "$WASI_SDK_WASM" ]; then
+    info "  WASI SDK WASM size: $WASI_SDK_WASM"
 fi
+info "  Binary: $BUILD_DIR/python.sh"
+echo ""
+info "Test with:"
+info "  $BUILD_DIR/python.sh -c \"print('hello from zig-compiled WASI Python')\""

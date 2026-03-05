@@ -18,9 +18,10 @@ pub fn build(b: *std.Build) void {
     // Build each module
     const modules = [_]struct { name: []const u8, root: []const u8 }{
         .{ .name = "_json", .root = "_json/module.zig" },
-        // Add more modules here as they're implemented:
+        .{ .name = "_hashlib", .root = "_hashlib/module.zig" },
+        .{ .name = "_collections", .root = "_collections/module.zig" },
+        .{ .name = "_functools", .root = "_functools/module.zig" },
         // .{ .name = "_sre", .root = "_sre/module.zig" },
-        // .{ .name = "_collections", .root = "_collections/module.zig" },
         // .{ .name = "math", .root = "_math/module.zig" },
         // .{ .name = "_datetime", .root = "_datetime/module.zig" },
     };
