@@ -6,24 +6,26 @@ CPython 3.13 compiled to WASM with `zig cc`. 5.7MB binary (1.8MB gzipped). Runs 
 
 ## Quick Start
 
+```bash
+# Create a new project
+npx pymode init my-worker
+cd my-worker
+
+# Start local dev server (uses native Python, instant reload)
+pymode dev
+# → Listening on http://localhost:8787
+
+# Deploy to Cloudflare Workers
+pymode deploy
+```
+
+Your handler (`src/entry.py`):
+
 ```python
-# src/entry.py
 from pymode.workers import Response
 
 def on_fetch(request, env):
     return Response("Hello from PyMode!")
-```
-
-```toml
-# pyproject.toml
-[tool.pymode]
-main = "src/entry.py"
-```
-
-```bash
-# Bundle and deploy
-./scripts/bundle-project.sh ./my-project
-cd worker && npx wrangler deploy
 ```
 
 ## How It Works
@@ -185,7 +187,26 @@ Pre-initialize the interpreter at deploy time for ~5ms cold starts:
      [Client]
 ```
 
-## Build
+## CLI
+
+```bash
+pymode init <name>       # Scaffold a new project
+pymode dev               # Local dev server (native Python, hot reload)
+pymode deploy            # Bundle + deploy to Cloudflare Workers
+```
+
+Options:
+- `pymode dev --port 3000` — Custom port (default: 8787)
+- `pymode dev --entry app.py` — Override entry point
+- `pymode deploy ./path/to/project` — Deploy from a specific directory
+
+The dev server uses native Python for instant feedback (~35ms per request).
+No WASM build required for local development.
+
+## Building from Source
+
+Only needed if you're contributing to PyMode or need a custom python.wasm build.
+Users can use the pre-built binary from npm/releases.
 
 ```bash
 # Prerequisites: python3, wasmtime, zig 0.15+, wasm-opt
@@ -198,18 +219,13 @@ Pre-initialize the interpreter at deploy time for ~5ms cold starts:
 
 # (Optional) Build Wizer snapshot for fast cold starts
 ./scripts/build-wizer.sh
-
-# Bundle your project
-./scripts/bundle-project.sh ./my-project
-
-# Deploy
-cd worker && npx wrangler deploy
 ```
 
 ## Project Structure
 
 | Path | Description |
 |------|-------------|
+| `cli/` | `pymode` CLI (init, dev, deploy) |
 | `worker/src/worker.ts` | Stateless Worker entry point |
 | `worker/src/python-do.ts` | PythonDO — WASM instance + host imports + Asyncify |
 | `worker/src/asyncify.ts` | Asyncify runtime (stack unwind/rewind) |

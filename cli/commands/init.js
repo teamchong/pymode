@@ -1,0 +1,83 @@
+// pymode init <project-name> — scaffold a new PyMode project
+
+import { mkdirSync, writeFileSync, existsSync } from "fs";
+import { join } from "path";
+
+export async function init(args) {
+  const name = args[0];
+  if (!name) {
+    console.error("Usage: pymode init <project-name>");
+    process.exit(1);
+  }
+
+  const dir = join(process.cwd(), name);
+  if (existsSync(dir)) {
+    console.error(`Directory already exists: ${name}`);
+    process.exit(1);
+  }
+
+  console.log(`Creating PyMode project: ${name}`);
+
+  mkdirSync(join(dir, "src"), { recursive: true });
+
+  // pyproject.toml
+  writeFileSync(
+    join(dir, "pyproject.toml"),
+    `[project]
+name = "${name}"
+version = "0.1.0"
+
+[tool.pymode]
+main = "src/entry.py"
+`
+  );
+
+  // Entry point
+  writeFileSync(
+    join(dir, "src", "entry.py"),
+    `"""${name} — PyMode Worker."""
+
+from pymode.workers import Response
+
+
+def on_fetch(request, env):
+    """Handle incoming HTTP requests."""
+
+    if request.path == "/":
+        return Response("Hello from ${name}!")
+
+    if request.path == "/json":
+        return Response.json({
+            "message": "Hello from ${name}!",
+            "method": request.method,
+            "path": request.path,
+        })
+
+    return Response("Not Found", status=404)
+`
+  );
+
+  // .gitignore
+  writeFileSync(
+    join(dir, ".gitignore"),
+    `__pycache__/
+*.pyc
+.venv/
+node_modules/
+.wrangler/
+`
+  );
+
+  console.log(`
+  Done! Created ${name}/
+
+  Files:
+    src/entry.py        Your handler — edit on_fetch() here
+    pyproject.toml      Project config
+
+  Next steps:
+    cd ${name}
+    pymode dev          Start local dev server
+    pymode deploy       Deploy to Cloudflare Workers
+`);
+}

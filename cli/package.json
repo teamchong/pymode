@@ -1,0 +1,28 @@
+{
+  "name": "pymode",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Python on Cloudflare Workers — write on_fetch handlers, deploy to the edge",
+  "bin": {
+    "pymode": "./bin/pymode.js"
+  },
+  "files": [
+    "bin/",
+    "commands/",
+    "templates/",
+    "runtime/"
+  ],
+  "keywords": [
+    "cloudflare",
+    "workers",
+    "python",
+    "wasm",
+    "wasi",
+    "cpython",
+    "edge"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  }
+}
