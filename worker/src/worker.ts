@@ -705,8 +705,106 @@ const EXIT_NEEDS_FETCH = 254;
 const MAX_TRAMPOLINE_ROUNDS = 10;
 const PENDING_FETCHES_PATH = "tmp/_pymode_pending_fetches.json";
 const FETCH_RESPONSES_DIR = "tmp/_pymode_fetch_responses";
-const PENDING_TCP_PATH = "tmp/_pymode_pending_tcp.json";
-const TCP_RESPONSES_DIR = "tmp/_pymode_tcp";
+const PENDING_TCP_OPS_PATH = "tmp/_pymode_tcp_ops.json";
+const TCP_RESPONSES_DIR = "tmp/_pymode_tcp_responses";
+
+interface TcpOp {
+  op: "connect" | "send" | "recv" | "close";
+  connId: string;
+  host?: string;
+  port?: number;
+  dataBase64?: string;
+  recvId?: number;
+  bufsize?: number;
+}
+
+// Replay a TCP ops log with persistent connections.
+// Connections stay open across operations. Each recv writes its response
+// to the VFS so the next Python run can find it.
+async function replayTcpOps(
+  ops: TcpOp[],
+  files: Record<string, Uint8Array>,
+  encoder: TextEncoder
+): Promise<void> {
+  const { connect } = await import("cloudflare:sockets");
+  const connections = new Map<string, { socket: any; writer: WritableStreamDefaultWriter; reader: ReadableStreamDefaultReader }>();
+
+  for (const op of ops) {
+    switch (op.op) {
+      case "connect": {
+        if (!connections.has(op.connId)) {
+          const socket = connect({ hostname: op.host!, port: op.port! });
+          const writer = socket.writable.getWriter();
+          const reader = socket.readable.getReader();
+          connections.set(op.connId, { socket, writer, reader });
+        }
+        break;
+      }
+      case "send": {
+        const conn = connections.get(op.connId);
+        if (!conn) throw new Error(`TCP send on unknown connection: ${op.connId}`);
+        const data = base64Decode(op.dataBase64!);
+        await conn.writer.write(data);
+        break;
+      }
+      case "recv": {
+        const conn = connections.get(op.connId);
+        if (!conn) throw new Error(`TCP recv on unknown connection: ${op.connId}`);
+        const respPath = `${TCP_RESPONSES_DIR}/${op.recvId}`;
+
+        // Always read from the socket to keep the protocol in sync,
+        // even if we already have a cached response from a previous round.
+        const chunks: Uint8Array[] = [];
+        let totalLen = 0;
+        const bufsize = op.bufsize || 65536;
+
+        const timeoutPromise = new Promise<{ value: undefined; done: true }>((resolve) =>
+          setTimeout(() => resolve({ value: undefined, done: true }), 10000)
+        );
+
+        // Read at least one chunk — database protocols send discrete messages
+        while (totalLen < bufsize) {
+          const result = await Promise.race([conn.reader.read(), timeoutPromise]);
+          if (result.done || !result.value) break;
+          chunks.push(result.value);
+          totalLen += result.value.length;
+          break;
+        }
+
+        // Only write to VFS if not already cached
+        if (!files[respPath]) {
+          const recvData = new Uint8Array(totalLen);
+          let off = 0;
+          for (const c of chunks) { recvData.set(c, off); off += c.length; }
+          const meta = JSON.stringify({ dataBase64: base64Encode(recvData) });
+          files[respPath] = encoder.encode(meta);
+        }
+        break;
+      }
+      case "close": {
+        const conn = connections.get(op.connId);
+        if (conn) {
+          try {
+            conn.writer.releaseLock();
+            conn.reader.releaseLock();
+            await conn.socket.close();
+          } catch { /* ignore close errors */ }
+          connections.delete(op.connId);
+        }
+        break;
+      }
+    }
+  }
+
+  // Close any connections still open (Python may not have closed them yet)
+  for (const [, conn] of connections) {
+    try {
+      conn.writer.releaseLock();
+      conn.reader.releaseLock();
+      await conn.socket.close();
+    } catch { /* ignore */ }
+  }
+}
 
 const DATA_PREFIX = "data/";
 
@@ -781,9 +879,9 @@ async function runPythonWithFetch(
     });
 
     const pendingFetchRaw = files[PENDING_FETCHES_PATH];
-    const pendingTcpRaw = files[PENDING_TCP_PATH];
+    const pendingTcpOpsRaw = files[PENDING_TCP_OPS_PATH];
 
-    if (!pendingFetchRaw && !pendingTcpRaw) {
+    if (!pendingFetchRaw && !pendingTcpOpsRaw) {
       // Exit 254 but no pending requests — treat as error
       return { stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode };
     }
@@ -826,66 +924,23 @@ async function runPythonWithFetch(
       delete files[PENDING_FETCHES_PATH];
     }
 
-    // Handle TCP sessions (database drivers, raw sockets)
-    if (pendingTcpRaw) {
-      const sessions: Array<{
-        sessionId: string;
-        host: string;
-        port: number;
-        sendDataBase64: string;
-        recvSize: number;
-      }> = JSON.parse(decoder.decode(pendingTcpRaw));
-
-      for (const sess of sessions) {
-        try {
-          const { connect } = await import("cloudflare:sockets");
-          const socket = connect({ hostname: sess.host, port: sess.port });
-
-          // Send buffered data
-          const sendData = base64Decode(sess.sendDataBase64);
-          const writer = socket.writable.getWriter();
-          await writer.write(sendData);
-          writer.releaseLock();
-
-          // Read response — read the first chunk(s) up to recvSize.
-          // Uses a 5-second timeout to prevent hanging on slow/stuck connections.
-          const reader = socket.readable.getReader();
-          const chunks: Uint8Array[] = [];
-          let totalLen = 0;
-          const readWithTimeout = async () => {
-            const timeout = new Promise<{ value: undefined; done: true }>((resolve) =>
-              setTimeout(() => resolve({ value: undefined, done: true }), 5000)
-            );
-            while (totalLen < sess.recvSize) {
-              const result = await Promise.race([reader.read(), timeout]);
-              if (result.done || !result.value) break;
-              chunks.push(result.value);
-              totalLen += result.value.length;
-            }
-          };
-          await readWithTimeout();
-          reader.releaseLock();
-          await socket.close();
-
-          // Combine chunks
-          const recvData = new Uint8Array(totalLen);
-          let off = 0;
-          for (const c of chunks) { recvData.set(c, off); off += c.length; }
-
-          const meta = JSON.stringify({
-            dataBase64: base64Encode(recvData),
-          });
-          files[`${TCP_RESPONSES_DIR}/${sess.sessionId}`] = encoder.encode(meta);
-        } catch (tcpErr) {
-          // Write error response so Python can handle it
+    // Handle TCP operations (stateful — replays full conversation log)
+    if (pendingTcpOpsRaw) {
+      const ops: TcpOp[] = JSON.parse(decoder.decode(pendingTcpOpsRaw));
+      try {
+        await replayTcpOps(ops, files, encoder);
+      } catch (tcpErr) {
+        // Find the last recv op and write an error response for it
+        const lastRecv = [...ops].reverse().find(op => op.op === "recv");
+        if (lastRecv && lastRecv.recvId !== undefined) {
           const meta = JSON.stringify({
             error: tcpErr instanceof Error ? tcpErr.message : String(tcpErr),
             dataBase64: "",
           });
-          files[`${TCP_RESPONSES_DIR}/${sess.sessionId}`] = encoder.encode(meta);
+          files[`${TCP_RESPONSES_DIR}/${lastRecv.recvId}`] = encoder.encode(meta);
         }
       }
-      delete files[PENDING_TCP_PATH];
+      delete files[PENDING_TCP_OPS_PATH];
     }
   }
 
