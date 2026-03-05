@@ -4,8 +4,9 @@
 
 Run the entire CPython WASM instance inside a Durable Object. The DO holds the
 interpreter, TCP connections, and CF binding access in one place. Host-provided
-WASM imports replace the VFS trampoline. JSPI suspends/resumes the WASM stack
-for async I/O. Deploy-time Wizer snapshots eliminate import overhead.
+WASM imports replace the VFS trampoline. Async ops use an in-process trampoline
+(throw → catch → await → re-run, microseconds not network hops).
+Deploy-time Wizer snapshots eliminate import overhead.
 
 This matches CF Python Workers (Pyodide) on every dimension and exceeds them
 on binary size (5.7MB vs 20MB+) and portability (WASI vs Emscripten).
@@ -52,7 +53,7 @@ on binary size (5.7MB vs 20MB+) and portability (WASI vs Emscripten).
 |---------|---------------------|-------------------|
 | TCP connections | Separate TcpPoolDO, RPC per socket op | Same memory space, direct access |
 | Interpreter state | Lost each request | Persists 70-140s (warm interpreter) |
-| Trampoline cost | Re-execute entire Python per I/O op | In-process (microseconds) or zero with JSPI |
+| Trampoline cost | Re-execute entire Python per I/O op | In-process (microseconds), same memory space |
 | CF bindings | VFS file passing | Direct host import calls |
 | Connection pool | DO holds socket, Worker holds WASM — two hops | One DO holds both — zero hops |
 | Cold start | Every request | Only after 70-140s idle |
@@ -477,54 +478,68 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
 }
 ```
 
-## JSPI: Bridging Sync Python to Async JS
+## Asyncify: Bridging Sync Python to Async JS
 
-JSPI (JavaScript Promise Integration) is a WASM proposal (Phase 4, available
-in V8 since Chrome 123) that lets WASM imports return Promises. When a WASM
-function calls such an import, the WASM stack suspends. When the Promise
-resolves, the stack resumes with the result.
+Binaryen's Asyncify instruments the WASM binary at build time so that async
+host imports can suspend/resume the WASM call stack. This is the same approach
+CF Python Workers (Pyodide) use — Pyodide compiles with Emscripten's Asyncify.
 
-### How JSPI Wires Up
+### How It Works
+
+```
+zig cc → python.wasm → wasm-opt --asyncify → python.wasm (instrumented)
+```
+
+At runtime, when Python calls an async host import (e.g. `tcp_recv`):
+
+1. The JS import function returns a Promise
+2. Asyncify unwinds the WASM call stack, saving all locals to a memory buffer
+3. JS awaits the Promise (socket read, KV get, fetch, etc.)
+4. When the Promise resolves, Asyncify rewinds the stack from the buffer
+5. Execution resumes at the exact point it suspended, with the return value
+
+From Python's perspective, `socket.recv()` is a normal synchronous call.
+Single `_start()` invocation, zero re-execution.
+
+### Build Command
+
+```bash
+wasm-opt -O2 --asyncify \
+  --pass-arg=asyncify-imports@pymode.tcp_recv,pymode.http_fetch,pymode.kv_get,pymode.kv_put,pymode.kv_delete,pymode.r2_get,pymode.r2_put,pymode.d1_exec \
+  --pass-arg=asyncify-ignore-indirect \
+  python.wasm -o python.wasm
+```
+
+The `asyncify-imports@` list tells Binaryen which imports are async. Only call
+paths that reach these imports get instrumented — everything else is untouched.
+`asyncify-ignore-indirect` reduces overhead by not instrumenting indirect calls.
+
+### JS Host Implementation
 
 ```typescript
-// Without JSPI — host import must be synchronous:
-tcp_recv(connId, bufPtr, bufLen) { /* can't await here */ }
-
-// With JSPI — host import returns a Promise, WASM suspends:
-const suspendingRecv = new WebAssembly.Suspending(
-  async (connId: number, bufPtr: number, bufLen: number): Promise<number> => {
-    const conn = this.tcpConns.get(connId)!;
-    const { value, done } = await conn.reader.read();  // real async await
-    if (done || !value) return 0;
-    const n = Math.min(value.length, bufLen);
-    this.getMemBytes().set(value.subarray(0, n), bufPtr);
-    return n;
-  }
-);
-
-// When instantiating WASM:
-const instance = await WebAssembly.instantiate(wasmModule, {
-  pymode: {
-    tcp_connect: hostImports.tcp_connect,  // sync — no await needed
-    tcp_send: hostImports.tcp_send,        // sync — fire and forget
-    tcp_recv: suspendingRecv,              // SUSPENDING — returns Promise
-    tcp_close: hostImports.tcp_close,      // sync
-    http_fetch: suspendingFetch,           // SUSPENDING
-    kv_get: suspendingKvGet,              // SUSPENDING
-    kv_put: suspendingKvPut,              // SUSPENDING
-    // ... all async ops are Suspending
+// Async imports just return Promises — Asyncify handles the rest
+const pymodeImports = {
+  tcp_recv: async (connId, bufPtr, bufLen) => {
+    const { value } = await conn.reader.read();  // real async I/O
+    memory.set(value, bufPtr);
+    return value.length;
   },
-});
+  http_fetch: async (urlPtr, urlLen, ...) => {
+    const resp = await fetch(url, { method, headers, body });
+    // ...
+    return responseId;
+  },
+  // Sync imports return directly — no Promise, no suspension
+  tcp_connect: (hostPtr, hostLen, port) => { ... return connId; },
+  tcp_send: (connId, dataPtr, dataLen) => { ... return dataLen; },
+};
 
-// The _start export must be wrapped as Promising:
-const promisingStart = WebAssembly.promising(
-  instance.exports._start as () => void
-);
-
-// Now calling promisingStart() returns a Promise.
-// When Python calls tcp_recv(), WASM suspends, JS awaits the socket,
-// WASM resumes. From Python's perspective, recv() is synchronous.
-await promisingStart();
+// AsyncifyRuntime wraps imports and handles unwind/rewind
+const asyncify = new AsyncifyRuntime();
+const wrapped = asyncify.wrapImports({ pymode: pymodeImports }, ASYNC_IMPORTS);
+const instance = new WebAssembly.Instance(wasmModule, wrapped);
+asyncify.init(instance);
+await asyncify.callExport("_start");  // single call, handles all async ops
 ```
 
 ### Async Import Classification
@@ -533,33 +548,31 @@ await promisingStart();
 |-------------|-----------|-----|
 | `tcp_connect` | Sync | `cloudflare:sockets` `connect()` returns synchronously |
 | `tcp_send` | Sync | `writer.write()` buffers, doesn't need to await |
-| `tcp_recv` | **Async (Suspending)** | Must await `reader.read()` |
+| `tcp_recv` | **Async** | Must await `reader.read()` |
 | `tcp_close` | Sync | Cleanup, no await needed |
-| `http_fetch` | **Async (Suspending)** | Must await `fetch()` + body |
+| `http_fetch` | **Async** | Must await `fetch()` + body |
 | `http_response_status` | Sync | Reads from in-memory buffer |
 | `http_response_read` | Sync | Reads from in-memory buffer |
 | `http_response_header` | Sync | Reads from in-memory buffer |
-| `kv_get` | **Async (Suspending)** | Must await `env.KV.get()` |
-| `kv_put` | **Async (Suspending)** | Must await `env.KV.put()` |
-| `kv_delete` | **Async (Suspending)** | Must await `env.KV.delete()` |
-| `r2_get` | **Async (Suspending)** | Must await `env.R2.get()` |
-| `r2_put` | **Async (Suspending)** | Must await `env.R2.put()` |
-| `d1_exec` | **Async (Suspending)** | Must await `env.D1.prepare().all()` |
+| `kv_get` | **Async** | Must await `env.KV.get()` |
+| `kv_put` | **Async** | Must await `env.KV.put()` |
+| `kv_delete` | **Async** | Must await `env.KV.delete()` |
+| `r2_get` | **Async** | Must await `env.R2.get()` |
+| `r2_put` | **Async** | Must await `env.R2.put()` |
+| `d1_exec` | **Async** | Must await `env.D1.prepare().all()` |
 | `env_get` | Sync | Reads from env object |
 | `console_log` | Sync | Calls console.log() |
 
-### Fallback Without JSPI
+### Size Impact
 
-If workerd doesn't support JSPI, async imports use the in-process trampoline:
+Asyncify adds ~30% binary size overhead due to stack instrumentation.
+With `-O2` and `asyncify-ignore-indirect`, this is minimized:
 
-1. Python calls `tcp_recv()` → host import sets a pending-op marker and throws
-2. The `run()` method catches the throw, sees the pending op
-3. JS `await`s the async operation (socket read, KV get, etc.)
-4. JS writes the result into WASM memory at the designated buffer
-5. JS re-invokes `_start` — Python replays to the same point, finds the result
+| | Without Asyncify | With Asyncify |
+|---|---|---|
+| python.wasm | ~5.7MB | ~7.4MB |
 
-This is the same trampoline pattern but in-process (no RPC, no network,
-microseconds not milliseconds) because WASM and connections live in the same DO.
+Still well within CF's 10MB Worker limit.
 
 ## Wizer: Deploy-Time Memory Snapshots
 
@@ -699,49 +712,33 @@ deleted_classes = ["TcpPoolDO"]
 
 ## Implementation Order
 
-### Phase 1: Host imports for TCP (replace VFS trampoline)
+### Phase 1: Host imports + Asyncify (DONE)
 
-**Goal**: Python calls `pymode_tcp_recv()` as a WASM import instead of writing
-to VFS and exiting 254. Use in-process trampoline (no JSPI yet).
+**Goal**: Python calls `pymode_tcp_recv()` as a WASM import. Asyncify
+suspends/resumes the WASM stack for async ops. Zero re-execution.
 
 1. Define `pymode` WASM import namespace in C header (`pymode_imports.h`)
 2. Build CPython with the `pymode` imports linked (zig cc `-Wl,--allow-undefined`)
-3. JS provides `pymode.*` functions when instantiating WASM
-4. Move `python.wasm` instantiation into PythonDO
-5. Implement `tcp_connect`, `tcp_send`, `tcp_close` as sync host imports
-6. Implement `tcp_recv` with in-process trampoline (throw → catch → await → re-run)
-7. Rewrite `pymode/tcp.py` to call host imports via ctypes instead of VFS
+3. Post-process with `wasm-opt --asyncify` to instrument async call paths
+4. JS provides `pymode.*` functions when instantiating WASM
+5. Move `python.wasm` instantiation into PythonDO
+6. Async imports (tcp_recv, http_fetch, kv_*, r2_*, d1_exec) return Promises
+7. AsyncifyRuntime handles unwind/rewind transparently
+8. Rewrite pymode Python modules to call host imports via `_pymode` C module
 
-**Files changed:**
-- `lib/pymode-imports/pymode_imports.h` (new — C declarations)
-- `lib/pymode-imports/pymode_imports.c` (new — Python C module wrapping the imports)
-- `worker/src/python-do.ts` (new — PythonDO class)
-- `worker/src/worker.ts` (modified — route to PythonDO)
-- `lib/pymode/tcp.py` (rewritten — call host imports)
-- `scripts/build-phase2.sh` (modified — link pymode imports)
-- `worker/wrangler.toml` (modified — PythonDO binding)
+**Files:**
+- `lib/pymode-imports/pymode_imports.h` — C declarations for pymode.* namespace
+- `lib/pymode-imports/pymode_imports.c` — CPython extension module `_pymode`
+- `worker/src/asyncify.ts` — Asyncify runtime (unwind/rewind/wrap)
+- `worker/src/python-do.ts` — PythonDO class with all host imports
+- `worker/src/worker.ts` — re-exports PythonDO
+- `lib/pymode/tcp.py` — host imports with legacy fallback
+- `lib/pymode/http.py` — host imports with legacy fallback
+- `lib/pymode/env.py` — KV, R2, D1 access
+- `scripts/build-phase2.sh` — compile pymode imports, asyncify pass
+- `worker/wrangler.toml` — PythonDO binding
 
-### Phase 2: Host imports for HTTP, KV, R2, D1
-
-**Goal**: Full CF binding access from Python via host imports.
-
-1. Implement `http_fetch` + response reading (in-process trampoline)
-2. Implement `kv_get`, `kv_put`, `kv_delete`
-3. Implement `r2_get`, `r2_put`
-4. Implement `d1_exec`
-5. Write `pymode/env.py` with KV, R2, D1 classes
-6. Rewrite `pymode/http.py` to call host imports
-
-### Phase 3: JSPI integration
-
-**Goal**: Replace in-process trampoline with JSPI. Zero re-executions.
-
-1. Test JSPI availability in workerd: `typeof WebAssembly.Suspending`
-2. Wrap async host imports with `new WebAssembly.Suspending(asyncFn)`
-3. Wrap `_start` with `WebAssembly.promising()`
-4. Remove trampoline fallback code paths
-
-### Phase 4: Wizer deploy-time snapshots
+### Phase 2: Wizer deploy-time snapshots
 
 **Goal**: 5ms cold starts.
 
@@ -750,7 +747,7 @@ to VFS and exiting 254. Use in-process trampoline (no JSPI yet).
 3. Pre-import stdlib + pymode shims in snapshot
 4. Measure cold start improvement
 
-### Phase 5: Threading via child DOs
+### Phase 3: Threading via child DOs
 
 **Goal**: Real parallelism for `pthread_create`.
 
@@ -764,9 +761,9 @@ to VFS and exiting 254. Use in-process trampoline (no JSPI yet).
 | | CF Python Workers | PyMode (target) |
 |---|---|---|
 | Runtime | Pyodide (Emscripten) | CPython (zig cc, WASI) |
-| Binary size | ~20MB+ | 5.7MB |
+| Binary size | ~20MB+ | ~7.4MB (with Asyncify) |
 | Cold start | ~50ms (snapshot) | ~5ms (Wizer snapshot) |
-| Async bridge | Asyncify | JSPI |
+| Async bridge | Asyncify (Emscripten) | Asyncify (Binaryen) |
 | FFI to CF services | Pyodide FFI (JS ↔ Python) | Host imports (WASM ↔ JS) |
 | TCP connections | `cloudflare:sockets` via FFI | `cloudflare:sockets` via host import |
 | DB access | Direct (Hyperdrive, D1) | Direct (host imports for KV, R2, D1) |
