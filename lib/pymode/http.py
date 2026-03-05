@@ -1,23 +1,36 @@
-"""PyMode HTTP bridge — enables sync HTTP from WASM via re-execution trampoline.
+"""PyMode HTTP bridge — host imports for direct HTTP via PythonDO.
 
-On first encounter of a fetch request, queues it to VFS and exits with code 254.
-The JS host catches exit 254, executes all pending fetches via Promise.all,
-writes responses to VFS, and re-runs Python. On the re-run, this module finds
-the pre-fetched response in VFS and returns it directly.
+When running inside PythonDO, HTTP calls go through WASM host imports
+(the _pymode C extension module). The JS host performs the fetch and
+buffers the response for Python to read back synchronously.
+
+When _pymode is not available (legacy VFS trampoline mode), falls back
+to the original ops-log approach with sys.exit(254).
 
 Usage:
     import pymode.http
     pymode.http.install()  # patches urllib.request
+
+    # Direct usage:
+    resp = pymode.http.fetch("https://example.com")
+    print(resp.status, resp.read())
+
+    # Or via get/post helpers:
+    resp = pymode.http.get("https://api.example.com/data")
 """
 
-import os
 import json
-import sys
-import base64
+
+_pymode = None
+try:
+    import _pymode as _pymode_mod
+    _pymode = _pymode_mod
+except ImportError:
+    pass
 
 
-PENDING_PATH = "/stdlib/tmp/_pymode_pending_fetches.json"
-RESPONSE_DIR = "/stdlib/tmp/_pymode_fetch_responses"
+def _use_host_imports():
+    return _pymode is not None
 
 
 class HTTPResponse:
@@ -62,13 +75,53 @@ class HTTPResponse:
 
 
 def fetch(url, method="GET", headers=None, body=None):
-    """Perform an HTTP fetch via the re-execution trampoline.
+    """Perform an HTTP fetch via host imports or the VFS trampoline."""
+    if _use_host_imports():
+        return _fetch_host_imports(url, method, headers, body)
+    else:
+        return _fetch_legacy(url, method, headers, body)
 
-    If a cached response exists in VFS, returns it immediately.
-    Otherwise, queues the request and exits with code 254.
-    """
-    # Check all response files — key is the request index from the pending array
-    # Scan for a matching response by looking at each index's stored URL
+
+def _fetch_host_imports(url, method, headers, body):
+    """Fetch via _pymode host imports — runs inside PythonDO."""
+    body_bytes = b""
+    if body is not None:
+        body_bytes = body if isinstance(body, bytes) else body.encode()
+
+    headers_json = json.dumps(dict(headers or {}))
+    resp_id = _pymode.http_fetch(url, method or "GET", body_bytes, headers_json)
+
+    status = _pymode.http_response_status(resp_id)
+
+    # Read the full response body
+    chunks = []
+    while True:
+        chunk = _pymode.http_response_read(resp_id, 65536)
+        if not chunk:
+            break
+        chunks.append(chunk)
+    resp_body = b"".join(chunks)
+
+    # Read common headers
+    resp_headers = {}
+    for hdr in ["content-type", "content-length", "location", "set-cookie",
+                 "cache-control", "etag", "last-modified"]:
+        val = _pymode.http_response_header(resp_id, hdr)
+        if val is not None:
+            resp_headers[hdr] = val
+
+    return HTTPResponse(status=status, headers=resp_headers, body=resp_body)
+
+
+def _fetch_legacy(url, method, headers, body):
+    """Fetch via the VFS re-execution trampoline (legacy Worker mode)."""
+    import os
+    import sys
+    import base64
+
+    PENDING_PATH = "/stdlib/tmp/_pymode_pending_fetches.json"
+    RESPONSE_DIR = "/stdlib/tmp/_pymode_fetch_responses"
+
     idx = 0
     while True:
         resp_path = f"{RESPONSE_DIR}/{idx}"
@@ -85,7 +138,6 @@ def fetch(url, method="GET", headers=None, body=None):
             )
         idx += 1
 
-    # First encounter — queue this fetch request
     pending = []
     if os.path.exists(PENDING_PATH):
         with open(PENDING_PATH) as f:

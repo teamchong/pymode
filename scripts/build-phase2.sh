@@ -202,6 +202,22 @@ PKG_CONFIG=false \
 info "Patching pyconfig.h for WASI..."
 sed -i '' 's/^#define HAVE_PTHREAD_H 1/\/* #undef HAVE_PTHREAD_H *\//' "$BUILD_DIR/pyconfig.h"
 
+# Step 3b2: Register _pymode as a built-in module in config.c
+# This makes `import _pymode` work without needing shared library loading.
+info "Registering _pymode built-in module..."
+CONFIG_C="$BUILD_DIR/Modules/config.c"
+if [ -f "$CONFIG_C" ] && ! grep -q "PyInit__pymode" "$CONFIG_C"; then
+    # Add extern declaration before the ADDMODULE MARKER 1
+    sed -i '' '/\/\* -- ADDMODULE MARKER 1 --/i\
+extern PyObject* PyInit__pymode(void);
+' "$CONFIG_C"
+    # Add entry to _PyImport_Inittab before the ADDMODULE MARKER 2
+    sed -i '' '/\/\* -- ADDMODULE MARKER 2 --/i\
+    {"_pymode", PyInit__pymode},
+' "$CONFIG_C"
+    info "  _pymode registered in config.c"
+fi
+
 # Step 3c: Compile WASI shims (single-threaded pthread, etc.)
 info "Compiling WASI shims..."
 SHIMS_DIR="$ROOT_DIR/lib/wasi-shims"
@@ -219,11 +235,30 @@ done
 "$ZIG_WRAPPER_DIR/zig-ar" rcs "$SHIMS_OBJ_DIR/libwasi_shims.a" "$SHIMS_OBJ_DIR"/*.o
 info "  Built libwasi_shims.a"
 
+# Step 3d: Compile pymode host imports (WASM imports from the pymode.* namespace)
+info "Compiling pymode host imports..."
+PYMODE_IMPORTS_DIR="$ROOT_DIR/lib/pymode-imports"
+PYMODE_OBJ_DIR="$BUILD_DIR/pymode-imports"
+mkdir -p "$PYMODE_OBJ_DIR"
+
+if [ -f "$PYMODE_IMPORTS_DIR/pymode_imports.c" ]; then
+    "$ZIG_WRAPPER_DIR/zig-cc" -c -Os \
+        -I"$PYMODE_IMPORTS_DIR" \
+        -I"$CPYTHON_DIR/Include" \
+        -I"$CPYTHON_DIR/Include/internal" \
+        -I"$BUILD_DIR" \
+        "$PYMODE_IMPORTS_DIR/pymode_imports.c" \
+        -o "$PYMODE_OBJ_DIR/pymode_imports.o"
+    "$ZIG_WRAPPER_DIR/zig-ar" rcs "$PYMODE_OBJ_DIR/libpymode_imports.a" "$PYMODE_OBJ_DIR/pymode_imports.o"
+    info "  Built libpymode_imports.a"
+fi
+
 # Step 4: Build
 info "Building CPython with zig cc (ReleaseSmall)..."
 NCPU="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
-# Add shims library to LDFLAGS for linking
-LDFLAGS="-s -L$SHIMS_OBJ_DIR -lwasi_shims" make -j"$NCPU" 2>&1 | tee "$BUILD_DIR/build.log"
+# Add shims and pymode imports libraries to LDFLAGS for linking
+# --allow-undefined lets the linker accept unresolved pymode.* WASM imports
+LDFLAGS="-s -L$SHIMS_OBJ_DIR -lwasi_shims -L$PYMODE_OBJ_DIR -lpymode_imports -Wl,--allow-undefined" make -j"$NCPU" 2>&1 | tee "$BUILD_DIR/build.log"
 
 # Step 5: Verify python.wasm exists
 if [ ! -f "$BUILD_DIR/python.wasm" ]; then
