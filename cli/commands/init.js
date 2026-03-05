@@ -4,6 +4,21 @@ import { mkdirSync, writeFileSync, existsSync } from "fs";
 import { join } from "path";
 
 export async function init(args) {
+  if (args.includes("--help") || args.includes("-h")) {
+    console.log(`
+  pymode init — scaffold a new PyMode project
+
+  Usage:
+    pymode init <project-name>
+
+  Creates a new directory with:
+    src/entry.py        Handler with on_fetch()
+    pyproject.toml      Project config
+    .gitignore          Python + PyMode ignores
+    `);
+    process.exit(0);
+  }
+
   const name = args[0];
   if (!name) {
     console.error("Usage: pymode init <project-name>");

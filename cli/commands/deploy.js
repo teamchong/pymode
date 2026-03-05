@@ -71,6 +71,20 @@ function deployWorker(repoRoot) {
 }
 
 export async function deploy(args) {
+  if (args.includes("--help") || args.includes("-h")) {
+    console.log(`
+  pymode deploy — bundle and deploy to Cloudflare Workers
+
+  Usage:
+    pymode deploy [directory]
+
+  Bundles your .py files and deploys via wrangler.
+  Defaults to current directory if no path given.
+  Requires python.wasm (build with ./scripts/build-phase2.sh).
+    `);
+    process.exit(0);
+  }
+
   const projectDir = resolve(args[0] || ".");
 
   if (!existsSync(projectDir)) {

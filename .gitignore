@@ -24,6 +24,9 @@ worker/src/stdlib-fs.mjs
 # WASM symlinks in worker
 worker/src/*.wasm
 
+# Secrets
+.dev.vars
+
 # OS
 .DS_Store
 

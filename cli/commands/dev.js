@@ -107,6 +107,7 @@ function runHandler(projectDir, pymodeLib, entryModule, requestJson) {
 export async function dev(args) {
   let port = 8787;
   let entryOverride = null;
+  let verbose = false;
   const cliEnvVars = {};
 
   // Parse args
@@ -123,6 +124,23 @@ export async function dev(args) {
         cliEnvVars[args[i + 1].slice(0, eq)] = args[i + 1].slice(eq + 1);
       }
       i++;
+    } else if (args[i] === "--verbose" || args[i] === "-v") {
+      verbose = true;
+    } else if (args[i] === "--help" || args[i] === "-h") {
+      console.log(`
+  pymode dev — local dev server with hot reload
+
+  Usage:
+    pymode dev [options]
+
+  Options:
+    --port <port>        Port to listen on (default: 8787)
+    --entry <file>       Override entry point (default: from pyproject.toml)
+    --env KEY=VALUE      Set an environment variable (repeatable)
+    --verbose, -v        Log request/response bodies for debugging
+    --help, -h           Show this help
+      `);
+      process.exit(0);
     }
   }
 
@@ -221,6 +239,11 @@ export async function dev(args) {
       env: envVars,
     });
 
+    if (verbose) {
+      console.log(`  ← ${req.method} ${req.url}`);
+      if (body) console.log(`    Body: ${body.length > 200 ? body.slice(0, 200) + "..." : body}`);
+    }
+
     try {
       const result = await runHandler(projectDir, pymodeLib, entryModule, requestJson);
 
@@ -256,6 +279,10 @@ export async function dev(args) {
       const elapsed = Date.now() - startTime;
       const status = data.status || 200;
       console.log(`  ${req.method} ${req.url} → ${status} (${elapsed}ms)`);
+      if (verbose && data.body) {
+        const preview = data.body.length > 200 ? data.body.slice(0, 200) + "..." : data.body;
+        console.log(`    Body: ${preview}`);
+      }
     } catch (err) {
       console.error(`  ${req.method} ${req.url} → ERROR: ${err.message}`);
       res.writeHead(500, { "Content-Type": "text/plain" });
