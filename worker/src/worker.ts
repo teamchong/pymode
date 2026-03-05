@@ -13,6 +13,14 @@ class ProcExit extends Error {
   }
 }
 
+interface WasiResult {
+  exitCode: number;
+  stdout: Uint8Array;
+  stderr: Uint8Array;
+  files: Record<string, Uint8Array>;
+  writtenFiles: Map<string, Uint8Array>;
+}
+
 function createWasi(
   args: string[],
   env: Record<string, string>,
@@ -34,6 +42,7 @@ function createWasi(
     data: Uint8Array;
     offset: number;
     isDir: boolean;
+    writable: boolean;
   }
 
   const openFiles = new Map<number, OpenFile>();
@@ -41,6 +50,9 @@ function createWasi(
 
   const stdoutChunks: Uint8Array[] = [];
   const stderrChunks: Uint8Array[] = [];
+
+  // Writable files layer — sits on top of the read-only files map
+  const writtenFiles = new Map<string, Uint8Array>();
 
   // Build directory index from file paths
   const dirChildren = new Map<string, string[]>();
@@ -63,8 +75,50 @@ function createWasi(
     if (!list.includes(name)) list.push(name);
   }
 
+  // Ensure /tmp directory exists for trampoline files
+  if (!dirChildren.has("tmp")) {
+    dirChildren.set("tmp", []);
+    const root = dirChildren.get("")!;
+    if (!root.includes("tmp")) root.push("tmp");
+  }
+
   function isDir(path: string): boolean {
     return dirChildren.has(path);
+  }
+
+  function fileExists(path: string): boolean {
+    return writtenFiles.has(path) || path in files;
+  }
+
+  function fileData(path: string): Uint8Array | undefined {
+    return writtenFiles.get(path) || files[path];
+  }
+
+  // Register a directory in the VFS (creates parent chain)
+  function ensureDir(path: string): void {
+    if (dirChildren.has(path)) return;
+    const parts = path.split("/");
+    for (let i = 1; i <= parts.length; i++) {
+      const dir = parts.slice(0, i).join("/");
+      if (!dirChildren.has(dir)) {
+        dirChildren.set(dir, []);
+        const parent = parts.slice(0, i - 1).join("/");
+        if (!dirChildren.has(parent)) dirChildren.set(parent, []);
+        const parentList = dirChildren.get(parent)!;
+        const name = parts[i - 1];
+        if (!parentList.includes(name)) parentList.push(name);
+      }
+    }
+  }
+
+  // Register a file in its parent directory's children list
+  function registerFile(path: string): void {
+    const parts = path.split("/");
+    const dir = parts.slice(0, -1).join("/");
+    const name = parts[parts.length - 1];
+    ensureDir(dir);
+    const list = dirChildren.get(dir)!;
+    if (!list.includes(name)) list.push(name);
   }
 
   function view(): DataView { return new DataView(getMemory().buffer); }
@@ -72,10 +126,12 @@ function createWasi(
 
   const ESUCCESS = 0;
   const EBADF = 8;
+  const EEXIST = 20;
   const EINVAL = 28;
   const EISDIR = 31;
   const ENOENT = 44;
   const ENOSYS = 52;
+  const ENOTDIR = 54;
 
   function normalizePath(p: string): string {
     let r = p.replace(/^\.\//, "").replace(/\/\.\//g, "/").replace(/\/+/g, "/").replace(/\/$/, "");
@@ -149,14 +205,41 @@ function createWasi(
       const v = view();
       const m = mem();
       let written = 0;
+
+      if (fd === FD_STDOUT || fd === FD_STDERR) {
+        const chunks = fd === FD_STDOUT ? stdoutChunks : stderrChunks;
+        for (let i = 0; i < iovsLen; i++) {
+          const ptr = v.getUint32(iovsPtr + i * 8, true);
+          const len = v.getUint32(iovsPtr + i * 8 + 4, true);
+          chunks.push(m.slice(ptr, ptr + len));
+          written += len;
+        }
+        v.setUint32(retPtr, written, true);
+        return ESUCCESS;
+      }
+
+      const file = openFiles.get(fd);
+      if (!file || !file.writable) return EBADF;
+
+      // Gather all iov data
       for (let i = 0; i < iovsLen; i++) {
         const ptr = v.getUint32(iovsPtr + i * 8, true);
         const len = v.getUint32(iovsPtr + i * 8 + 4, true);
         const chunk = m.slice(ptr, ptr + len);
-        if (fd === FD_STDOUT) stdoutChunks.push(chunk);
-        else if (fd === FD_STDERR) stderrChunks.push(chunk);
-        written += len;
+
+        // Grow buffer if needed
+        const needed = file.offset + chunk.length;
+        if (needed > file.data.length) {
+          const grown = new Uint8Array(needed);
+          grown.set(file.data);
+          file.data = grown;
+          writtenFiles.set(file.path, grown);
+        }
+        file.data.set(chunk, file.offset);
+        file.offset += chunk.length;
+        written += chunk.length;
       }
+
       v.setUint32(retPtr, written, true);
       return ESUCCESS;
     },
@@ -250,21 +333,46 @@ function createWasi(
     path_open(
       dirFd: number, _dirflags: number,
       pathPtr: number, pathLen: number,
-      _oflags: number, _fsRightsBase: bigint, _fsRightsInheriting: bigint,
+      oflags: number, _fsRightsBase: bigint, _fsRightsInheriting: bigint,
       _fdflags: number, retPtr: number
     ): number {
       const pathStr = decoder.decode(mem().subarray(pathPtr, pathPtr + pathLen));
       const fullPath = resolvePath(dirFd, pathStr);
       if (fullPath === null) return EBADF;
-      if (files[fullPath]) {
+
+      const OFLAGS_CREAT = 1;
+      const OFLAGS_TRUNC = 8;
+
+      // O_CREAT — create a new writable file (or open existing writable file)
+      if (oflags & OFLAGS_CREAT) {
         const fd = nextFd++;
-        openFiles.set(fd, { path: fullPath, data: files[fullPath], offset: 0, isDir: false });
+        if (!writtenFiles.has(fullPath) || (oflags & OFLAGS_TRUNC)) {
+          writtenFiles.set(fullPath, new Uint8Array(0));
+        }
+        registerFile(fullPath);
+        openFiles.set(fd, {
+          path: fullPath,
+          data: writtenFiles.get(fullPath)!,
+          offset: 0,
+          isDir: false,
+          writable: true,
+        });
+        view().setUint32(retPtr, fd, true);
+        return ESUCCESS;
+      }
+
+      // Check writable files first, then read-only files
+      const data = fileData(fullPath);
+      if (data) {
+        const fd = nextFd++;
+        const writable = writtenFiles.has(fullPath);
+        openFiles.set(fd, { path: fullPath, data, offset: 0, isDir: false, writable });
         view().setUint32(retPtr, fd, true);
         return ESUCCESS;
       }
       if (isDir(fullPath)) {
         const fd = nextFd++;
-        openFiles.set(fd, { path: fullPath, data: new Uint8Array(0), offset: 0, isDir: true });
+        openFiles.set(fd, { path: fullPath, data: new Uint8Array(0), offset: 0, isDir: true, writable: false });
         view().setUint32(retPtr, fd, true);
         return ESUCCESS;
       }
@@ -279,16 +387,16 @@ function createWasi(
       const fullPath = resolvePath(dirFd, pathStr);
       if (fullPath === null) return EBADF;
 
-      const fileData = files[fullPath];
+      const data = fileData(fullPath);
       const isDirPath = isDir(fullPath);
-      if (!fileData && !isDirPath) return ENOENT;
+      if (!data && !isDirPath) return ENOENT;
 
       const v = view();
       const m = new Uint8Array(getMemory().buffer);
       m.fill(0, retPtr, retPtr + 64);
-      v.setUint8(retPtr + 16, isDirPath && !fileData ? 3 : 4);
+      v.setUint8(retPtr + 16, isDirPath && !data ? 3 : 4);
       v.setBigUint64(retPtr + 24, BigInt(1), true);
-      v.setBigUint64(retPtr + 32, BigInt(fileData ? fileData.length : 0), true);
+      v.setBigUint64(retPtr + 32, BigInt(data ? data.length : 0), true);
       return ESUCCESS;
     },
 
@@ -365,14 +473,92 @@ function createWasi(
     fd_pread(): number { return ENOSYS; },
     fd_pwrite(): number { return ENOSYS; },
     fd_renumber(): number { return ENOSYS; },
-    path_create_directory(): number { return ENOSYS; },
+
+    path_create_directory(dirFd: number, pathPtr: number, pathLen: number): number {
+      const pathStr = decoder.decode(mem().subarray(pathPtr, pathPtr + pathLen));
+      const fullPath = resolvePath(dirFd, pathStr);
+      if (fullPath === null) return EBADF;
+      if (dirChildren.has(fullPath)) return EEXIST;
+      ensureDir(fullPath);
+      return ESUCCESS;
+    },
+
     path_filestat_set_times(): number { return ESUCCESS; },
     path_link(): number { return ENOSYS; },
     path_readlink(): number { return ENOSYS; },
-    path_remove_directory(): number { return ENOSYS; },
-    path_rename(): number { return ENOSYS; },
+
+    path_remove_directory(dirFd: number, pathPtr: number, pathLen: number): number {
+      const pathStr = decoder.decode(mem().subarray(pathPtr, pathPtr + pathLen));
+      const fullPath = resolvePath(dirFd, pathStr);
+      if (fullPath === null) return EBADF;
+      if (!dirChildren.has(fullPath)) return ENOENT;
+      const children = dirChildren.get(fullPath)!;
+      if (children.length > 0) return ENOENT; // ENOTEMPTY mapped to ENOENT
+      dirChildren.delete(fullPath);
+      // Remove from parent
+      const parts = fullPath.split("/");
+      const name = parts.pop()!;
+      const parent = parts.join("/");
+      const siblings = dirChildren.get(parent);
+      if (siblings) {
+        const idx = siblings.indexOf(name);
+        if (idx !== -1) siblings.splice(idx, 1);
+      }
+      return ESUCCESS;
+    },
+
+    path_rename(
+      oldDirFd: number, oldPathPtr: number, oldPathLen: number,
+      newDirFd: number, newPathPtr: number, newPathLen: number
+    ): number {
+      const m = mem();
+      const oldPathStr = decoder.decode(m.subarray(oldPathPtr, oldPathPtr + oldPathLen));
+      const newPathStr = decoder.decode(m.subarray(newPathPtr, newPathPtr + newPathLen));
+      const oldPath = resolvePath(oldDirFd, oldPathStr);
+      const newPath = resolvePath(newDirFd, newPathStr);
+      if (oldPath === null || newPath === null) return EBADF;
+
+      const data = fileData(oldPath);
+      if (!data) return ENOENT;
+
+      // Copy data to new path, remove old
+      writtenFiles.set(newPath, data);
+      registerFile(newPath);
+      writtenFiles.delete(oldPath);
+      delete files[oldPath];
+      // Remove from old parent dir listing
+      const oldParts = oldPath.split("/");
+      const oldName = oldParts.pop()!;
+      const oldParent = oldParts.join("/");
+      const oldSiblings = dirChildren.get(oldParent);
+      if (oldSiblings) {
+        const idx = oldSiblings.indexOf(oldName);
+        if (idx !== -1) oldSiblings.splice(idx, 1);
+      }
+      return ESUCCESS;
+    },
+
     path_symlink(): number { return ENOSYS; },
-    path_unlink_file(): number { return ENOSYS; },
+
+    path_unlink_file(dirFd: number, pathPtr: number, pathLen: number): number {
+      const pathStr = decoder.decode(mem().subarray(pathPtr, pathPtr + pathLen));
+      const fullPath = resolvePath(dirFd, pathStr);
+      if (fullPath === null) return EBADF;
+      if (!fileExists(fullPath)) return ENOENT;
+      writtenFiles.delete(fullPath);
+      delete files[fullPath];
+      // Remove from parent dir listing
+      const parts = fullPath.split("/");
+      const name = parts.pop()!;
+      const parent = parts.join("/");
+      const siblings = dirChildren.get(parent);
+      if (siblings) {
+        const idx = siblings.indexOf(name);
+        if (idx !== -1) siblings.splice(idx, 1);
+      }
+      return ESUCCESS;
+    },
+
     poll_oneoff(): number { return ENOSYS; },
     proc_raise(): number { return ENOSYS; },
     sched_yield(): number { return ESUCCESS; },
@@ -409,7 +595,148 @@ function createWasi(
       for (const c of stderrChunks) { result.set(c, off); off += c.length; }
       return result;
     },
+    getWrittenFiles(): Map<string, Uint8Array> {
+      return writtenFiles;
+    },
   };
+}
+
+// Run Python WASM and return the result (does not throw)
+function runWasm(
+  args: string[],
+  env: Record<string, string>,
+  files: Record<string, Uint8Array>
+): WasiResult {
+  let memory: WebAssembly.Memory | undefined;
+  const wasi = createWasi(args, env, files, () => memory!);
+
+  try {
+    const instance = new WebAssembly.Instance(pythonWasm, {
+      wasi_snapshot_preview1: wasi.imports,
+    });
+    memory = instance.exports.memory as WebAssembly.Memory;
+    const start = instance.exports._start as () => void;
+    start();
+    return {
+      exitCode: 0,
+      stdout: wasi.getStdout(),
+      stderr: wasi.getStderr(),
+      files,
+      writtenFiles: wasi.getWrittenFiles(),
+    };
+  } catch (e: unknown) {
+    if (e instanceof ProcExit) {
+      return {
+        exitCode: e.code,
+        stdout: wasi.getStdout(),
+        stderr: wasi.getStderr(),
+        files,
+        writtenFiles: wasi.getWrittenFiles(),
+      };
+    }
+    throw e;
+  }
+}
+
+// Base64 encode/decode for fetch response serialization
+function base64Encode(data: Uint8Array): string {
+  let binary = "";
+  for (let i = 0; i < data.length; i++) {
+    binary += String.fromCharCode(data[i]);
+  }
+  return btoa(binary);
+}
+
+function base64Decode(str: string): Uint8Array {
+  const binary = atob(str);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+// Simple hash for cache keys (djb2)
+function hashKey(s: string): string {
+  let hash = 5381;
+  for (let i = 0; i < s.length; i++) {
+    hash = ((hash << 5) + hash + s.charCodeAt(i)) & 0xFFFFFFFF;
+  }
+  return hash.toString(16);
+}
+
+// Re-execution trampoline: run Python, catch exit 254, do fetches, re-run
+const EXIT_NEEDS_FETCH = 254;
+const MAX_TRAMPOLINE_ROUNDS = 10;
+const PENDING_FETCHES_PATH = "tmp/_pymode_pending_fetches.json";
+const FETCH_RESPONSES_DIR = "tmp/_pymode_fetch_responses";
+
+async function runPythonWithFetch(
+  code: string,
+  baseFiles: Record<string, Uint8Array>
+): Promise<{ stdout: Uint8Array; stderr: Uint8Array; exitCode: number }> {
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+  const files = { ...baseFiles };
+
+  for (let round = 0; round < MAX_TRAMPOLINE_ROUNDS; round++) {
+    const result = runWasm(
+      ["python", "-S", "-c", code],
+      { PYTHONPATH: "/stdlib", PYTHONDONTWRITEBYTECODE: "1", PYTHONNOUSERSITE: "1" },
+      files
+    );
+
+    if (result.exitCode !== EXIT_NEEDS_FETCH) {
+      return { stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode };
+    }
+
+    // Python exited 254 — it wrote pending fetch requests to VFS
+    // Merge written files back so we can read the pending fetches
+    result.writtenFiles.forEach((data, path) => {
+      files[path] = data;
+    });
+
+    const pendingRaw = files[PENDING_FETCHES_PATH];
+    if (!pendingRaw) {
+      // Exit 254 but no pending fetches file — treat as error
+      return { stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode };
+    }
+
+    const pending: Array<{ url: string; method: string; headers?: Record<string, string>; body?: string }> =
+      JSON.parse(decoder.decode(pendingRaw));
+
+    if (pending.length === 0) {
+      return { stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode };
+    }
+
+    // Execute all fetches in parallel
+    const responses = await Promise.all(
+      pending.map((req) =>
+        fetch(req.url, {
+          method: req.method || "GET",
+          headers: req.headers,
+          body: req.body,
+        })
+      )
+    );
+
+    // Write each response to VFS for the next run
+    for (let i = 0; i < pending.length; i++) {
+      const key = hashKey(`${pending[i].method || "GET"}:${pending[i].url}`);
+      const body = new Uint8Array(await responses[i].arrayBuffer());
+      const meta = JSON.stringify({
+        status: responses[i].status,
+        headers: Object.fromEntries([...responses[i].headers.entries()]),
+        bodyBase64: base64Encode(body),
+      });
+      files[`${FETCH_RESPONSES_DIR}/${key}`] = encoder.encode(meta);
+    }
+
+    // Clear pending list for next run
+    delete files[PENDING_FETCHES_PATH];
+  }
+
+  throw new Error("Too many fetch trampoline rounds (possible infinite loop)");
 }
 
 export default {
@@ -431,45 +758,25 @@ export default {
       files[path] = encoder.encode(content);
     }
 
-    let memory: WebAssembly.Memory | undefined;
-    const wasi = createWasi(
-      ["python", "-S", "-c", code],
-      { PYTHONPATH: "/stdlib", PYTHONDONTWRITEBYTECODE: "1", PYTHONNOUSERSITE: "1" },
-      files,
-      () => memory!
-    );
-
     try {
-      const instance = new WebAssembly.Instance(pythonWasm, {
-        wasi_snapshot_preview1: wasi.imports,
-      });
-      memory = instance.exports.memory as WebAssembly.Memory;
+      const result = await runPythonWithFetch(code, files);
 
-      const start = instance.exports._start as () => void;
-      start();
-
-      const output = decoder.decode(wasi.getStdout());
-      return new Response(output, {
-        headers: { "Content-Type": "text/plain; charset=utf-8", "X-Powered-By": "PyMode" },
-      });
-    } catch (e: unknown) {
-      if (e instanceof ProcExit && e.code === 0) {
-        const output = decoder.decode(wasi.getStdout());
+      if (result.exitCode === 0) {
+        const output = decoder.decode(result.stdout);
         return new Response(output || "(empty output)\n", {
           headers: { "Content-Type": "text/plain; charset=utf-8", "X-Powered-By": "PyMode" },
         });
       }
-      if (e instanceof ProcExit) {
-        const output = decoder.decode(wasi.getStdout());
-        const errors = decoder.decode(wasi.getStderr());
-        return new Response(output + errors, {
-          status: 500,
-          headers: { "Content-Type": "text/plain; charset=utf-8", "X-Powered-By": "PyMode" },
-        });
-      }
+
+      const output = decoder.decode(result.stdout);
+      const errors = decoder.decode(result.stderr);
+      return new Response(output + errors, {
+        status: 500,
+        headers: { "Content-Type": "text/plain; charset=utf-8", "X-Powered-By": "PyMode" },
+      });
+    } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      const errors = decoder.decode(wasi.getStderr());
-      return new Response(`Error: ${msg}\n${errors}`, {
+      return new Response(`Error: ${msg}\n`, {
         status: 500,
         headers: { "Content-Type": "text/plain" },
       });
