@@ -1,113 +1,248 @@
 # PyMode
 
-**Python on Cloudflare Workers.**
+**Python on Cloudflare Workers** — write Python handlers, deploy to the edge.
 
-CPython 3.13 compiled to WASM with `zig cc` — **5.7MB** (1.8MB gzipped). Small enough to run on Workers.
+CPython 3.13 compiled to WASM with `zig cc`. 5.7MB binary (1.8MB gzipped). Runs on Workers with full access to KV, R2, D1, TCP, and HTTP.
 
-## Why
+## Quick Start
 
-Python's official WASM support is dying. CPython dropped Emscripten to Tier 3 in 3.13 — barely maintained, one PR away from removal. Pyodide depends on it and ships a **20MB+** runtime with brutal cold starts.
+```python
+# src/entry.py
+from pymode.workers import Response
 
-Meanwhile, `wasm32-wasi` is Tier 2 (officially supported), but the standard WASI SDK build produces a **28MB** binary. Way over Cloudflare's 10MB limit.
+def on_fetch(request, env):
+    return Response("Hello from PyMode!")
+```
 
-PyMode fixes this. We compile CPython with `zig cc -Os` + `wasm-opt` and cut the binary to **5.7MB** — a **4.9x reduction**. It fits on Workers with room to spare.
+```toml
+# pyproject.toml
+[tool.pymode]
+main = "src/entry.py"
+```
 
-## Results
+```bash
+# Bundle and deploy
+./scripts/bundle-project.sh ./my-project
+cd worker && npx wrangler deploy
+```
+
+## How It Works
+
+You write `.py` files with an `on_fetch(request, env)` handler — same pattern as CF Python Workers. PyMode bundles your project files into the worker at deploy time and routes each request through PythonDO with full host imports via Asyncify.
+
+```
+CF Request
+  → Worker serializes request to JSON
+  → PythonDO runs python.wasm with Asyncify + pymode.* host imports
+    → _handler.py imports your entry module
+    → Calls on_fetch(request, env)
+    → env.MY_KV.get("key") → _pymode.kv_get() → Asyncify suspends
+      → JS awaits env.KV.get() → Asyncify resumes with result
+    → Handler returns Response
+  → Worker deserializes response JSON → CF Response
+```
+
+## Features
+
+### Request Handler Pattern
+
+```python
+from pymode.workers import Response
+
+def on_fetch(request, env):
+    if request.path == "/api/data":
+        data = env.MY_KV.get("key", type="json")
+        return Response.json(data)
+
+    if request.path == "/greet":
+        name = request.query.get("name", ["World"])[0]
+        return Response(f"Hello, {name}!")
+
+    return Response("Not Found", status=404)
+```
+
+### CF Bindings via Host Imports
+
+Direct access to KV, R2, D1 through WASM host imports — no serialization overhead:
+
+```python
+def on_fetch(request, env):
+    # KV — auto-detected from naming convention (*_KV or KV)
+    value = env.MY_KV.get("key")
+    env.MY_KV.put("key", "value")
+
+    # R2
+    data = env.MY_R2.get("file.bin")
+    env.MY_R2.put("file.bin", binary_data)
+
+    # D1
+    result = env.MY_DB.prepare("SELECT * FROM users WHERE id = ?").bind(42).all()
+
+    # Environment variables / secrets
+    api_key = env.API_KEY
+```
+
+Under the hood, `env.MY_KV.get("key")` calls `_pymode.kv_get()` which is a WASM host import. Asyncify suspends the WASM stack, JS awaits the real CF KV binding, then resumes Python.
+
+### Multi-File Projects
+
+```
+my-worker/
+  pyproject.toml          # [tool.pymode] main = "src/entry.py"
+  src/
+    entry.py              # def on_fetch(request, env): ...
+    routes.py             # import from other files normally
+    middleware.py
+    utils.py
+```
+
+All `.py` files are bundled into the VFS at deploy time. Normal `import` works between files.
+
+### TCP Connections
+
+Database drivers work through persistent TCP connections:
+
+```python
+from pymode.tcp import PyModeSocket as socket
+
+sock = socket()
+sock.connect(("db.example.com", 5432))
+sock.send(b"SELECT 1")
+data = sock.recv(4096)
+```
+
+### HTTP Fetch
+
+```python
+from pymode.http import fetch
+
+response = fetch("https://api.example.com/data")
+print(response.status, response.text)
+```
+
+### Threading via Child DOs
+
+Real parallelism — each thread runs in its own Durable Object with a separate 30s CPU budget:
+
+```python
+from pymode.parallel import spawn, gather
+
+task1 = spawn(process_chunk, data[:1000])
+task2 = spawn(process_chunk, data[1000:])
+results = gather(task1, task2)
+```
+
+### Deploy-Time Snapshots (Wizer)
+
+Pre-initialize the interpreter at deploy time for ~5ms cold starts:
+
+```bash
+./scripts/build-wizer.sh   # Snapshots warm interpreter state
+```
+
+| | Without Wizer | With Wizer |
+|---|---|---|
+| Cold start | ~28ms | ~5ms |
+
+## Binary Size
 
 | Build | Size | Gzipped |
 |-------|------|---------|
 | Pyodide (Emscripten) | ~20 MB | ~6.4 MB |
 | CPython WASI SDK | 28 MB | ~8 MB |
 | **PyMode (zig cc)** | **5.7 MB** | **1.8 MB** |
+| PyMode + Asyncify | ~7.4 MB | ~2.3 MB |
+
+## Architecture
 
 ```
-$ python.wasm -c "import sys; print(sys.version)"
-Python 3.13.0 on wasi
-
-$ python.wasm -c "import json; print(json.dumps({'works': True}))"
-{"works": true}
-
-$ python.wasm -c "import hashlib; print(hashlib.sha256(b'hello').hexdigest())"
-2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+┌────────────────────────────────────────────────────────┐
+│                     PythonDO                           │
+│                 (Durable Object)                       │
+│                                                        │
+│  ┌──────────────┐         ┌─────────────────────────┐  │
+│  │ python.wasm  │         │   Host Import State     │  │
+│  │  (CPython)   │ pymode.*│                         │  │
+│  │              ├────────→│  TCP connections         │  │
+│  │  User .py    │ imports │  HTTP response buffers   │  │
+│  │  on_fetch()  │         │  Thread results          │  │
+│  └──────────────┘         └─────────────────────────┘  │
+│         │                            │                 │
+│   Asyncify suspends           JS implements            │
+│   on async imports            using CF APIs            │
+│         ↓                            ↓                 │
+│  ┌─────────────────────────────────────────────────┐   │
+│  │ cloudflare:sockets │ env.KV │ env.R2 │ env.D1  │   │
+│  │ global fetch()     │ env.AI │ ThreadDO          │   │
+│  └─────────────────────────────────────────────────┘   │
+└────────────────────────────────────────────────────────┘
+         ↑
+         │ RPC
+┌────────────────┐
+│  PyMode Worker │  (stateless, routes to PythonDO)
+└────────────────┘
+         ↑ HTTP
+     [Client]
 ```
 
-## Quick Start
+## Build
 
 ```bash
-# Prerequisites: python3, wasmtime, zig 0.15+
+# Prerequisites: python3, wasmtime, zig 0.15+, wasm-opt
 
-# Build
+# Build CPython WASM
 ./scripts/build-phase2.sh
 
-# Run
-build/zig-wasi/python.sh -c "print('hello from pymode')"
+# Generate stdlib bundle
+./scripts/generate-stdlib-fs.sh
+
+# (Optional) Build Wizer snapshot for fast cold starts
+./scripts/build-wizer.sh
+
+# Bundle your project
+./scripts/bundle-project.sh ./my-project
+
+# Deploy
+cd worker && npx wrangler deploy
 ```
 
-## How It Works
+## Project Structure
 
-1. **`zig cc` as a drop-in C compiler** — targets `wasm32-wasi` with `-Os` (size optimized)
-2. **Aggressive module pruning** — 20+ unavailable WASI modules disabled at configure time
-3. **`wasm-opt -Os`** — Binaryen pass for additional WASM-level size reduction
-4. **Zig stdlib modules** — C extensions progressively replaced with Zig implementations from [metal0](https://github.com/nickel-org/metal0)
+| Path | Description |
+|------|-------------|
+| `worker/src/worker.ts` | Stateless Worker entry point |
+| `worker/src/python-do.ts` | PythonDO — WASM instance + host imports + Asyncify |
+| `worker/src/asyncify.ts` | Asyncify runtime (stack unwind/rewind) |
+| `worker/src/thread-do.ts` | ThreadDO — child DOs for parallel execution |
+| `lib/pymode/workers.py` | Request, Response, Env (CF Python Workers API) |
+| `lib/pymode/_handler.py` | Runtime entry point — imports user module, calls handler |
+| `lib/pymode/tcp.py` | TCP socket replacement |
+| `lib/pymode/http.py` | HTTP fetch |
+| `lib/pymode/env.py` | KV, R2, D1 via host imports |
+| `lib/pymode/parallel.py` | Threading via child DOs |
+| `lib/pymode-imports/` | C extension wrapping WASM host imports |
+| `lib/wizer/` | Wizer entry point for deploy-time snapshots |
+| `scripts/bundle-project.sh` | Bundle .py project into worker |
+| `scripts/build-phase2.sh` | Build CPython WASM with zig cc |
+| `scripts/build-wizer.sh` | Build Wizer snapshot |
+| `scripts/generate-stdlib-fs.sh` | Bundle stdlib + pymode into worker |
+| `examples/hello-worker/` | Simple handler example |
+| `examples/api-worker/` | Multi-file project with KV |
 
-## Zig Module Replacements
+## Comparison: PyMode vs CF Python Workers
 
-Heavy C extensions replaced with lighter Zig implementations:
-
-| Module | Status | Source |
-|--------|--------|--------|
-| `_json` | Done | metal0 SIMD JSON parser |
-| `_hashlib` | Done | Zig `std.crypto` (no OpenSSL) |
-| `_collections` | Done | deque, defaultdict, Counter |
-| `_functools` | Done | partial, reduce, lru_cache |
-| `_sre` | Planned | metal0 regex engine |
-| `math` | Planned | metal0 math |
-| `_datetime` | Planned | metal0 datetime |
-
-## Stdlib Bundling
-
-Python needs its stdlib to boot. PyMode bundles a minimal stdlib as a zip (4.3MB) that Python reads via `zipimport` — no filesystem needed.
-
-```bash
-# Build the minimal stdlib
-./scripts/build-stdlib.sh
-
-# Run with stdlib
-PYTHONPATH=build/stdlib-minimal.zip build/zig-wasi/python.sh -c "import json; print(json.dumps({'ok': True}))"
-```
-
-Total deployment size: **5.7MB** (wasm) + **4.3MB** (stdlib.zip) = **~10MB** — fits within CF Workers paid plan.
-
-## Pain Points Solved
-
-### 1. Binary too large for edge runtimes
-Pyodide ships 20MB+, WASI SDK produces 28MB. Neither fits Cloudflare's 10MB limit.
-**PyMode: 5.7MB** (1.8MB gzipped). Fits with room for your app code.
-
-### 2. No OpenSSL on edge
-C extensions like `_hashlib` link against OpenSSL, which doesn't exist on WASI/Workers.
-**PyMode: Zig replacements** use `std.crypto` — zero external dependencies, same Python API.
-
-### 3. Cold start penalty
-Loading 20MB of WASM + initializing the interpreter takes seconds.
-**PyMode: Wizer pre-initialization** snapshots the interpreter after startup, so Workers resume from a warm state.
-
-### 4. No filesystem for stdlib
-Edge runtimes don't have `/usr/lib/python3.13`. Pyodide uses a virtual FS overlay.
-**PyMode: zipimport** — stdlib ships as a single `.zip`, Python reads it natively. No FS emulation needed.
-
-### 5. C extension compatibility
-Most C extensions assume POSIX/glibc and won't compile for WASI.
-**PyMode: Zig module replacements** rewrite critical C extensions in pure Zig targeting `wasm32-wasi` directly.
-
-## Roadmap
-
-- [x] CPython 3.13 WASI build via `zig cc` (5.7MB wasm)
-- [x] Zig module replacements (_json, _hashlib, _collections, _functools)
-- [x] Minimal stdlib bundled as zip (4.3MB, boots via zipimport)
-- [ ] Cloudflare Workers integration (JS bridge + `@cloudflare/workers-wasi`)
-- [ ] Wizer pre-initialization (snapshot warm interpreter state)
-- [ ] Additional Zig module replacements (_sre, math, _datetime)
+| | CF Python Workers | PyMode |
+|---|---|---|
+| Handler pattern | `on_fetch(request, env)` | `on_fetch(request, env)` |
+| Multi-file projects | Yes | Yes |
+| Env bindings | `env.MY_KV.get()` (JS interop) | `env.MY_KV.get()` (host imports) |
+| Async I/O | Emscripten Asyncify | Binaryen Asyncify |
+| Binary size | ~20MB+ | ~7.4MB |
+| Cold start | ~50ms (snapshot) | ~5ms (Wizer) |
+| TCP connections | No | Yes |
+| Threading | `asyncio.gather` only | Real parallelism (child DOs) |
+| Package support | 280+ (Pyodide wheels) | Static profiles + zipimport |
+| Portability | CF only (Emscripten) | Any WASI host |
 
 ## License
 

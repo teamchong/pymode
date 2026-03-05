@@ -3,16 +3,28 @@
 ## Goal
 
 Match Pyodide's ~280 supported packages, compiled with `zig cc -target wasm32-wasi`
-instead of Emscripten. Ship as a 5.7MB CPython WASM binary (vs Pyodide's 20MB+)
-that runs on Cloudflare Workers with our custom synchronous WASI shim.
+instead of Emscripten. Ship as a ~7.4MB CPython WASM binary (with Asyncify) that
+runs on Cloudflare Workers with project mode (`on_fetch` handler pattern).
 
 ## Current State
 
-- CPython 3.13 compiles to `wasm32-wasi` via `zig cc -Os` = 5.7MB
-- Runs on CF Workers with custom sync WASI shim (28ms cold start)
-- stdlib: 51 pure Python modules embedded via `generate-stdlib-fs.sh`
-- C extensions: **none** — `binascii`, `_sre`, `_json`, `_struct` all disabled
+- CPython 3.13 compiles to `wasm32-wasi` via `zig cc -Os` = 5.7MB (7.4MB with Asyncify)
+- Runs on CF Workers with project mode: `on_fetch(request, env)` handler pattern
+- Host imports via Asyncify for KV, R2, D1, TCP, HTTP (no VFS trampoline)
+- Wizer deploy-time snapshots for ~5ms cold starts
+- Threading via child DOs (ThreadDO) for real parallelism
+- stdlib: ~60 pure Python modules + pymode runtime embedded via `generate-stdlib-fs.sh`
+- C extensions: `_pymode` built-in module for host imports; others still disabled
+- Third-party packages: pure Python via `site-packages.zip` (zipimport)
 - Pyodide ships 280+ packages (154 pure Python, ~140 with C/Rust/Fortran extensions, 40 system libs)
+
+### Package Bundling Today
+
+Pure Python packages can be bundled into `site-packages.zip` using `scripts/bundle-packages.py`.
+The zip is loaded via Python's built-in `zipimport`. The worker adds it to PYTHONPATH automatically.
+
+For project mode, dependencies listed in `pyproject.toml` are detected by `scripts/bundle-project.sh`
+but not yet auto-resolved. Manual bundling via `bundle-packages.py` is required.
 
 ## Architecture Difference: Pyodide vs PyMode
 
