@@ -285,57 +285,201 @@ When WASM calls `pymode_fetch` (marked as Suspending), the WASM stack suspends.
 workerd's event loop resolves the fetch Promise. WASM resumes with the result.
 No asyncify needed. No binary size increase.
 
-**Until JSPI ships in workerd**: Two options:
-1. **Async-only**: Require Python code to use async libraries (aiohttp, httpx)
-   with Pyodide-style `await` via JS FFI. This is what CF Python Workers do today.
-2. **Pre-fetch pattern**: Fetch all needed data in JS before calling `_start()`,
-   pass results via environment variables or files in the VFS. Works for
-   request-response patterns but not for packages that make HTTP internally.
+**Solution without JSPI: Re-execution Trampoline**
 
-#### Layer 2: WASI socket implementation (for packages that use raw sockets)
+We don't need to wait for JSPI. The trampoline pattern makes synchronous HTTP
+work today by re-executing Python with fetch results pre-loaded in the VFS:
 
-For packages that bypass `urllib3` and use `socket` directly (database drivers,
-MQTT clients, custom protocols), implement WASI `sock_*` syscalls via CF's
-`cloudflare:sockets` API.
+```
+Run 1: Python starts → requests.get(url) → writes pending fetch to /tmp → exit(254)
+   ↓
+JS catches exit 254 → reads pending fetches → await Promise.all(fetch(...)) → writes responses to VFS
+   ↓
+Run 2: Python starts → requests.get(url) → finds response in VFS → continues normally → exit(0)
+```
 
-**IMPORTANT**: Like `fetch()`, the socket API is async — `reader.read()` and
-`writer.write()` return Promises. This means the socket bridge **also requires
-JSPI** to work from synchronous WASM code. Without JSPI, raw socket access
-from Python is not possible.
+**Python-level patch** (loaded at startup, patches urllib3):
 
-With JSPI, the implementation is:
+```python
+# pymode_http.py
+import os, json, hashlib, sys
+
+PENDING_PATH = "/tmp/_pymode_pending_fetches.json"
+RESPONSE_DIR = "/tmp/_pymode_fetch_responses"
+
+def _response_key(method, url):
+    return hashlib.md5(f"{method}:{url}".encode()).hexdigest()
+
+class PyModeSend:
+    """Replaces urllib3's actual HTTP send. On first run, queues the
+    request and exits. On re-run, returns the pre-fetched response."""
+
+    def __call__(self, method, url, headers=None, body=None):
+        key = _response_key(method, url)
+        resp_path = f"{RESPONSE_DIR}/{key}"
+
+        # Response already fetched by JS in a previous run — return it
+        if os.path.exists(resp_path):
+            with open(resp_path, "rb") as f:
+                return json.load(f)
+
+        # First encounter — queue this fetch request
+        pending = []
+        if os.path.exists(PENDING_PATH):
+            with open(PENDING_PATH) as f:
+                pending = json.load(f)
+        pending.append({
+            "method": method, "url": url,
+            "headers": dict(headers or {}),
+            "body": body.decode("utf-8") if isinstance(body, bytes) else body,
+        })
+        os.makedirs(os.path.dirname(PENDING_PATH), exist_ok=True)
+        with open(PENDING_PATH, "w") as f:
+            json.dump(pending, f)
+
+        # Exit with code 254 = "I need fetches"
+        sys.exit(254)
+```
+
+**JS-side handler** (in worker.ts):
 
 ```typescript
-// All socket I/O functions are marked as WebAssembly.Suspending
-// so WASM suspends while the Promise resolves
+async function runPythonWithFetch(code: string, baseFiles: Record<string, Uint8Array>) {
+    const files = { ...baseFiles };
+    const MAX_ROUNDS = 10;  // prevent infinite loops
 
-async function sock_connect_impl(fd: number, hostname: string, port: number) {
-    const socket = connect({ hostname, port });
-    await socket.opened;  // JSPI suspends WASM here
-    connectedSockets.set(fd, socket);
-}
+    for (let round = 0; round < MAX_ROUNDS; round++) {
+        const result = runWasm(code, files);
 
-async function sock_recv_impl(fd: number, buf: Uint8Array): Promise<number> {
-    const socket = connectedSockets.get(fd);
-    const reader = socket.readable.getReader();
-    const { value, done } = await reader.read();  // JSPI suspends WASM here
-    reader.releaseLock();
-    if (done || !value) return 0;
-    buf.set(value.subarray(0, buf.length));
-    return Math.min(value.length, buf.length);
-}
+        if (result.exitCode === 0) return result.stdout;
 
-async function sock_send_impl(fd: number, data: Uint8Array): Promise<number> {
-    const socket = connectedSockets.get(fd);
-    const writer = socket.writable.getWriter();
-    await writer.write(data);  // JSPI suspends WASM here
-    writer.releaseLock();
-    return data.length;
+        if (result.exitCode === 254) {
+            // Python queued fetch requests — read them
+            const pendingRaw = files["/tmp/_pymode_pending_fetches.json"];
+            const pending = JSON.parse(decoder.decode(pendingRaw));
+
+            // Fetch ALL URLs in parallel
+            const responses = await Promise.all(
+                pending.map((req: any) =>
+                    fetch(req.url, {
+                        method: req.method,
+                        headers: req.headers,
+                        body: req.body,
+                    })
+                )
+            );
+
+            // Write each response to VFS for the next run
+            for (let i = 0; i < pending.length; i++) {
+                const key = md5(`${pending[i].method}:${pending[i].url}`);
+                const body = new Uint8Array(await responses[i].arrayBuffer());
+                const meta = JSON.stringify({
+                    status: responses[i].status,
+                    headers: Object.fromEntries(responses[i].headers),
+                    body: base64encode(body),
+                });
+                files[`/tmp/_pymode_fetch_responses/${key}`] = encoder.encode(meta);
+            }
+
+            // Clear pending list and re-run Python
+            delete files["/tmp/_pymode_pending_fetches.json"];
+            continue;
+        }
+
+        throw new Error(`Python exited with code ${result.exitCode}`);
+    }
+    throw new Error("Too many fetch rounds (possible infinite loop)");
 }
 ```
 
-**Packages this unlocks (with JSPI)**: `psycopg2` (PostgreSQL), `pymysql`,
-`redis-py`, `pymongo`, `paho-mqtt`, and any package using raw TCP.
+**Cost**: ~28ms per additional round (one Python restart). But fetches are batched —
+if Python makes 5 `requests.get()` calls before processing any response, all 5 are
+collected in round 1 and fetched in parallel via `Promise.all`. Most handlers need
+only 1-2 rounds.
+
+**Optimization**: For handlers that always fetch the same URLs, cache responses in
+CF Workers KV. Second request skips the trampoline entirely.
+
+**When JSPI arrives**: Replace the trampoline with JSPI for zero-overhead sync HTTP.
+The Python-level patch is the same (pymode_http.py), just the transport changes
+from VFS-based to direct WASM suspension. User code doesn't change either way.
+
+**JSPI is the long-term path** (zero overhead, direct WASM stack suspension):
+
+#### Layer 2: TCP socket bridge (database drivers, raw TCP)
+
+For packages that use raw TCP (`psycopg2`, `pymysql`, `redis-py`), the same
+trampoline pattern extends to socket operations. Python queues a "TCP session"
+request (connect + send + recv), JS executes it via `cloudflare:sockets`,
+writes the result to VFS.
+
+**Trampoline for TCP** (works today, no JSPI):
+
+```python
+# pymode_tcp.py — patches socket module
+class PyModeSocket:
+    def __init__(self, host, port):
+        self.host = host
+        self.port = port
+        self.session_id = hashlib.md5(f"{host}:{port}:{id(self)}".encode()).hexdigest()
+        self._send_buffer = []
+
+    def connect(self, addr):
+        self.host, self.port = addr
+
+    def sendall(self, data):
+        self._send_buffer.append(data)
+
+    def recv(self, bufsize):
+        resp_path = f"/tmp/_pymode_tcp/{self.session_id}"
+        if os.path.exists(resp_path):
+            with open(resp_path, "rb") as f:
+                return f.read()[:bufsize]
+
+        # Queue TCP session: connect + send all buffered data + recv
+        _queue_tcp_session(self.session_id, self.host, self.port,
+                           b"".join(self._send_buffer), bufsize)
+        sys.exit(254)  # trampoline back to JS
+```
+
+```typescript
+// JS side — handle TCP sessions alongside HTTP fetches
+if (result.exitCode === 254) {
+    // Handle pending HTTP fetches (same as before)...
+
+    // Handle pending TCP sessions
+    const tcpPending = readVFSFile(files, "/tmp/_pymode_pending_tcp.json");
+    if (tcpPending) {
+        const sessions = JSON.parse(tcpPending);
+        for (const sess of sessions) {
+            const socket = connect({ hostname: sess.host, port: sess.port });
+            await socket.opened;
+            const writer = socket.writable.getWriter();
+            await writer.write(new Uint8Array(sess.sendData));
+            writer.releaseLock();
+            const reader = socket.readable.getReader();
+            const { value } = await reader.read();
+            reader.releaseLock();
+            socket.close();
+            files[`/tmp/_pymode_tcp/${sess.id}`] = value || new Uint8Array(0);
+        }
+        delete files["/tmp/_pymode_pending_tcp.json"];
+    }
+    continue;  // re-run Python
+}
+```
+
+**Limitation**: The trampoline TCP bridge handles request-response protocols
+(SQL query → result, Redis GET → value) well. Multi-round protocols that
+require interleaved send/recv (like TLS handshakes or streaming) need multiple
+trampoline rounds. For PostgreSQL's simple query protocol, 1-2 rounds suffice.
+
+**When JSPI arrives**: Replace with direct WASM↔JS socket bridge using
+`WebAssembly.Suspending` on each `sock_recv`/`sock_send` call. No re-execution,
+true bidirectional streaming. The Python-level socket patch remains the same.
+
+**Packages this unlocks**: `psycopg2` (PostgreSQL), `pymysql`, `redis-py`,
+`pymongo`, `paho-mqtt`, and any package using request-response TCP.
 
 **What CF Workers blocks**: UDP (`dgram`), listening sockets (no inbound),
 connections to private networks/localhost, port 25 (SMTP).
@@ -743,11 +887,32 @@ build_lib openssl   3.2.1  "https://www.openssl.org/source/openssl-3.2.1.tar.gz"
 #   Note: cffi API-mode (runtime C code gen) is impossible in WASM. ABI-mode only.
 build_lib libffi    3.4.6  "https://github.com/libffi/libffi/releases/download/v3.4.6/libffi-3.4.6.tar.gz"
 #
-# HARD (1-2 weeks) — no wasm32-wasi build exists:
-# OpenBLAS: no wasm32 target. Must use TARGET=RISCV64_GENERIC (generic C fallback).
-#   NOFORTRAN=1 USE_THREAD=0. Only Emscripten builds exist (untested with zig cc).
-#   NumPy works without BLAS (uses internal reference impl, just slower).
-# build_lib openblas  0.3.27 "https://github.com/xianyi/OpenBLAS/releases/..."
+# HARD (1-2 weeks) — no wasm32-wasi build exists, but path is known:
+# OpenBLAS: use TARGET=RISCV64_GENERIC (generic C fallback kernel).
+#   Pyodide builds it for Emscripten with this target. We translate to zig cc.
+#   Week 1: get `make libs` producing libopenblas.a
+#   Week 2: link with numpy, verify BLAS ops produce correct results
+build_openblas() {
+    cd /tmp && curl -L "$OPENBLAS_URL" | tar xz
+    cd OpenBLAS-0.3.27
+    CC="zig cc -target wasm32-wasi" \
+    AR="zig ar" \
+    RANLIB="zig ranlib" \
+    make \
+        TARGET=RISCV64_GENERIC \
+        HOSTCC=cc \
+        NOFORTRAN=1 \
+        USE_THREAD=0 \
+        USE_OPENMP=0 \
+        NO_LAPACK=0 \
+        C_LAPACK=1 \
+        ONLY_CBLAS=1 \
+        NO_SHARED=1 \
+        CFLAGS="-Os -fPIC" \
+        libs
+    cp libopenblas.a "$SYSROOT/lib/"
+    cp cblas.h lapacke.h "$SYSROOT/include/"
+}
 # ... etc
 ```
 
@@ -772,38 +937,104 @@ For each C extension package:
 # Build a python.wasm with a specific set of extensions
 PROFILE=$1  # e.g. "data-science"
 
-# Read profile to get list of packages
 PACKAGES=$(cat "profiles/${PROFILE}.txt")
-
-# Collect all .a files and init functions
 LINK_LIBS=""
-INIT_TABLE=""
+
+# Step 1: Auto-discover _inittab entries from compiled .o files
+# Each package build produces .o files with PyInit_ symbols.
+# We scan ALL of them to generate the full registration table.
+
+echo "// Auto-generated by build-profile.sh" > _pymode_extensions.c
+echo "#include \"Python.h\"" >> _pymode_extensions.c
+echo "" >> _pymode_extensions.c
+
+# Collect extern declarations and table entries
+EXTERNS=""
+ENTRIES=""
+
 for pkg in $PACKAGES; do
-    LINK_LIBS="$LINK_LIBS -L packages/build/$pkg -l$pkg"
-    # Each extension registers via PyInit_<module>
-    INIT_TABLE="$INIT_TABLE {\"$pkg\", PyInit_$pkg},"
+    PKG_BUILD="packages/build/$pkg"
+    [ -d "$PKG_BUILD" ] || continue
+    LINK_LIBS="$LINK_LIBS -L $PKG_BUILD"
+
+    # Find all .a files for this package
+    for archive in "$PKG_BUILD"/*.a; do
+        LINK_LIBS="$LINK_LIBS $(basename $archive .a | sed 's/^lib/-l/')"
+
+        # Extract PyInit_ symbols from the archive
+        for sym in $(nm "$archive" 2>/dev/null | grep " T .*PyInit_" | awk '{print $3}' | sed 's/^_//'); do
+            # Derive the full dotted module path from the package's module map
+            # Each package build produces a modules.map file:
+            #   PyInit__multiarray_umath → numpy._core._multiarray_umath
+            module_path=$(grep "^$sym " "$PKG_BUILD/modules.map" | awk '{print $2}')
+            if [ -n "$module_path" ]; then
+                EXTERNS="$EXTERNS\nextern PyObject* ${sym}(void);"
+                ENTRIES="$ENTRIES\n    {\"${module_path}\", ${sym}},"
+            fi
+        done
+    done
 done
 
-# Generate _pymode_extensions.c with frozen module table
-cat > _pymode_extensions.c << EOF
-#include "Python.h"
-static struct _inittab _pymode_builtins[] = {
-    $INIT_TABLE
+# Write the generated C file
+cat >> _pymode_extensions.c << GENEOF
+$(echo -e "$EXTERNS")
+
+static struct _inittab _pymode_builtins[] = {$(echo -e "$ENTRIES")
     {NULL, NULL}
 };
+
+// Called from our patched Modules/main.c before Py_Initialize()
 void pymode_register_extensions(void) {
     PyImport_ExtendInittab(_pymode_builtins);
 }
-EOF
+GENEOF
 
-# Compile and link into python.wasm
+echo "Generated _inittab with $(echo -e "$ENTRIES" | grep -c PyInit) entries"
+
+# Step 2: Compile the registration module
 zig cc -target wasm32-wasi -Os -c _pymode_extensions.c \
     -I$CPYTHON_DIR/Include -I$BUILD_DIR
 
-# Re-link python.wasm with all extensions
-# (modify CPython's Makefile to add our libs to LDFLAGS)
+# Step 3: Re-link python.wasm with all extension archives
 cd $BUILD_DIR
 make LDFLAGS="$LDFLAGS $LINK_LIBS -l_pymode_extensions" python.wasm
+```
+
+**modules.map**: Each package build step generates this file by mapping `.so`
+install paths to Python module names:
+
+```bash
+# Generated during package build (e.g., for numpy):
+# packages/build/numpy/modules.map
+PyInit__multiarray_umath numpy._core._multiarray_umath
+PyInit__umath_linalg numpy.linalg._umath_linalg
+PyInit_lapack_lite numpy.linalg.lapack_lite
+PyInit__generator numpy.random._generator
+PyInit__mt19937 numpy.random._mt19937
+PyInit__pcg64 numpy.random._pcg64
+PyInit__philox numpy.random._philox
+PyInit__sfc64 numpy.random._sfc64
+PyInit_bit_generator numpy.random.bit_generator
+PyInit_mtrand numpy.random.mtrand
+PyInit__common numpy.random._common
+PyInit__bounded_integers numpy.random._bounded_integers
+PyInit__pocketfft_umath numpy.fft._pocketfft_umath
+```
+
+The map is generated automatically from the package's installed file layout:
+```bash
+# In build-extensions.sh, after installing a package:
+generate_module_map() {
+    local pkg=$1 install_dir=$2 output=$3
+    find "$install_dir" -name "*.so" -o -name "*.o" | while read f; do
+        init_sym=$(nm "$f" 2>/dev/null | grep " T .*PyInit_" | awk '{print $3}' | sed 's/^_//')
+        [ -z "$init_sym" ] && continue
+        # Convert file path to dotted module name
+        rel=${f#$install_dir/}
+        module=$(echo "$rel" | sed 's/\.cpython-.*//; s/\.so$//; s/\.o$//; s/\//__/g' | tr '/' '.')
+        echo "$init_sym $module"
+    done > "$output"
+}
 ```
 
 ### The `_inittab` Approach (How Static Extensions Work)
@@ -859,9 +1090,10 @@ This was the key blocker — earlier versions silently rejected dotted paths.
 **Prior art**: kesmit successfully statically linked numpy into CPython WASM
 in March 2023 using this exact approach.
 
-**Automation**: The `build-profile.sh` script must enumerate all `.so` files
-in each package to generate the full `_inittab` table. A data-science profile
-(numpy + scipy + pandas) needs ~160 entries — tedious but mechanical.
+**Automation**: The `build-profile.sh` script (above) auto-discovers all PyInit_
+symbols and generates the full `_inittab` table from `modules.map` files. A
+data-science profile (numpy + scipy + pandas) needs ~160 entries — all generated
+automatically from the compiled `.a` archives. No hardcoding.
 
 The `.py` files for each package are still loaded from the filesystem (embedded or fetched).
 Only the C acceleration modules are statically linked.
@@ -889,20 +1121,33 @@ But for MVP, the `minimal` (6MB) and `web` (6.5MB) profiles work as-is.
 
 ## Implementation Plan
 
-### Phase 0: Extend WASI Shim — Writable FS + Networking (3-5 days)
+### Phase 0: Extend WASI Shim — Writable FS + Re-execution Trampoline (3-5 days)
 
-**Goal**: Our WASI shim becomes a full runtime, not just a read-only FS.
+**Goal**: Our WASI shim becomes a full runtime with write support and HTTP.
 
-1. Add writable file support to the VFS (path_open with O_CREAT, fd_write to files,
-   path_create_directory, path_unlink_file)
-2. Add the `pymode` WASM import namespace with `pymode_fetch` for HTTP
-3. Write `pymode_http.py` that patches `urllib3.PoolManager` to use `pymode_fetch`
-4. Implement WASI `sock_*` syscalls backed by `cloudflare:sockets` for raw TCP
+1. Add writable file support to the VFS:
+   - `path_open` with O_CREAT creates new files in `writableFiles` map
+   - `fd_write` to file descriptors (not just stdout/stderr)
+   - `path_create_directory` creates virtual directories
+   - `path_unlink_file` removes files
+   - `/tmp` preopen for temporary files
+2. Implement the re-execution trampoline in `worker.ts`:
+   - `runPythonWithFetch()` loop: run WASM, catch exit 254, do fetches, re-run
+   - Parallel fetch via `Promise.all` for batched requests
+   - Max 10 rounds with error on infinite loop
+3. Write `pymode_http.py`:
+   - Patches `urllib3.PoolManager` and `requests.Session`
+   - First run: queue fetch request to `/tmp/_pymode_pending_fetches.json`, exit 254
+   - Re-run: find response in `/tmp/_pymode_fetch_responses/`, return it
+4. Write TCP trampoline for database drivers:
+   - `pymode_tcp.py` patches `socket` module
+   - Queue TCP sessions (connect + send + recv) to `/tmp/_pymode_pending_tcp.json`
+   - JS handler uses `cloudflare:sockets` for TCP, writes responses to VFS
 5. Add `/data` preopen backed by CF KV for persistent storage
-6. Write `pymode_pthread.c` for single-thread pthread semantics
-7. Test: `requests.get("https://httpbin.org/get")` returns data
+6. Write `pymode_pthread.c` — single-thread pthread (inline execution)
+7. Test: `requests.get("https://httpbin.org/get")` returns JSON via trampoline
 8. Test: `open("/tmp/test.txt", "w").write("hello")` then read it back
-9. Test: `psycopg2.connect(...)` to a Neon PostgreSQL database
+9. Test: PostgreSQL query via TCP trampoline
 
 This must come BEFORE enabling packages — packages that compile will
 crash at runtime without these bridges.
@@ -962,32 +1207,68 @@ Each library: download, configure with zig cc, make, install to sysroot.
 3. Larger: `regex`, `msgpack`, `pyyaml`, `bitarray`
 4. Each package: compile `.c` files to `.o`, archive to `.a`, add to `_inittab`
 
-### Phase 5: Build Tier 3 (numpy/scipy/pandas) (5-7 days)
+### Phase 5: numpy (2 weeks)
 
-**Goal**: The big three data science packages.
+**Goal**: numpy with full BLAS support, statically linked into python.wasm.
 
-1. **numpy**: Meson build with cross-file for wasm32-wasi. Disable BLAS first
-   (numpy works without it, just slower). Then add OpenBLAS.
-2. **pandas**: Depends on numpy. Mostly Cython-generated C.
-3. **scipy**: Hardest — needs f2c for Fortran code, OpenBLAS, many patches.
-   Copy Pyodide's 18 patches as starting point.
+**Week 1 — numpy without BLAS**:
+1. Write Meson cross-file for wasm32-wasi (`numpy-wasi.ini`):
+   - `c = 'zig cc -target wasm32-wasi'`, `ar = 'zig ar'`
+   - `system = 'wasi'`, `cpu_family = 'wasm32'`
+   - `allow-noblas = true` (no BLAS, use internal reference implementation)
+2. Apply Pyodide's numpy patches (translate Emscripten-specific parts)
+3. Build numpy's 13 C extension modules to `.a` archives
+4. Generate `modules.map` from the compiled `.so` layout
+5. Link into python.wasm via `_inittab`, test `import numpy; numpy.array([1,2,3])`
+6. Run numpy's basic test suite (`numpy.test(verbose=0)`) via wasmtime
 
-### Phase 6: Rust Extensions (2-3 days)
+**Week 2 — Add OpenBLAS**:
+1. Cross-compile OpenBLAS with `zig cc -target wasm32-wasi`:
+   `TARGET=RISCV64_GENERIC NOFORTRAN=1 USE_THREAD=0 C_LAPACK=1`
+2. Fix compilation errors (expect ~5-10, mostly missing POSIX functions)
+3. Install `libopenblas.a` + headers to sysroot
+4. Rebuild numpy with BLAS: `NPY_BLAS_LIBS="-L$SYSROOT/lib -lopenblas"`
+5. Verify: `numpy.linalg.solve()`, matrix multiply matches CPython results
+
+### Phase 6: pandas + scipy (4 weeks)
+
+**pandas (Week 1-2)**:
+1. Cythonize all `.pyx` files on host Python to generate `.c`
+2. Compile 44 C extension modules with `zig cc`
+3. Generate `modules.map`, link into python.wasm
+4. Test: `import pandas; df = pandas.DataFrame({"a": [1,2,3]}); print(df)`
+5. If `wasm-ld` crashes (it did in kesmit's 2023 attempt): investigate linker
+   memory usage, split into multiple link steps if needed
+
+**scipy (Week 3-4)**:
+1. Set up f2c (Fortran-to-C translator) — clone Pyodide's maintained fork
+2. Convert all Fortran source to C, compile with `zig cc`
+3. Apply Pyodide's 18 patches, translating Emscripten flags to zig cc equivalents
+4. Build in priority order by user demand:
+   - Week 3: `scipy.stats` (10 modules), `scipy.linalg` (15), `scipy.optimize` (16)
+   - Week 4: `scipy.signal` (6), `scipy.interpolate` (7), `scipy.integrate` (7),
+     `scipy.sparse` (16), `scipy.spatial` (8), `scipy.ndimage` (5), rest (~10)
+5. Generate `modules.map` for all 100+ modules, link into python.wasm
+6. Test: `from scipy import stats; stats.norm.cdf(0)` returns 0.5
+
+### Phase 7: Rust Extensions (2-3 days)
 
 **Goal**: `cryptography`, `orjson`, `polars`, `tiktoken` work.
 
 1. Set up `cargo` with `wasm32-wasip1` target
 2. Build each crate, extract `.a`
 3. Link with Python C bindings (PyO3 supports wasm32-wasip1)
+4. Generate `modules.map` entries from the Rust-generated PyInit_ symbols
 
-### Phase 7: Profiles and Packaging (2-3 days)
+### Phase 8: Profiles and Packaging (2-3 days)
 
 **Goal**: Users can choose a profile and get a working `python.wasm`.
 
-1. Build the profile system
+1. Build the profile system (auto-_inittab generation already done in build-profile.sh)
 2. Create pre-built profiles: `minimal`, `web`, `data-science`
-3. CI pipeline to rebuild on package updates
-4. npm package or direct download for each profile
+3. CI pipeline: GitHub Actions builds all profiles on each commit
+4. npm package: `@pymode/runtime` with pre-built .wasm per profile
+5. CLI: `npx pymode init --profile web` scaffolds a CF Worker project
 
 ## Avoiding the Endless Loop
 
@@ -1040,67 +1321,64 @@ We don't need all 280 packages on day 1. The 80/20 rule applies:
 
 ## Open Questions
 
-1. **JSPI availability in workerd**: This is the single biggest external dependency.
-   JSPI is phase 4 in W3C, shipping in Chrome 137 / V8. Cloudflare has stated support
-   is coming. Until it ships, synchronous HTTP (requests/urllib3) and raw TCP sockets
-   cannot work from WASM. We should track workerd releases and test on canary.
-   → **Decision needed**: Do we start building assuming JSPI will ship, or design
-   everything around async-only Python?
-
-2. **WASI threads**: Single-threaded pthread (inline execution) is the correct approach.
-   Same as Pyodide. No further discussion needed.
-
-3. **setjmp/longjmp**: Need to verify zig cc's `-fwasm-exceptions` works with
+1. **setjmp/longjmp**: Need to verify zig cc's `-fwasm-exceptions` works with
    zlib, libpng, OpenSSL. If not, `-fwasm-sjlj` is an alternative.
-   → **Test**: Compile zlib, libpng with zig cc and verify.
+   → **Action**: Compile zlib, libpng with zig cc in Phase 3 and verify.
 
-4. **cffi API-mode**: cffi ABI-mode works in WASM. API-mode (generates and compiles
+2. **cffi API-mode**: cffi ABI-mode works in WASM. API-mode (generates and compiles
    C code at runtime) is impossible. Packages using cffi API-mode need patches
    to pre-generate the C code at build time or switch to ABI-mode.
-   → **Affected**: cryptography (uses cffi API-mode, but has Rust backend too)
+   → **Affected**: cryptography (uses cffi API-mode, but has Rust backend — use that)
 
-5. **Filesystem for large packages**: numpy alone has 30MB of `.py` files.
-   Can't embed in the 10MB worker bundle. Need lazy loading from R2/KV.
-   → **Proposal**: `importlib.abc.Finder` that fetches from R2, caches in memory.
+3. **Filesystem for large packages**: numpy alone has 30MB of `.py` files.
+   Can't embed in the 10MB worker bundle.
+   → **Solution**: `importlib.abc.Finder` that fetches from R2, caches in memory.
 
-6. **OpenBLAS**: No wasm32-wasi build exists. NumPy works without BLAS using its
-   internal reference implementation (5-20x slower than native, but functional).
-   OpenBLAS porting is a multi-week effort with uncertain outcome.
-   → **Proposal**: Ship numpy without BLAS initially. Add OpenBLAS as optimization later.
+4. **wasm-ld memory for pandas**: kesmit's 2023 attempt crashed wasm-ld when
+   linking pandas. May need to increase linker memory or split link steps.
+   → **Action**: Investigate during Phase 6 pandas week.
 
-7. **scipy**: 100+ C extension modules, 18 Pyodide patches, Fortran via f2c,
-   depends on OpenBLAS. Estimated 3-4+ weeks.
-   → **Proposal**: Defer to after numpy+pandas are stable. Many users need only
-   specific scipy submodules — could we build scipy.stats alone?
+5. **Package version pinning**: Match Pyodide's exact pins for compatibility.
 
-8. **Package version pinning**: Match Pyodide's pins for compatibility, diverge later.
+## Risk Assessment
 
-## Verified Risk Assessment
+| Component | Risk | Effort | Prior Art |
+|-----------|------|--------|-----------|
+| CPython built-in C modules | Low | 1-2 days | Already working on wasm32-wasi |
+| Pure Python packages | None | 2-3 days | Just filesystem delivery |
+| Re-execution trampoline | Low | 3-5 days | Pattern is well-understood |
+| zlib, libpng, libxml2 | Low | 1 day | Multiple WASM builds exist |
+| OpenSSL | Low | 1 day | jedisct1/openssl-wasm has zig cc build |
+| libffi | Medium | 1-2 days | Official wasm32 support since v3.4.5 |
+| Tier 2 C extensions (58 pkgs) | Medium | 3-5 days | Mechanical: compile .c, archive .a |
+| numpy (no BLAS) | Medium | 1 week | kesmit did it in 2023 |
+| OpenBLAS | High | 1-2 weeks | Only Emscripten builds; translate to zig cc |
+| pandas | Medium-High | 1-2 weeks | wasm-ld crash risk, 44 C modules |
+| scipy | High | 2-3 weeks | 100+ modules, 18 patches, f2c for Fortran |
+| Rust extensions | Medium | 2-3 days | PyO3 supports wasm32-wasip1 |
 
-| Component | Risk | Prior Art |
-|-----------|------|-----------|
-| CPython built-in C modules | Low | Already working on wasm32-wasi |
-| Pure Python packages | None | Just filesystem delivery |
-| zlib, libpng, libxml2 | Low | Multiple WASM builds exist |
-| OpenSSL | Low | jedisct1/openssl-wasm has zig cc build |
-| libffi | Medium | Official wasm32 support since v3.4.5 |
-| numpy (no BLAS) | Medium | kesmit did it in 2023, but import cycles need testing |
-| pandas | Medium-High | wasm-ld crashed in kesmit's attempt, needs investigation |
-| OpenBLAS | High | No wasm32-wasi build, only Emscripten with generic fallback |
-| scipy | Very High | Only Pyodide has it working (Emscripten, 18 patches, Fortran) |
-| JSPI in workerd | External | Cloudflare stated it's coming, but no release date |
+Total estimated timeline: **8-10 weeks** for 95% package coverage.
 
 ## Success Criteria
 
-### Without JSPI (achievable now)
+### Phase 0-2 milestone (week 1-2)
 1. `minimal` profile: all CPython built-in C modules work, <6.5MB
-2. Pure computation: numpy, regex, hashlib, json all work
-3. Async HTTP: aiohttp, httpx work via JS FFI
-4. File I/O: sqlite3 in-memory, tempfile, pickle all work
-5. 80% of Pyodide's pure Python packages importable
+2. Writable VFS: tempfile, sqlite3 in-memory, pickle all work
+3. HTTP via trampoline: `requests.get()` returns data
+4. 154 pure Python packages importable
 
-### With JSPI (when workerd ships it)
-6. `web` profile: requests, flask, fastapi, jinja2, pyyaml — <8MB
-7. Database: psycopg2, pymysql, redis-py work via socket bridge
-8. `data-science` profile: numpy, pandas, matplotlib — <15MB
-9. 95% of Pyodide's package list supported (274/280)
+### Phase 3-4 milestone (week 3-4)
+5. Sysroot: zlib, OpenSSL, libffi, libxml2 compiled to wasm32-wasi
+6. 58 Tier 2 C extensions compiled and linked
+7. `web` profile: requests, flask, fastapi, jinja2, pyyaml, aiohttp — <8MB
+
+### Phase 5-6 milestone (week 5-8)
+8. numpy with OpenBLAS, all 13 C modules linked
+9. pandas with all 44 C modules linked
+10. scipy with all 100+ modules, Fortran via f2c
+
+### Phase 7-8 milestone (week 9-10)
+11. Rust extensions: cryptography, orjson, polars, tiktoken
+12. Pre-built profiles: `minimal`, `web`, `data-science` as npm package
+13. 95% of Pyodide's package list supported (274/280)
+14. Database: psycopg2, pymysql, redis-py via TCP trampoline
