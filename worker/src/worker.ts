@@ -670,6 +670,8 @@ const EXIT_NEEDS_FETCH = 254;
 const MAX_TRAMPOLINE_ROUNDS = 10;
 const PENDING_FETCHES_PATH = "tmp/_pymode_pending_fetches.json";
 const FETCH_RESPONSES_DIR = "tmp/_pymode_fetch_responses";
+const PENDING_TCP_PATH = "tmp/_pymode_pending_tcp.json";
+const TCP_RESPONSES_DIR = "tmp/_pymode_tcp";
 
 async function runPythonWithFetch(
   code: string,
@@ -696,44 +698,98 @@ async function runPythonWithFetch(
       files[path] = data;
     });
 
-    const pendingRaw = files[PENDING_FETCHES_PATH];
-    if (!pendingRaw) {
-      // Exit 254 but no pending fetches file — treat as error
+    const pendingFetchRaw = files[PENDING_FETCHES_PATH];
+    const pendingTcpRaw = files[PENDING_TCP_PATH];
+
+    if (!pendingFetchRaw && !pendingTcpRaw) {
+      // Exit 254 but no pending requests — treat as error
       return { stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode };
     }
 
-    const pending: Array<{ url: string; method: string; headers?: Record<string, string>; body?: string }> =
-      JSON.parse(decoder.decode(pendingRaw));
+    // Handle HTTP fetches
+    if (pendingFetchRaw) {
+      const pending: Array<{ url: string; method: string; headers?: Record<string, string>; body?: string }> =
+        JSON.parse(decoder.decode(pendingFetchRaw));
 
-    if (pending.length === 0) {
-      return { stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode };
+      if (pending.length > 0) {
+        const responses = await Promise.all(
+          pending.map((req) =>
+            fetch(req.url, {
+              method: req.method || "GET",
+              headers: req.headers,
+              body: req.body,
+            })
+          )
+        );
+
+        for (let i = 0; i < pending.length; i++) {
+          const key = hashKey(`${pending[i].method || "GET"}:${pending[i].url}`);
+          const body = new Uint8Array(await responses[i].arrayBuffer());
+          const meta = JSON.stringify({
+            status: responses[i].status,
+            headers: Object.fromEntries([...responses[i].headers.entries()]),
+            bodyBase64: base64Encode(body),
+          });
+          files[`${FETCH_RESPONSES_DIR}/${key}`] = encoder.encode(meta);
+        }
+      }
+      delete files[PENDING_FETCHES_PATH];
     }
 
-    // Execute all fetches in parallel
-    const responses = await Promise.all(
-      pending.map((req) =>
-        fetch(req.url, {
-          method: req.method || "GET",
-          headers: req.headers,
-          body: req.body,
-        })
-      )
-    );
+    // Handle TCP sessions (database drivers, raw sockets)
+    if (pendingTcpRaw) {
+      const sessions: Array<{
+        sessionId: string;
+        host: string;
+        port: number;
+        sendDataBase64: string;
+        recvSize: number;
+      }> = JSON.parse(decoder.decode(pendingTcpRaw));
 
-    // Write each response to VFS for the next run
-    for (let i = 0; i < pending.length; i++) {
-      const key = hashKey(`${pending[i].method || "GET"}:${pending[i].url}`);
-      const body = new Uint8Array(await responses[i].arrayBuffer());
-      const meta = JSON.stringify({
-        status: responses[i].status,
-        headers: Object.fromEntries([...responses[i].headers.entries()]),
-        bodyBase64: base64Encode(body),
-      });
-      files[`${FETCH_RESPONSES_DIR}/${key}`] = encoder.encode(meta);
+      for (const sess of sessions) {
+        try {
+          const { connect } = await import("cloudflare:sockets");
+          const socket = connect({ hostname: sess.host, port: sess.port });
+
+          // Send buffered data
+          const sendData = base64Decode(sess.sendDataBase64);
+          const writer = socket.writable.getWriter();
+          await writer.write(sendData);
+          writer.releaseLock();
+
+          // Read response
+          const reader = socket.readable.getReader();
+          const chunks: Uint8Array[] = [];
+          let totalLen = 0;
+          while (totalLen < sess.recvSize) {
+            const { value, done } = await reader.read();
+            if (done || !value) break;
+            chunks.push(value);
+            totalLen += value.length;
+          }
+          reader.releaseLock();
+          await socket.close();
+
+          // Combine chunks
+          const recvData = new Uint8Array(totalLen);
+          let off = 0;
+          for (const c of chunks) { recvData.set(c, off); off += c.length; }
+
+          const meta = JSON.stringify({
+            dataBase64: base64Encode(recvData),
+          });
+          files[`${TCP_RESPONSES_DIR}/${sess.sessionId}`] = encoder.encode(meta);
+        } catch (tcpErr) {
+          // Write error response so Python can handle it
+          const meta = JSON.stringify({
+            error: tcpErr instanceof Error ? tcpErr.message : String(tcpErr),
+            dataBase64: "",
+          });
+          files[`${TCP_RESPONSES_DIR}/${sess.sessionId}`] = encoder.encode(meta);
+        }
+      }
+      delete files[PENDING_TCP_PATH];
     }
-
-    // Clear pending list for next run
-    delete files[PENDING_FETCHES_PATH];
   }
 
   throw new Error("Too many fetch trampoline rounds (possible infinite loop)");

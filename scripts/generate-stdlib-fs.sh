@@ -93,6 +93,7 @@ PYMODE_LIB="$ROOT_DIR/lib"
 PYMODE_FILES=(
     "pymode/__init__.py"
     "pymode/http.py"
+    "pymode/tcp.py"
 )
 
 echo "Generating $OUTPUT..."
