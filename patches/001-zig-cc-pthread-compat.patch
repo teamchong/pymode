@@ -1,0 +1,24 @@
+diff --git a/Include/cpython/pthread_stubs.h b/Include/cpython/pthread_stubs.h
+index e542eaa..c05e04d 100644
+--- a/Include/cpython/pthread_stubs.h
++++ b/Include/cpython/pthread_stubs.h
+@@ -78,6 +78,11 @@ PyAPI_FUNC(int) pthread_condattr_setclock(
+     pthread_condattr_t *attr, clockid_t clock_id);
+ 
+ // pthread
++// When zig cc targets wasi, the bundled wasi-libc already declares these
++// functions in <pthread.h> with POSIX-conformant signatures. Redeclaring
++// them here causes type conflicts (e.g. pthread_exit returns void in POSIX
++// but int here). Only declare when the libc does not provide them.
++#ifndef _PTHREAD_H
+ PyAPI_FUNC(int) pthread_create(pthread_t *restrict thread,
+                                const pthread_attr_t *restrict attr,
+                                void *(*start_routine)(void *),
+@@ -89,6 +94,7 @@ PyAPI_FUNC(int) pthread_exit(void *retval) __attribute__ ((__noreturn__));
+ PyAPI_FUNC(int) pthread_attr_init(pthread_attr_t *attr);
+ PyAPI_FUNC(int) pthread_attr_setstacksize(pthread_attr_t *attr, size_t stacksize);
+ PyAPI_FUNC(int) pthread_attr_destroy(pthread_attr_t *attr);
++#endif
+ 
+ 
+ // pthread_key

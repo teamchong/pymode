@@ -1,4 +1,4 @@
-name = "zigpython-worker"
+name = "pymode-worker"
 main = "bridge/worker.ts"
 compatibility_date = "2024-01-01"
 
@@ -9,7 +9,7 @@ PYTHON = "build/python.wasm"
 # R2 bucket for file storage (Python open() calls)
 [[r2_buckets]]
 binding = "STORAGE"
-bucket_name = "zigpython-storage"
+bucket_name = "pymode-storage"
 
 # KV namespace for key-value storage (Python shelve/dbm)
 [[kv_namespaces]]
@@ -19,7 +19,7 @@ id = ""
 # D1 database for SQL (Python sqlite3)
 [[d1_databases]]
 binding = "DB"
-database_name = "zigpython-db"
+database_name = "pymode-db"
 database_id = ""
 
 [vars]

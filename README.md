@@ -1,4 +1,4 @@
-# ZigPython
+# PyMode
 
 Python compiled to WebAssembly using Zig, with metal0's Zig runtime replacing C extensions.
 
@@ -41,7 +41,7 @@ Metal0 has 300+ Zig stdlib modules that can replace CPython's C extensions.
 ## Architecture
 
 ```
-zigpython/
+pymode/
 ├── cpython/                    # CPython 3.13 source (git submodule)
 ├── patches/                    # Patches for zig cc compatibility
 ├── zig-modules/                # Zig replacements for C extensions
