@@ -94,6 +94,7 @@ PYMODE_FILES=(
     "pymode/__init__.py"
     "pymode/http.py"
     "pymode/tcp.py"
+    "pymode/importer.py"
 )
 
 echo "Generating $OUTPUT..."
