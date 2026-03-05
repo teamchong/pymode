@@ -41,3 +41,4 @@ wasi-sdk-*/
 zig-cache/
 zig-out/
 .zig-cache/
+worker/src/user-files.ts

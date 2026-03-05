@@ -297,20 +297,24 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
   }
 
   /**
-   * Run Python code in the WASM interpreter.
+   * Run Python in the WASM interpreter with full host imports.
    *
    * Single _start() invocation. Asyncify handles all async I/O by
    * suspending/resuming the WASM stack when async imports are called.
    * No trampoline, no re-execution.
+   *
+   * @param wasmModule - Compiled python.wasm module
+   * @param createWasi - WASI factory (accepts getMemory + optional stdinData)
+   * @param stdinData  - Optional data piped as stdin (for request handler mode)
    */
   async run(
     wasmModule: WebAssembly.Module,
-    createWasi: (getMemory: () => WebAssembly.Memory) => {
+    createWasi: (getMemory: () => WebAssembly.Memory, stdinData?: Uint8Array) => {
       imports: Record<string, Function>;
       getStdout: () => Uint8Array;
       getStderr: () => Uint8Array;
     },
-    args?: string[]
+    stdinData?: Uint8Array
   ): Promise<{
     stdout: string;
     stderr: string;
@@ -323,7 +327,7 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
     this.wasmModule = wasmModule;
     this.createWasiFn = createWasi as any;
 
-    const wasi = createWasi(() => this.wasmMemory!);
+    const wasi = createWasi(() => this.wasmMemory!, stdinData);
     const pymodeImports = this.buildImports();
 
     // Wrap imports with Asyncify — async pymode imports will trigger
@@ -364,10 +368,11 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
 
   /**
    * RPC entry point — called by the stateless Worker via DO binding.
+   * Legacy: run arbitrary code string.
    */
   async executeCode(
     wasmModule: WebAssembly.Module,
-    createWasi: (getMemory: () => WebAssembly.Memory) => {
+    createWasi: (getMemory: () => WebAssembly.Memory, stdinData?: Uint8Array) => {
       imports: Record<string, Function>;
       getStdout: () => Uint8Array;
       getStderr: () => Uint8Array;
@@ -379,6 +384,36 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
     exitCode: number;
   }> {
     return this.run(wasmModule, createWasi);
+  }
+
+  /**
+   * Project mode RPC — handles an HTTP request through a Python handler.
+   *
+   * The Worker serializes the CF Request to JSON and passes it here.
+   * PythonDO runs the handler with full host imports (KV, R2, D1, TCP, HTTP)
+   * via Asyncify. The Python handler reads the request from stdin, calls
+   * on_fetch(), and writes the serialized Response to stdout.
+   *
+   * This gives Python handlers the same capabilities as CF Python Workers:
+   * - Direct access to KV, R2, D1 via _pymode host imports
+   * - Real async I/O via Asyncify (no trampoline)
+   * - TCP connections for database drivers
+   * - HTTP fetch for external APIs
+   */
+  async handleRequest(
+    wasmModule: WebAssembly.Module,
+    createWasi: (getMemory: () => WebAssembly.Memory, stdinData?: Uint8Array) => {
+      imports: Record<string, Function>;
+      getStdout: () => Uint8Array;
+      getStderr: () => Uint8Array;
+    },
+    requestJson: Uint8Array
+  ): Promise<{
+    stdout: string;
+    stderr: string;
+    exitCode: number;
+  }> {
+    return this.run(wasmModule, createWasi, requestJson);
   }
 
   /**

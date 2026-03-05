@@ -80,11 +80,25 @@ BOOT_FILES=(
     # url
     "urllib/__init__.py"
     "urllib/parse.py"
+    # import machinery (needed for pymode._handler)
+    "importlib/__init__.py"
+    "importlib/_bootstrap.py"
+    "importlib/_bootstrap_external.py"
+    "importlib/abc.py"
+    "importlib/machinery.py"
+    "importlib/util.py"
+    # pickle (needed for pymode.parallel)
+    "pickle.py"
+    "_compat_pickle.py"
     # misc
     "keyword.py"
     "reprlib.py"
     "traceback.py"
     "struct.py"
+    # io (needed for stdin reading)
+    "io.py"
+    "_pyio.py"
+    "abc.py"
 )
 
 PYMODE_LIB="$ROOT_DIR/lib"
@@ -92,8 +106,12 @@ PYMODE_LIB="$ROOT_DIR/lib"
 # PyMode runtime modules bundled alongside stdlib
 PYMODE_FILES=(
     "pymode/__init__.py"
+    "pymode/workers.py"
+    "pymode/_handler.py"
     "pymode/http.py"
     "pymode/tcp.py"
+    "pymode/env.py"
+    "pymode/parallel.py"
     "pymode/importer.py"
 )
 

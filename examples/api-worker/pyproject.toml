@@ -1,0 +1,7 @@
+[project]
+name = "api-worker"
+version = "0.1.0"
+description = "API Worker with KV storage and multi-file project"
+
+[tool.pymode]
+main = "src/entry.py"

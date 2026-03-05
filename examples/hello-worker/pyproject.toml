@@ -1,0 +1,7 @@
+[project]
+name = "hello-worker"
+version = "0.1.0"
+description = "Example PyMode Worker"
+
+[tool.pymode]
+main = "src/entry.py"
