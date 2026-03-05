@@ -177,7 +177,6 @@ PKG_CONFIG=false \
     py_cv_module__bz2=n/a \
     py_cv_module__lzma=n/a \
     py_cv_module_zlib=n/a \
-    py_cv_module_binascii=n/a \
     py_cv_module__socket=n/a \
     py_cv_module__ctypes=n/a \
     py_cv_module_select=n/a \
