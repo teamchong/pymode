@@ -12,6 +12,7 @@ The Worker (JS) reads stdout JSON and constructs the CF Response.
 """
 
 import sys
+import os
 import json
 import importlib
 import traceback
@@ -26,6 +27,15 @@ def _run():
         return
 
     module_name = sys.argv[1]
+
+    # Add the entry module's parent directory to sys.path so sibling imports work.
+    # e.g. "src.entry" → add "src/" to path, so `from helpers import greet` works
+    # when helpers.py is in the same directory as entry.py.
+    parts = module_name.rsplit(".", 1)
+    if len(parts) == 2:
+        parent_dir = os.path.join(os.getcwd(), parts[0].replace(".", os.sep))
+        if os.path.isdir(parent_dir) and parent_dir not in sys.path:
+            sys.path.insert(0, parent_dir)
 
     # Read request JSON from stdin
     try:

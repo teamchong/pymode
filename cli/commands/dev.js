@@ -173,6 +173,18 @@ export async function dev(args) {
   const server = createServer(async (req, res) => {
     const startTime = Date.now();
 
+    // Handle CORS preflight
+    if (req.method === "OPTIONS") {
+      res.writeHead(204, {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, PATCH, OPTIONS",
+        "Access-Control-Allow-Headers": req.headers["access-control-request-headers"] || "*",
+        "Access-Control-Max-Age": "86400",
+      });
+      res.end();
+      return;
+    }
+
     // Build full URL
     const url = `http://localhost:${port}${req.url}`;
 
@@ -231,6 +243,7 @@ export async function dev(args) {
 
       const respHeaders = data.headers || {};
       respHeaders["X-Powered-By"] = "PyMode-Dev";
+      respHeaders["Access-Control-Allow-Origin"] = "*";
 
       let respBody = data.body || "";
       if (data.bodyIsBinary && data.body) {

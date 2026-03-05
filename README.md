@@ -98,7 +98,13 @@ my-worker/
     utils.py
 ```
 
-All `.py` files are bundled into the VFS at deploy time. Normal `import` works between files.
+All `.py` files are bundled into the VFS at deploy time. Import sibling files naturally:
+
+```python
+# src/entry.py
+from helpers import greet       # sibling import (same directory)
+from src.utils import validate  # absolute import (from project root)
+```
 
 ### TCP Connections
 
@@ -198,10 +204,28 @@ pymode deploy            # Bundle + deploy to Cloudflare Workers
 Options:
 - `pymode dev --port 3000` — Custom port (default: 8787)
 - `pymode dev --entry app.py` — Override entry point
+- `pymode dev --env API_KEY=secret` — Pass env vars (repeatable)
 - `pymode deploy ./path/to/project` — Deploy from a specific directory
 
 The dev server uses native Python for instant feedback (~35ms per request).
-No WASM build required for local development.
+No WASM build required for local development. CORS is enabled by default for
+cross-origin requests during development.
+
+### Environment Variables
+
+The dev server loads environment variables from `.dev.vars` in your project root
+(same convention as wrangler):
+
+```
+# .dev.vars
+API_KEY=my-secret-key
+DB_URL="postgres://localhost/mydb"
+```
+
+These are accessible in your handler via `env.API_KEY`, `env.DB_URL`, etc.
+You can also pass vars via CLI: `pymode dev --env API_KEY=secret`.
+
+Add `.dev.vars` to your `.gitignore` — it contains secrets.
 
 ## Building from Source
 

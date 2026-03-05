@@ -76,6 +76,7 @@ def on_fetch(request, env):
 .venv/
 node_modules/
 .wrangler/
+.dev.vars
 `
   );
 
