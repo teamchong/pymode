@@ -98,6 +98,23 @@ int32_t pymode_d1_exec(
 __attribute__((import_module("pymode"), import_name("env_get")))
 int32_t pymode_env_get(const char* key, int32_t key_len, char* buf, int32_t buf_len);
 
+/* --- Threading (child DOs) --- */
+
+/* Spawn a child DO to execute Python code in parallel.
+ * code: Python source to execute in the child
+ * input: serialized (pickled) input data
+ * Returns a thread handle >= 0, or -1 on error. Async. */
+__attribute__((import_module("pymode"), import_name("thread_spawn")))
+int32_t pymode_thread_spawn(
+    const char* code, int32_t code_len,
+    const uint8_t* input, int32_t input_len);
+
+/* Join a spawned thread. Blocks until the child completes.
+ * Writes the serialized result into buf.
+ * Returns bytes written, -1 on error. Async. */
+__attribute__((import_module("pymode"), import_name("thread_join")))
+int32_t pymode_thread_join(int32_t thread_id, uint8_t* buf, int32_t buf_len);
+
 /* --- Logging --- */
 
 __attribute__((import_module("pymode"), import_name("console_log")))

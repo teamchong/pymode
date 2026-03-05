@@ -18,6 +18,7 @@ interface PythonDOEnv {
   KV?: KVNamespace;
   R2?: R2Bucket;
   D1?: D1Database;
+  THREAD_DO?: DurableObjectNamespace;
   [key: string]: unknown;
 }
 
@@ -40,6 +41,8 @@ const ASYNC_IMPORTS = new Set([
   "pymode.r2_get",
   "pymode.r2_put",
   "pymode.d1_exec",
+  "pymode.thread_spawn",
+  "pymode.thread_join",
 ]);
 
 export class PythonDO extends DurableObject<PythonDOEnv> {
@@ -61,6 +64,18 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
     offset: number;
   }>();
   private nextResponseId = 1;
+
+  // Thread state — spawned child DOs and their result promises
+  private threadResults = new Map<number, Promise<Uint8Array>>();
+  private nextThreadId = 1;
+
+  // Stored references for spawning child DOs
+  private wasmModule: WebAssembly.Module | null = null;
+  private createWasiFn: ((getMemory: () => WebAssembly.Memory, stdinData?: Uint8Array) => {
+    imports: Record<string, Function>;
+    getStdout: () => Uint8Array;
+    getStderr: () => Uint8Array;
+  }) | null = null;
 
   private getMemBytes(): Uint8Array {
     return new Uint8Array(this.wasmMemory!.buffer);
@@ -239,6 +254,41 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
         return self.writeBytes(bufPtr, encoded, bufLen);
       },
 
+      // --- Threading (async) ---
+      // Spawn a child DO to run Python code in parallel
+      thread_spawn: async (
+        codePtr: number, codeLen: number,
+        inputPtr: number, inputLen: number
+      ): Promise<number> => {
+        if (!self.env.THREAD_DO || !self.wasmModule || !self.createWasiFn) return -1;
+        const code = self.readString(codePtr, codeLen);
+        const input = self.getMemBytes().slice(inputPtr, inputPtr + inputLen);
+        const threadId = self.nextThreadId++;
+
+        // Get a unique DO instance for this thread
+        const doId = self.env.THREAD_DO.newUniqueId();
+        const threadDO = self.env.THREAD_DO.get(doId) as any;
+
+        // Fire off the child DO — it runs in parallel
+        const resultPromise = threadDO.execute(
+          self.wasmModule, self.createWasiFn, code, input
+        ).then((r: { stdout: Uint8Array; stderr: Uint8Array; exitCode: number }) => {
+          return r.stdout;
+        });
+
+        self.threadResults.set(threadId, resultPromise);
+        return threadId;
+      },
+
+      // Join a spawned thread — blocks until child DO completes
+      thread_join: async (threadId: number, bufPtr: number, bufLen: number): Promise<number> => {
+        const promise = self.threadResults.get(threadId);
+        if (!promise) return -1;
+        const result = await promise;
+        self.threadResults.delete(threadId);
+        return self.writeBytes(bufPtr, result, bufLen);
+      },
+
       // --- Logging (sync) ---
       console_log: (msgPtr: number, msgLen: number): void => {
         console.log(self.readString(msgPtr, msgLen));
@@ -268,6 +318,10 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
   }> {
     const decoder = new TextDecoder();
     const asyncify = new AsyncifyRuntime();
+
+    // Store references so thread_spawn can pass them to child DOs
+    this.wasmModule = wasmModule;
+    this.createWasiFn = createWasi as any;
 
     const wasi = createWasi(() => this.wasmMemory!);
     const pymodeImports = this.buildImports();

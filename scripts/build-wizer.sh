@@ -98,7 +98,7 @@ if command -v wasm-objdump >/dev/null 2>&1; then
 fi
 
 # Step 3: Asyncify the binary (if not already done)
-ASYNC_IMPORTS="pymode.tcp_recv,pymode.http_fetch,pymode.kv_get,pymode.kv_put,pymode.kv_delete,pymode.r2_get,pymode.r2_put,pymode.d1_exec"
+ASYNC_IMPORTS="pymode.tcp_recv,pymode.http_fetch,pymode.kv_get,pymode.kv_put,pymode.kv_delete,pymode.r2_get,pymode.r2_put,pymode.d1_exec,pymode.thread_spawn,pymode.thread_join"
 
 info "Running wasm-opt --asyncify..."
 BEFORE_SIZE=$(stat -f%z "$BUILD_DIR/python.wasm" 2>/dev/null || stat -c%s "$BUILD_DIR/python.wasm")

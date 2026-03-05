@@ -236,6 +236,42 @@ static PyObject* py_env_get(PyObject* self, PyObject* args) {
     return PyUnicode_FromStringAndSize(buf, n);
 }
 
+/* --- Thread wrappers --- */
+
+static PyObject* py_thread_spawn(PyObject* self, PyObject* args) {
+    const char* code;
+    Py_ssize_t code_len;
+    const uint8_t* input;
+    Py_ssize_t input_len;
+    if (!PyArg_ParseTuple(args, "s#y#", &code, &code_len, &input, &input_len))
+        return NULL;
+    int32_t thread_id = pymode_thread_spawn(code, (int32_t)code_len, input, (int32_t)input_len);
+    if (thread_id < 0) {
+        PyErr_SetString(PyExc_RuntimeError, "thread_spawn failed");
+        return NULL;
+    }
+    return PyLong_FromLong(thread_id);
+}
+
+static PyObject* py_thread_join(PyObject* self, PyObject* args) {
+    int thread_id;
+    int bufsize = 10 * 1024 * 1024;
+    if (!PyArg_ParseTuple(args, "i|i", &thread_id, &bufsize))
+        return NULL;
+    uint8_t* buf = (uint8_t*)PyMem_Malloc(bufsize);
+    if (!buf)
+        return PyErr_NoMemory();
+    int32_t n = pymode_thread_join(thread_id, buf, bufsize);
+    if (n < 0) {
+        PyMem_Free(buf);
+        PyErr_SetString(PyExc_RuntimeError, "thread_join failed");
+        return NULL;
+    }
+    PyObject* result = PyBytes_FromStringAndSize((const char*)buf, n);
+    PyMem_Free(buf);
+    return result;
+}
+
 /* --- Console wrapper --- */
 
 static PyObject* py_console_log(PyObject* self, PyObject* args) {
@@ -265,6 +301,8 @@ static PyMethodDef pymode_methods[] = {
     {"r2_put", py_r2_put, METH_VARARGS, NULL},
     {"d1_exec", py_d1_exec, METH_VARARGS, NULL},
     {"env_get", py_env_get, METH_VARARGS, NULL},
+    {"thread_spawn", py_thread_spawn, METH_VARARGS, NULL},
+    {"thread_join", py_thread_join, METH_VARARGS, NULL},
     {"console_log", py_console_log, METH_VARARGS, NULL},
     {NULL, NULL, 0, NULL}
 };

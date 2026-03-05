@@ -23,10 +23,12 @@ globs = ["**/*.zip"]
 # Durable Objects:
 # - TcpPoolDO: Legacy persistent TCP connections (trampoline mode)
 # - PythonDO: Full CPython WASM instance with host imports (new architecture)
+# - ThreadDO: Child DOs for parallel Python execution (spawned by PythonDO)
 [durable_objects]
 bindings = [
   { name = "TCP_POOL", class_name = "TcpPoolDO" },
   { name = "PYTHON_DO", class_name = "PythonDO" },
+  { name = "THREAD_DO", class_name = "ThreadDO" },
 ]
 
 [[migrations]]
@@ -36,3 +38,7 @@ new_classes = ["TcpPoolDO"]
 [[migrations]]
 tag = "v2"
 new_classes = ["PythonDO"]
+
+[[migrations]]
+tag = "v3"
+new_classes = ["ThreadDO"]
