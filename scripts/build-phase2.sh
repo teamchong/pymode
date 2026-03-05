@@ -203,10 +203,28 @@ PKG_CONFIG=false \
 info "Patching pyconfig.h for WASI..."
 sed -i '' 's/^#define HAVE_PTHREAD_H 1/\/* #undef HAVE_PTHREAD_H *\//' "$BUILD_DIR/pyconfig.h"
 
+# Step 3c: Compile WASI shims (single-threaded pthread, etc.)
+info "Compiling WASI shims..."
+SHIMS_DIR="$ROOT_DIR/lib/wasi-shims"
+SHIMS_OBJ_DIR="$BUILD_DIR/shims"
+mkdir -p "$SHIMS_OBJ_DIR"
+
+for shim_src in "$SHIMS_DIR"/*.c; do
+    [ -f "$shim_src" ] || continue
+    shim_name="$(basename "$shim_src" .c)"
+    info "  Compiling $shim_name.c"
+    "$ZIG_WRAPPER_DIR/zig-cc" -c -Os "$shim_src" -o "$SHIMS_OBJ_DIR/$shim_name.o"
+done
+
+# Create static library from shims
+"$ZIG_WRAPPER_DIR/zig-ar" rcs "$SHIMS_OBJ_DIR/libwasi_shims.a" "$SHIMS_OBJ_DIR"/*.o
+info "  Built libwasi_shims.a"
+
 # Step 4: Build
 info "Building CPython with zig cc (ReleaseSmall)..."
 NCPU="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
-make -j"$NCPU" 2>&1 | tee "$BUILD_DIR/build.log"
+# Add shims library to LDFLAGS for linking
+LDFLAGS="-s -L$SHIMS_OBJ_DIR -lwasi_shims" make -j"$NCPU" 2>&1 | tee "$BUILD_DIR/build.log"
 
 # Step 5: Verify python.wasm exists
 if [ ! -f "$BUILD_DIR/python.wasm" ]; then
