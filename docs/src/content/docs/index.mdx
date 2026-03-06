@@ -18,7 +18,7 @@ import { Card, CardGrid } from "@astrojs/starlight/components";
 
 ## Why PyMode?
 
-Cloudflare deprecated their Python Workers (Pyodide-based) in 2024. PyMode is the replacement — upstream CPython compiled to WASM, not a patched fork.
+Cloudflare's Python Workers (Pyodide-based) are in limited beta with an uncertain roadmap. PyMode takes a different approach — upstream CPython compiled to WASM via `zig cc`, purpose-built for Cloudflare Workers with Durable Objects.
 
 <CardGrid>
   <Card title="Upstream CPython 3.13" icon="seti:python">

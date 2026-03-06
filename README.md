@@ -6,7 +6,7 @@
 
 CPython 3.13 compiled to WASM with `zig cc`. 5.7MB binary (1.8MB gzipped). Runs on Workers with full access to KV, R2, D1, TCP, and HTTP.
 
-> **Why PyMode?** Cloudflare's official Python Workers (based on Pyodide/Emscripten) were [deprecated in 2024](https://blog.cloudflare.com/python-workers) and the `pylxxx` WASM builds are no longer maintained. PyMode takes a different approach: we compile **upstream CPython** directly to `wasm32-wasi` using `zig cc` — no Emscripten, no Pyodide, no patched fork. This means you get the real CPython 3.13 runtime with full language support, a 3x smaller binary, and portability to any WASI-compatible host beyond just Cloudflare.
+> **Why PyMode?** Cloudflare's [Python Workers](https://blog.cloudflare.com/python-workers) (based on Pyodide/Emscripten) are in limited beta with an uncertain roadmap. PyMode takes a different approach: we compile **upstream CPython** directly to `wasm32-wasi` using `zig cc` — no Emscripten, no Pyodide, no patched fork. The runtime is purpose-built for Cloudflare Workers via Durable Objects, using custom WASM host imports (`pymode.*`) for KV, R2, D1, TCP, HTTP, and dynamic loading. This means you get the real CPython 3.13 runtime with full language support and a 3x smaller binary.
 
 ## Quick Start
 
@@ -344,13 +344,13 @@ Users can use the pre-built binary from npm/releases.
 | `examples/api-worker/` | Multi-file project with KV |
 | `examples/workflow-worker/` | Durable workflow with retries |
 
-## Comparison: PyMode vs CF Python Workers (deprecated)
+## Comparison: PyMode vs CF Python Workers
 
-Cloudflare's official Python Workers used Pyodide (CPython compiled via Emscripten) and are no longer actively maintained. PyMode compiles **upstream CPython 3.13** directly to `wasm32-wasi` with `zig cc` — no fork, no Emscripten, no Pyodide.
+Cloudflare's Python Workers use Pyodide (CPython compiled via Emscripten) and are currently in limited beta. PyMode compiles **upstream CPython 3.13** directly to `wasm32-wasi` with `zig cc` — no fork, no Emscripten, no Pyodide.
 
-| | CF Python Workers (deprecated) | PyMode |
+| | CF Python Workers (Pyodide) | PyMode |
 |---|---|---|
-| Status | Deprecated (2024) | Active |
+| Status | Limited beta | Active |
 | CPython build | Pyodide fork (Emscripten) | Upstream CPython 3.13 (zig cc → wasm32-wasi) |
 | Handler pattern | `on_fetch(request, env)` | `on_fetch(request, env)` |
 | Multi-file projects | Yes | Yes |
@@ -362,7 +362,7 @@ Cloudflare's official Python Workers used Pyodide (CPython compiled via Emscript
 | Threading | `asyncio.gather` only | Real parallelism (child DOs) |
 | C extensions | Pyodide pre-built wheels only | Any C ext via dlopen polyfill (.wasm side modules) |
 | Package support | 280+ (Pyodide wheels) | Pure-Python PyPI + C extensions |
-| Portability | CF only (Emscripten) | Any WASI host |
+| Portability | CF only (Emscripten) | CF Workers (Durable Objects) |
 
 ## License
 
