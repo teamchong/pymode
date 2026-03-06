@@ -161,13 +161,13 @@ for relpath in "${PYMODE_FILES[@]}"; do
 done
 
 # Bundle pure-Python polyfills for C extension modules unavailable in WASM.
-# These replace missing C modules (binascii, _weakref) so that stdlib modules
-# depending on them (base64, copy, weakref) work correctly.
+# These replace missing C modules (binascii) so that stdlib modules
+# depending on them (base64, hashlib, hmac) work correctly.
+# Note: _weakref is a built-in C module already linked into python.wasm.
 # Reference implementations: metal0/packages/runtime/src/Lib/ (Zig equivalents).
 POLYFILL_DIR="$ROOT_DIR/lib/polyfills"
 POLYFILL_FILES=(
     "binascii.py"
-    "_weakref.py"
 )
 
 for relpath in "${POLYFILL_FILES[@]}"; do
