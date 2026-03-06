@@ -150,8 +150,8 @@ The 10MB compressed bundle limit applies **per worker** (total of all JS, WASM, 
 │  │  PyMode Worker    │───Binding───▶│  Compute Worker    │  │
 │  │  (~3MB gz)        │              │  (~8MB gz)          │  │
 │  │                   │              │                     │  │
-│  │  python.wasm      │    RPC       │  Pyodide + numpy   │  │
-│  │  on_fetch()       │◀────────────│  or custom WASM    │  │
+│  │  python.wasm      │    RPC       │  python.wasm +     │  │
+│  │  on_fetch()       │◀────────────│  numpy.wasm (zig)  │  │
 │  │  routing, auth    │              │  heavy compute      │  │
 │  └──────────────────┘              └────────────────────┘  │
 │           │                                                  │
@@ -195,7 +195,7 @@ def on_fetch(request, env):
 |----------|----------|
 | Pure Python packages (jinja2, pyyaml) | Bundle in main worker |
 | Small C extensions (markupsafe) | WASM side modules in main worker |
-| Large C packages (numpy, scipy) | Separate Pyodide worker via Service Binding |
+| Large C packages (numpy, scipy) | C extensions compiled to .wasm via zig cc, loaded via dl_open in child DO |
 | Heavy compute (ML inference, image processing) | Separate worker with dedicated WASM |
 
 ## Comparison with Pyodide

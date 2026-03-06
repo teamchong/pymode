@@ -132,7 +132,7 @@ pymode install numpy jinja2 pyyaml
   ├─ 3. Classify each package
   │     ├─ Pure Python → extract .py files → site-packages.zip
   │     ├─ Small C ext → zig cc → .wasm side module (dl_open)
-  │     └─ Large C ext (numpy) → separate Pyodide worker
+  │     └─ Large C ext (numpy) → zig cc → .wasm side module (dl_open)
   │
   ├─ 4. Bundle
   │     ├─ site-packages.zip → worker/src/ (pure Python)

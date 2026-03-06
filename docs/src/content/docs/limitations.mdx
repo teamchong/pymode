@@ -115,4 +115,4 @@ Full CPython 3.13 language support including:
 
 **Doesn't work:** Packages requiring OS features (network sockets, file I/O, subprocess), packages with complex C dependencies (numpy, pandas, scipy).
 
-**Heavy packages via multi-worker RPC:** Deploy heavy packages (numpy, pandas) in a separate Pyodide worker and call it via Service Bindings. Each worker gets its own 10MB bundle limit, 128MB memory, and 30s CPU. See [Architecture: Multi-Worker RPC](/pymode/architecture/#multi-worker-rpc-architecture).
+**Heavy packages via child DOs:** Heavy packages (numpy, pandas) have their C extensions compiled to `.wasm` via `zig cc` and loaded via `dl_open`. They can run in child DOs via `pymode.parallel.spawn()`, each with its own 128MB memory and 30s CPU. See [Architecture: Multi-Worker RPC](/pymode/architecture/#multi-worker-rpc-architecture).

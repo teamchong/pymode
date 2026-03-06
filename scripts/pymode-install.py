@@ -59,7 +59,7 @@ PURE_PYTHON_FALLBACKS = {
     "aiohttp",
 }
 
-# Packages known to be too large / need Pyodide
+# Packages too large for inline bundling — need C extensions compiled to .wasm
 NEEDS_SEPARATE_WORKER = {
     "numpy", "pandas", "scipy", "scikit-learn", "sklearn",
     "matplotlib", "pillow", "opencv-python", "tensorflow",
@@ -421,7 +421,7 @@ def install_packages(specs: list[str], root_dir: Path, resolve_deps: bool = True
 
         # Check if package needs a separate worker
         if name in NEEDS_SEPARATE_WORKER:
-            print(f"  {name}: requires separate Pyodide worker (Service Binding)")
+            print(f"  {name}: heavy C extension — needs .wasm compilation (zig cc) or child DO")
             result.needs_separate_worker.append(name)
             continue
 
@@ -622,8 +622,8 @@ def main():
             print(f"    {spec}: {err}")
 
     if result.needs_separate_worker:
-        print(f"\n  To use heavy packages, deploy them in a separate Pyodide worker")
-        print(f"  and connect via Service Bindings in wrangler.toml:")
+        print(f"\n  Heavy packages need C extensions compiled to .wasm via zig cc.")
+        print(f"  Or run them in a child DO via pymode.parallel.spawn():")
         print(f"  [[services]]")
         print(f"  binding = \"COMPUTE\"")
         print(f"  service = \"compute-worker\"")
