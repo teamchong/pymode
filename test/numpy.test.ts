@@ -164,4 +164,77 @@ print(f"var={data.var():.1f}")
     expect(text).toContain("std=14.1");
     expect(text).toContain("var=200.0");
   });
+
+  it("should use np.random.default_rng", async () => {
+    const { text, status, stderr } = await runNumpy(`
+import numpy as np
+rng = np.random.default_rng(42)
+arr = rng.random(5)
+print(f"shape={arr.shape}")
+print(f"dtype={arr.dtype}")
+print(f"min_ok={arr.min() >= 0.0}")
+print(f"max_ok={arr.max() < 1.0}")
+ints = rng.integers(0, 100, size=3)
+print(f"ints_shape={ints.shape}")
+normal = rng.normal(0, 1, size=4)
+print(f"normal_shape={normal.shape}")
+`);
+    if (status !== 0) {
+      console.error("random test stderr:", stderr);
+    }
+    expect(status).toBe(0);
+    expect(text).toContain("shape=(5,)");
+    expect(text).toContain("dtype=float64");
+    expect(text).toContain("min_ok=True");
+    expect(text).toContain("max_ok=True");
+    expect(text).toContain("ints_shape=(3,)");
+    expect(text).toContain("normal_shape=(4,)");
+  });
+
+  it("should use np.fft", async () => {
+    const { text, status, stderr } = await runNumpy(`
+import numpy as np
+signal = np.array([1.0, 0.0, -1.0, 0.0])
+fft_result = np.fft.fft(signal)
+print(f"fft_len={len(fft_result)}")
+print(f"fft_dtype={fft_result.dtype}")
+# DC component should be 0 (sum of signal)
+print(f"dc={fft_result[0].real:.1f}")
+# Inverse FFT should recover original
+recovered = np.fft.ifft(fft_result).real
+print(f"recovered={recovered.tolist()}")
+`);
+    if (status !== 0) {
+      console.error("fft test stderr:", stderr);
+    }
+    expect(status).toBe(0);
+    expect(text).toContain("fft_len=4");
+    expect(text).toContain("fft_dtype=complex128");
+    expect(text).toContain("dc=0.0");
+    // tolist() gives plain Python floats
+    expect(text).toMatch(/recovered=\[1\.0, 0\.0, -1\.0, -?0\.0\]/);
+  });
+
+  it("should compute percentile via sorting", async () => {
+    const { text, status, stderr } = await runNumpy(`
+import numpy as np
+data = np.array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], dtype=float)
+# np.percentile uses sorting internally — test median and quartiles
+sorted_data = np.sort(data)
+n = len(data)
+median = float(np.median(data))
+q1 = float(sorted_data[n//4])
+q3 = float(sorted_data[3*n//4])
+print(f"median={median}")
+print(f"q1={q1}")
+print(f"q3={q3}")
+`);
+    if (status !== 0) {
+      console.error("percentile test stderr:", stderr);
+    }
+    expect(status).toBe(0);
+    expect(text).toContain("median=5.5");
+    expect(text).toContain("q1=3.0");
+    expect(text).toContain("q3=8.0");
+  });
 });

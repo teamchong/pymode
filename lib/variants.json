@@ -9,11 +9,11 @@
       "size": "5.6MB"
     },
     "numpy": {
-      "description": "CPython 3.13 + numpy 2.4.2 (_multiarray_umath statically linked)",
+      "description": "CPython 3.13 + numpy 2.4.2 (multiarray_umath + random + fft statically linked)",
       "wasm": "python-numpy.wasm",
       "sitePackages": "numpy-site-packages.zip",
       "extensions": ["numpy"],
-      "size": "8.3MB"
+      "size": "13.4MB"
     }
   },
   "extensionPackages": {
