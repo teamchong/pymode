@@ -245,6 +245,7 @@ for shim_src in "$SHIMS_DIR"/*.c; do
     if [ "$shim_name" = "dynload_pymode" ]; then
         info "  Compiling $shim_name.c (with CPython headers)"
         "$ZIG_WRAPPER_DIR/zig-cc" -c -Os \
+            -DPy_BUILD_CORE \
             -I"$CPYTHON_DIR/Include" \
             -I"$CPYTHON_DIR/Include/internal" \
             -I"$BUILD_DIR" \
