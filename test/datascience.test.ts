@@ -780,47 +780,27 @@ except Exception as e:
 //    "I need struct, base64, heapq, bisect for real work"
 // ============================================================
 describe("Advanced stdlib for data science", () => {
-  it("should use base64 for encoding data (needs binascii C module)", async () => {
-    // FINDING: base64.py is bundled but depends on binascii (C extension module).
-    // binascii is not available in the WASM build, so base64 fails at import.
-    // Alternative: use bytes.hex() / bytes.fromhex() for hex encoding,
-    // or add a pure-Python base64 implementation to stdlib-fs.
+  it("should use base64 for encoding data", async () => {
     const { text } = await runPython(`
-try:
-    import base64
-    data = b"Hello, Cloudflare Workers!"
-    encoded = base64.b64encode(data).decode()
-    print(f"encoded={encoded}")
-    decoded = base64.b64decode(encoded)
-    print(f"decoded={decoded.decode()}")
-    print("base64 works")
-except ImportError as e:
-    print(f"MISSING_DEP: {e}")
+import base64
 
-    # Pure-Python base64 implementation (no C dependency)
-    import string
-    B64_CHARS = string.ascii_uppercase + string.ascii_lowercase + string.digits + "+/"
+# Encode
+data = b"Hello, Cloudflare Workers!"
+encoded = base64.b64encode(data).decode()
+print(f"encoded={encoded}")
 
-    def b64encode_pure(data):
-        result = []
-        for i in range(0, len(data), 3):
-            chunk = data[i:i+3]
-            n = int.from_bytes(chunk.ljust(3, b'\\x00'), 'big')
-            for j in range(min(len(chunk) + 1, 4)):
-                result.append(B64_CHARS[(n >> (18 - 6*j)) & 0x3F])
-            result.extend('=' * (3 - len(chunk)))
-        return ''.join(result)
+# Decode
+decoded = base64.b64decode(encoded)
+print(f"decoded={decoded.decode()}")
 
-    encoded = b64encode_pure(b"Hello")
-    print(f"pure_b64={encoded}")
+# URL-safe encoding
+url_safe = base64.urlsafe_b64encode(b"test?data=true&more").decode()
+print(f"urlsafe={url_safe}")
+print(f"roundtrip={base64.urlsafe_b64decode(url_safe) == b'test?data=true&more'}")
     `);
-    if (text.includes("MISSING_DEP")) {
-      expect(text).toContain("binascii");
-      // Verify pure-Python base64 produces correct output
-      expect(text).toContain("pure_b64=SGVsbG8=");
-    } else {
-      expect(text).toContain("base64 works");
-    }
+    expect(text).toContain("encoded=SGVsbG8sIENsb3VkZmxhcmUgV29ya2VycyE=");
+    expect(text).toContain("decoded=Hello, Cloudflare Workers!");
+    expect(text).toContain("roundtrip=True");
   });
 
   it("should use heapq for top-k queries", async () => {
@@ -1067,19 +1047,19 @@ print(f"json_ok={len(serialized) > 0}")
   });
 
   it("should handle binary data encoding/decoding", async () => {
-    // Use hex encoding instead of base64 (binascii not available)
     const { text } = await runPython(`
+import base64
 import hashlib
 
 # Simulate processing binary data (image metadata extraction pattern)
 fake_png_header = bytes([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
 print(f"is_png={fake_png_header[:4] == b'\\x89PNG'}")
 
-# Hex round-trip for binary data
-encoded = fake_png_header.hex()
-decoded = bytes.fromhex(encoded)
+# Base64 round-trip for binary data
+encoded = base64.b64encode(fake_png_header).decode()
+decoded = base64.b64decode(encoded)
 print(f"roundtrip={decoded == fake_png_header}")
-print(f"hex={encoded}")
+print(f"b64={encoded}")
 
 # Hash binary data
 digest = hashlib.sha256(fake_png_header).hexdigest()
@@ -1087,7 +1067,7 @@ print(f"hash={digest[:16]}")
     `);
     expect(text).toContain("is_png=True");
     expect(text).toContain("roundtrip=True");
-    expect(text).toContain("hex=89504e470d0a1a0a");
+    expect(text).toContain("b64=iVBORw0KGgo=");
   });
 
   it("should handle concurrent-style batch processing", async () => {
@@ -1318,50 +1298,32 @@ except Exception as e:
     }
   });
 
-  it("should use copy.deepcopy for data isolation (needs weakref C module)", async () => {
-    // FINDING: copy.py imports weakref (C extension module) which is not available.
-    // Alternative: use json.loads(json.dumps(x)) for JSON-serializable data,
-    // or implement manual recursive copy for specific types.
+  it("should use copy.deepcopy for data isolation", async () => {
     const { text } = await runPython(`
-try:
-    import copy
-    original = {"users": [{"name": "Alice", "scores": [90, 85, 92]}]}
-    clone = copy.deepcopy(original)
-    clone["users"][0]["scores"].append(100)
-    print(f"original_scores={original['users'][0]['scores']}")
-    print(f"clone_scores={clone['users'][0]['scores']}")
-    print("copy.deepcopy works")
-except ImportError as e:
-    print(f"MISSING_DEP: {e}")
+import copy
 
-    # Deep copy via JSON round-trip (for JSON-serializable data)
-    import json
-    original = {
-        "users": [
-            {"name": "Alice", "scores": [90, 85, 92]},
-            {"name": "Bob", "scores": [78, 82, 88]},
-        ],
-        "metadata": {"version": 1}
-    }
-    clone = json.loads(json.dumps(original))
-    clone["users"][0]["scores"].append(100)
-    clone["metadata"]["version"] = 2
+original = {
+    "users": [
+        {"name": "Alice", "scores": [90, 85, 92]},
+        {"name": "Bob", "scores": [78, 82, 88]},
+    ],
+    "metadata": {"version": 1}
+}
 
-    print(f"original_scores={original['users'][0]['scores']}")
-    print(f"clone_scores={clone['users'][0]['scores']}")
-    print(f"original_version={original['metadata']['version']}")
-    print(f"clone_version={clone['metadata']['version']}")
+# Deep copy — modifying clone should not affect original
+clone = copy.deepcopy(original)
+clone["users"][0]["scores"].append(100)
+clone["metadata"]["version"] = 2
+
+print(f"original_scores={original['users'][0]['scores']}")
+print(f"clone_scores={clone['users'][0]['scores']}")
+print(f"original_version={original['metadata']['version']}")
+print(f"clone_version={clone['metadata']['version']}")
     `);
-    if (text.includes("MISSING_DEP")) {
-      expect(text).toContain("weakref");
-      // JSON round-trip deep copy works as alternative
-      expect(text).toContain("original_scores=[90, 85, 92]");
-      expect(text).toContain("clone_scores=[90, 85, 92, 100]");
-      expect(text).toContain("original_version=1");
-      expect(text).toContain("clone_version=2");
-    } else {
-      expect(text).toContain("copy.deepcopy works");
-    }
+    expect(text).toContain("original_scores=[90, 85, 92]");
+    expect(text).toContain("clone_scores=[90, 85, 92, 100]");
+    expect(text).toContain("original_version=1");
+    expect(text).toContain("clone_version=2");
   });
 
   it("should use contextlib for resource management", async () => {

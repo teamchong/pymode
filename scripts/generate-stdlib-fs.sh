@@ -56,6 +56,8 @@ BOOT_FILES=(
     "dataclasses.py"
     "copy.py"
     "copyreg.py"
+    "weakref.py"
+    "_weakrefset.py"
     # text
     "string.py"
     "textwrap.py"
@@ -148,6 +150,30 @@ for relpath in "${PYMODE_FILES[@]}"; do
     srcfile="$PYMODE_LIB/$relpath"
     if [ ! -f "$srcfile" ]; then
         echo "  Warning: pymode/$relpath not found, skipping"
+        continue
+    fi
+
+    echo -n "  \"$relpath\": \`" >> "$OUTPUT"
+    sed 's/\\/\\\\/g; s/`/\\`/g; s/\${/\\${/g' "$srcfile" >> "$OUTPUT"
+    echo "\`," >> "$OUTPUT"
+
+    COUNT=$((COUNT + 1))
+done
+
+# Bundle pure-Python polyfills for C extension modules unavailable in WASM.
+# These replace missing C modules (binascii, _weakref) so that stdlib modules
+# depending on them (base64, copy, weakref) work correctly.
+# Reference implementations: metal0/packages/runtime/src/Lib/ (Zig equivalents).
+POLYFILL_DIR="$ROOT_DIR/lib/polyfills"
+POLYFILL_FILES=(
+    "binascii.py"
+    "_weakref.py"
+)
+
+for relpath in "${POLYFILL_FILES[@]}"; do
+    srcfile="$POLYFILL_DIR/$relpath"
+    if [ ! -f "$srcfile" ]; then
+        echo "  Warning: polyfill $relpath not found, skipping"
         continue
     fi
 
