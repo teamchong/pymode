@@ -1,6 +1,8 @@
-# PyMode
+# PyMode (Experimental)
 
 **Python on Cloudflare Workers** — write Python handlers, deploy to the edge.
+
+> **Note:** This project is experimental and under active development. APIs and features may change.
 
 CPython 3.13 compiled to WASM with `zig cc`. 5.7MB binary (1.8MB gzipped). Runs on Workers with full access to KV, R2, D1, TCP, and HTTP.
 
