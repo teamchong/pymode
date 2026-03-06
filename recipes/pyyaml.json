@@ -1,0 +1,20 @@
+{
+  "name": "pyyaml",
+  "version": "6.0.2",
+  "pypi": "PyYAML",
+  "type": "c",
+  "sources": [
+    "ext/_yaml.pyx"
+  ],
+  "cython_sources": [
+    "ext/_yaml.pyx"
+  ],
+  "includes": ["ext/"],
+  "cflags": ["-DCYTHON_COMPRESS_STRINGS=0"],
+  "modules": {
+    "yaml._yaml": "PyInit__yaml"
+  },
+  "python_packages": ["lib/yaml/"],
+  "depends": [],
+  "notes": "Falls back to pure Python if _yaml unavailable. Pure Python yaml/ works without C extension."
+}

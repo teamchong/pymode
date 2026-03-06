@@ -10,12 +10,24 @@ constants and functions that packages check at import time.
 """
 
 import sys
+import enum
 
 # Address families
 AF_INET = 2
 AF_INET6 = 10
 AF_UNIX = 1
 AF_UNSPEC = 0
+
+class AddressFamily(enum.IntEnum):
+    AF_UNIX = 1
+    AF_INET = 2
+    AF_INET6 = 10
+    AF_UNSPEC = 0
+
+class SocketKind(enum.IntEnum):
+    SOCK_STREAM = 1
+    SOCK_DGRAM = 2
+    SOCK_RAW = 3
 
 # Socket types
 SOCK_STREAM = 1
@@ -48,6 +60,9 @@ NI_NUMERICSERV = 2
 INADDR_ANY = 0
 INADDR_LOOPBACK = 0x7F000001
 
+# Default timeout sentinel
+_GLOBAL_DEFAULT_TIMEOUT = object()
+
 # Errors
 error = OSError
 herror = OSError
@@ -56,6 +71,9 @@ timeout = TimeoutError
 
 # Has IPv6?
 has_ipv6 = False
+
+# EAI error codes
+EAI_NONAME = -2
 
 
 def _load_pymode_socket():

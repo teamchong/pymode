@@ -1,0 +1,19 @@
+{
+  "name": "propcache",
+  "version": "0.2.1",
+  "pypi": "propcache",
+  "type": "cython",
+  "sources": [
+    "src/propcache/_helpers_c.c"
+  ],
+  "cython_sources": [
+    "src/propcache/_helpers_c.pyx"
+  ],
+  "includes": ["src/"],
+  "cflags": ["-DCYTHON_COMPRESS_STRINGS=0"],
+  "modules": {
+    "propcache._helpers_c": "PyInit__helpers_c"
+  },
+  "python_packages": ["src/propcache/"],
+  "depends": []
+}

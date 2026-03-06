@@ -220,10 +220,16 @@ sedi() {
 info "Patching pyconfig.h for WASI..."
 sedi 's/^#define HAVE_PTHREAD_H 1/\/* #undef HAVE_PTHREAD_H *\//' "$BUILD_DIR/pyconfig.h"
 
-# Step 3b2: Register _pymode as a built-in module in config.c
+# Step 3b2: Save clean config.c as base (before variant patching)
+CONFIG_C="$BUILD_DIR/Modules/config.c"
+if [ -f "$CONFIG_C" ] && [ ! -f "$BUILD_DIR/Modules/config.c.base" ]; then
+    cp "$CONFIG_C" "$BUILD_DIR/Modules/config.c.base"
+    info "  Saved config.c.base (clean copy for variant builds)"
+fi
+
+# Register _pymode as a built-in module in config.c
 # This makes `import _pymode` work without needing shared library loading.
 info "Registering _pymode built-in module..."
-CONFIG_C="$BUILD_DIR/Modules/config.c"
 if [ -f "$CONFIG_C" ] && ! grep -q "PyInit__pymode" "$CONFIG_C"; then
     # Add extern declaration before the ADDMODULE MARKER 1
     sedi '/\/\* -- ADDMODULE MARKER 1 --/i\

@@ -1,0 +1,19 @@
+{
+  "name": "yarl",
+  "version": "1.18.3",
+  "pypi": "yarl",
+  "type": "cython",
+  "sources": [
+    "yarl/_quoting_c.c"
+  ],
+  "cython_sources": [
+    "yarl/_quoting_c.pyx"
+  ],
+  "includes": [],
+  "cflags": ["-DCYTHON_COMPRESS_STRINGS=0"],
+  "modules": {
+    "yarl._quoting_c": "PyInit__quoting_c"
+  },
+  "python_packages": ["yarl/"],
+  "depends": []
+}

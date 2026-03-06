@@ -27,12 +27,17 @@ if ! command -v zig &>/dev/null; then
     echo "Error: zig not found. Install zig >= 0.15"
     exit 1
 fi
-if ! command -v wasm-ld &>/dev/null; then
-    echo "Error: wasm-ld not found. Install LLVM (brew install llvm)"
-    exit 1
+HAS_WASM_LD=false
+if command -v wasm-ld &>/dev/null; then
+    HAS_WASM_LD=true
 fi
-if [ ! -f "$CPYTHON/cross-build/wasm32-wasi/pyconfig.h" ]; then
-    echo "Error: CPython cross-build not found. Run build-phase1.sh first."
+PYCONFIG_DIR="$CPYTHON/cross-build/wasm32-wasi"
+if [ ! -f "$PYCONFIG_DIR/pyconfig.h" ]; then
+    # Fall back to zig-wasi build directory
+    PYCONFIG_DIR="$ROOT_DIR/build/zig-wasi"
+fi
+if [ ! -f "$PYCONFIG_DIR/pyconfig.h" ]; then
+    echo "Error: pyconfig.h not found. Run build-phase2.sh first."
     exit 1
 fi
 
@@ -165,7 +170,7 @@ CFLAGS="-target wasm32-wasi -c -fPIC -Os \
   -D_MULTIARRAYMODULE -D_UMATHMODULE -DNPY_INTERNAL_BUILD=1 -DNPY_NO_SMP=1 \
   -UHAVE_BACKTRACE -DHAVE_XLOCALE_H=0 \
   -I$BUILD_DIR \
-  -I$CPYTHON/Include -I$CPYTHON/Include/cpython -I$CPYTHON/cross-build/wasm32-wasi \
+  -I$CPYTHON/Include -I$CPYTHON/Include/cpython -I$PYCONFIG_DIR \
   -I$NUMPY_SRC/numpy/_core/include -I$NUMPY_SRC/numpy/_core/src/common \
   -I$NUMPY_SRC/numpy/_core/src/multiarray -I$NUMPY_SRC/numpy/_core/src/umath \
   -I$NUMPY_SRC/numpy/_core/src/npymath -I$NUMPY_SRC/numpy/_core/src/npysort \
@@ -273,24 +278,131 @@ for src in dtype utf8_utils static_string; do
   compile_c "$NUMPY_SRC/numpy/_core/src/multiarray/stringdtype/${src}.c" "sd_${src}.o"
 done
 
+# numpy.random — C source files (bit generators, distributions)
+echo "  Compiling numpy.random..."
+RANDOM_CFLAGS="-target wasm32-wasi -c -Os -DNDEBUG \
+  -I$CPYTHON/Include -I$CPYTHON/Include/cpython -I$PYCONFIG_DIR \
+  -I$NUMPY_SRC/numpy/_core/include -I$NUMPY_SRC/numpy/_core/src/common \
+  -I$NUMPY_SRC/numpy/random/src -I$NUMPY_SRC/numpy/random \
+  -I$BUILD_DIR -Wno-macro-redefined"
+
+# Pure C random sources
+for src in mt19937 pcg64 philox sfc64 randomkit; do
+  if [ -f "$NUMPY_SRC/numpy/random/src/${src}/${src}.c" ]; then
+    if zig cc $RANDOM_CFLAGS -o "$BUILD_DIR/obj/random_${src}.o" \
+        "$NUMPY_SRC/numpy/random/src/${src}/${src}.c" 2>/dev/null; then
+      SUCCESS=$((SUCCESS + 1))
+    else
+      FAIL=$((FAIL + 1))
+    fi
+  fi
+done
+
+# MT19937 jump table
+if [ -f "$NUMPY_SRC/numpy/random/src/mt19937/mt19937-jump.c" ]; then
+  if zig cc $RANDOM_CFLAGS -o "$BUILD_DIR/obj/random_mt19937_jump.o" \
+      "$NUMPY_SRC/numpy/random/src/mt19937/mt19937-jump.c" 2>/dev/null; then
+    SUCCESS=$((SUCCESS + 1))
+  else
+    FAIL=$((FAIL + 1))
+  fi
+fi
+
+# Distribution C files
+for src in distributions logfactorial random_hypergeometric random_mvhg_count random_mvhg_marginals; do
+  if [ -f "$NUMPY_SRC/numpy/random/src/distributions/${src}.c" ]; then
+    if zig cc $RANDOM_CFLAGS -o "$BUILD_DIR/obj/random_dist_${src}.o" \
+        "$NUMPY_SRC/numpy/random/src/distributions/${src}.c" 2>/dev/null; then
+      SUCCESS=$((SUCCESS + 1))
+    else
+      FAIL=$((FAIL + 1))
+    fi
+  fi
+done
+
+# Legacy distributions
+if [ -f "$NUMPY_SRC/numpy/random/src/legacy/legacy-distributions.c" ]; then
+  if zig cc $RANDOM_CFLAGS -I"$NUMPY_SRC/numpy/random/src/legacy" \
+      -o "$BUILD_DIR/obj/random_legacy_distributions.o" \
+      "$NUMPY_SRC/numpy/random/src/legacy/legacy-distributions.c" 2>/dev/null; then
+    SUCCESS=$((SUCCESS + 1))
+  else
+    FAIL=$((FAIL + 1))
+  fi
+fi
+
+# Cython random modules — need cython to generate .c from .pyx
+CYTHON_RANDOM_CFLAGS="-target wasm32-wasi -c -Os -DNDEBUG -DCYTHON_COMPRESS_STRINGS=0 \
+  -I$CPYTHON/Include -I$CPYTHON/Include/cpython -I$PYCONFIG_DIR \
+  -I$NUMPY_SRC/numpy/_core/include -I$NUMPY_SRC/numpy/_core/src/common \
+  -I$NUMPY_SRC/numpy/random/src -I$NUMPY_SRC/numpy/random \
+  -I$BUILD_DIR -Wno-macro-redefined -Wno-implicit-function-declaration"
+
+CYTHON_CMD=""
+if command -v cython3 &>/dev/null; then
+  CYTHON_CMD="cython3"
+elif command -v cython &>/dev/null; then
+  CYTHON_CMD="cython"
+elif python3 -c "import Cython" 2>/dev/null; then
+  CYTHON_CMD="python3 -m cython"
+fi
+
+if [ -n "$CYTHON_CMD" ]; then
+  echo "  Cythonizing random modules (using $CYTHON_CMD)..."
+  for pyx in bit_generator _common _bounded_integers _generator _mt19937 _pcg64 _sfc64 _philox mtrand; do
+    PYX_FILE="$NUMPY_SRC/numpy/random/${pyx}.pyx"
+    C_FILE="$NUMPY_SRC/numpy/random/${pyx}.c"
+    if [ -f "$PYX_FILE" ] && [ ! -f "$C_FILE" ]; then
+      $CYTHON_CMD "$PYX_FILE" -o "$C_FILE" 2>/dev/null || true
+    fi
+    if [ -f "$C_FILE" ]; then
+      if zig cc $CYTHON_RANDOM_CFLAGS -o "$BUILD_DIR/obj/random_cython_${pyx}.o" "$C_FILE" 2>/dev/null; then
+        SUCCESS=$((SUCCESS + 1))
+      else
+        FAIL=$((FAIL + 1))
+      fi
+    fi
+  done
+else
+  echo "  WARNING: Cython not found, skipping random Cython modules"
+fi
+
+# numpy.fft — pocketfft (C++)
+echo "  Compiling numpy.fft..."
+FFT_SRC="$NUMPY_SRC/numpy/fft/_pocketfft_umath.cpp"
+if [ -f "$FFT_SRC" ]; then
+  FFT_CFLAGS="-target wasm32-wasi -c -Os -DNDEBUG -std=c++17 \
+    -I$CPYTHON/Include -I$CPYTHON/Include/cpython -I$PYCONFIG_DIR \
+    -I$NUMPY_SRC/numpy/_core/include -I$NUMPY_SRC/numpy/_core/src/common \
+    -I$NUMPY_SRC/numpy/fft -I$BUILD_DIR \
+    -Wno-macro-redefined -Wno-missing-template-arg-list-after-template-kw"
+  if zig c++ $FFT_CFLAGS -o "$BUILD_DIR/obj/fft_pocketfft_umath.o" "$FFT_SRC" 2>/dev/null; then
+    SUCCESS=$((SUCCESS + 1))
+    echo "  pocketfft compiled ok"
+  else
+    echo "  WARNING: pocketfft failed to compile"
+    FAIL=$((FAIL + 1))
+  fi
+fi
+
 echo "  Compiled: $SUCCESS files, Failed: $FAIL files"
 
-# Step 5: Link into _multiarray_umath.wasm
-echo "  Linking _multiarray_umath.wasm..."
+# Step 5: Link into _multiarray_umath.wasm (optional — variant builder can link instead)
+if [ "$HAS_WASM_LD" = true ]; then
+  echo "  Linking _multiarray_umath.wasm..."
+  wasm-ld \
+    --no-entry --shared --strip-all --gc-sections \
+    --export=PyInit__multiarray_umath \
+    --allow-undefined \
+    -o "$BUILD_DIR/_multiarray_umath.wasm" \
+    "$BUILD_DIR"/obj/*.o
 
-# Link as shared WASM module. CPython symbols are left undefined —
-# they resolve at runtime when python.wasm loads this side module via dl_open.
-wasm-ld \
-  --no-entry --shared --strip-all --gc-sections \
-  --export=PyInit__multiarray_umath \
-  --allow-undefined \
-  -o "$BUILD_DIR/_multiarray_umath.wasm" \
-  "$BUILD_DIR"/obj/*.o
-
-WASM_SIZE=$(ls -la "$BUILD_DIR/_multiarray_umath.wasm" | awk '{print $5}')
-GZIP_SIZE=$(gzip -c "$BUILD_DIR/_multiarray_umath.wasm" | wc -c | tr -d ' ')
-
-echo "  _multiarray_umath.wasm: $(echo "scale=1; $WASM_SIZE / 1048576" | bc) MB raw, $(echo "scale=1; $GZIP_SIZE / 1048576" | bc) MB gzipped"
+  WASM_SIZE=$(ls -la "$BUILD_DIR/_multiarray_umath.wasm" | awk '{print $5}')
+  GZIP_SIZE=$(gzip -c "$BUILD_DIR/_multiarray_umath.wasm" | wc -c | tr -d ' ')
+  echo "  _multiarray_umath.wasm: $(echo "scale=1; $WASM_SIZE / 1048576" | bc) MB raw, $(echo "scale=1; $GZIP_SIZE / 1048576" | bc) MB gzipped"
+else
+  echo "  Skipping wasm-ld link (not installed). Use build-variant.sh to link."
+fi
 
 # Step 6: Bundle numpy's Python files into a zip
 echo "  Bundling Python files..."
@@ -309,18 +421,28 @@ size = os.path.getsize('$BUILD_DIR/numpy-site-packages.zip') // 1024
 print(f'  {count} Python files, {size}KB')
 "
 
-# Step 7: Copy to output directory
-echo "  Installing to $OUTPUT_DIR..."
+# Step 7: Copy objects to variant build directory (for build-variant.sh)
+VARIANT_OBJ_DIR="$ROOT_DIR/build/zig-wasi/Modules/numpy"
+echo "  Copying objects to $VARIANT_OBJ_DIR..."
+mkdir -p "$VARIANT_OBJ_DIR"
+cp "$BUILD_DIR"/obj/*.o "$VARIANT_OBJ_DIR/"
+OBJ_COUNT=$(ls "$VARIANT_OBJ_DIR"/*.o | wc -l | tr -d ' ')
+echo "  $OBJ_COUNT objects copied for variant linking"
+
+# Step 8: Copy to output directory
+echo "  Installing outputs..."
 mkdir -p "$OUTPUT_DIR"
-cp "$BUILD_DIR/_multiarray_umath.wasm" "$OUTPUT_DIR/"
+if [ -f "$BUILD_DIR/_multiarray_umath.wasm" ]; then
+  cp "$BUILD_DIR/_multiarray_umath.wasm" "$OUTPUT_DIR/"
+fi
 cp "$BUILD_DIR/numpy-site-packages.zip" "$OUTPUT_DIR/"
+
+# Also copy numpy-site-packages.zip to worker/src for tests
+cp "$BUILD_DIR/numpy-site-packages.zip" "$ROOT_DIR/worker/src/numpy-site-packages.zip"
 
 echo ""
 echo "Done! numpy for wasm32-wasi:"
-echo "  WASM:   $OUTPUT_DIR/_multiarray_umath.wasm ($(echo "scale=1; $WASM_SIZE / 1048576" | bc) MB)"
+echo "  Objects: $VARIANT_OBJ_DIR/ ($OBJ_COUNT files)"
 echo "  Python: $OUTPUT_DIR/numpy-site-packages.zip"
 echo ""
-echo "To use in a worker:"
-echo "  1. Add to wrangler.toml: [wasm_modules] numpy = \"extensions/numpy/_multiarray_umath.wasm\""
-echo "  2. Mount numpy-site-packages.zip in PYTHONPATH"
-echo "  3. import numpy as np  # works via dl_open"
+echo "To build variant: ./scripts/build-variant.sh numpy"

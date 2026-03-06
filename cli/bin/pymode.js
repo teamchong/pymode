@@ -19,6 +19,7 @@ const USAGE = `
     pymode init <project-name>    Create a new PyMode project
     pymode dev                    Start local dev server with hot reload
     pymode deploy                 Bundle and deploy to Cloudflare Workers
+    pymode build [recipe]         Build C extension recipes into WASM variants
     pymode add <package>          Add a Python package dependency
     pymode remove <package>       Remove a package dependency
     pymode install                Install all dependencies from pyproject.toml
@@ -61,6 +62,11 @@ async function main() {
     case "deploy": {
       const { deploy } = await import("../commands/deploy.js");
       await deploy(args);
+      break;
+    }
+    case "build": {
+      const { build } = await import("../commands/build.js");
+      await build(args);
       break;
     }
     case "add": {

@@ -1,0 +1,19 @@
+{
+  "name": "frozenlist",
+  "version": "1.5.0",
+  "pypi": "frozenlist",
+  "type": "cython",
+  "sources": [
+    "frozenlist/_frozenlist.c"
+  ],
+  "cython_sources": [
+    "frozenlist/_frozenlist.pyx"
+  ],
+  "includes": [],
+  "cflags": ["-DCYTHON_COMPRESS_STRINGS=0"],
+  "modules": {
+    "frozenlist._frozenlist": "PyInit__frozenlist"
+  },
+  "python_packages": ["frozenlist/"],
+  "depends": []
+}

@@ -1,0 +1,16 @@
+{
+  "name": "multidict",
+  "version": "6.1.0",
+  "pypi": "multidict",
+  "type": "c",
+  "sources": [
+    "multidict/_multidict.c"
+  ],
+  "includes": [],
+  "cflags": [],
+  "modules": {
+    "multidict._multidict": "PyInit__multidict"
+  },
+  "python_packages": ["multidict/"],
+  "depends": []
+}

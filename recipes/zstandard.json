@@ -1,0 +1,35 @@
+{
+  "name": "zstandard",
+  "version": "0.23.0",
+  "pypi": "zstandard",
+  "type": "c",
+  "sources": [
+    "c-ext/backend_c.c"
+  ],
+  "includes": [
+    "c-ext/",
+    "zstd/",
+    "zstd/common/",
+    "zstd/compress/",
+    "zstd/decompress/",
+    "zstd/dictBuilder/"
+  ],
+  "cflags": [
+    "-DZSTD_MULTITHREAD=0",
+    "-DZSTD_STATIC_LINKING_ONLY",
+    "-DZSTDLIB_VISIBLE=",
+    "-DZDICTLIB_VISIBLE=",
+    "-DZSTDERRORLIB_VISIBLE="
+  ],
+  "vendor_sources": [
+    "zstd/common/*.c",
+    "zstd/compress/*.c",
+    "zstd/decompress/*.c",
+    "zstd/dictBuilder/*.c"
+  ],
+  "modules": {
+    "zstandard.backend_c": "PyInit_backend_c"
+  },
+  "python_packages": ["zstandard/"],
+  "depends": []
+}

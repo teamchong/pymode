@@ -1,0 +1,17 @@
+{
+  "name": "regex",
+  "version": "2024.11.6",
+  "pypi": "regex",
+  "type": "c",
+  "sources": [
+    "regex_3/_regex.c",
+    "regex_3/_regex_unicode.c"
+  ],
+  "includes": ["regex_3/"],
+  "cflags": [],
+  "modules": {
+    "regex._regex": "PyInit__regex"
+  },
+  "python_packages": ["regex_3/"],
+  "depends": []
+}

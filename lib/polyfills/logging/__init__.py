@@ -247,6 +247,10 @@ class Logger:
 
     fatal = critical
 
+    def log(self, level, msg, *args, **kwargs):
+        if self.isEnabledFor(level):
+            self._log(level, msg, args, **kwargs)
+
     def exception(self, msg, *args, exc_info=True, **kwargs):
         self.error(msg, *args, exc_info=exc_info, **kwargs)
 

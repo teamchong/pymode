@@ -9,7 +9,7 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@v4
@@ -18,10 +18,15 @@ jobs:
         with:
           node-version: "20"
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential
+          pip3 install cython
 
       - name: Install zig
         uses: mlugg/setup-zig@v2
@@ -57,13 +62,13 @@ jobs:
           path: build/native/
           key: native-python-3.13.0-${{ runner.os }}
 
-      - name: Cache python.wasm build
+      - name: Cache WASM build tree
         uses: actions/cache@v4
         with:
           path: |
-            build/zig-wasi/python.wasm
+            build/zig-wasi/
             build/zig-wrappers/
-          key: python-wasm-${{ hashFiles('scripts/build-phase2.sh', 'scripts/config.site-wasi', 'lib/wasi-shims/**', 'lib/pymode-imports/**') }}
+          key: wasm-build-${{ hashFiles('scripts/build-phase2.sh', 'scripts/config.site-wasi', 'lib/wasi-shims/**', 'lib/pymode-imports/**') }}
 
       - name: Build python.wasm
         run: |
@@ -71,6 +76,30 @@ jobs:
             ./scripts/build-phase2.sh
           fi
           cp build/zig-wasi/python.wasm worker/src/python.wasm
+
+      - name: Cache numpy build
+        uses: actions/cache@v4
+        with:
+          path: /tmp/numpy-wasm-build/
+          key: numpy-build-${{ hashFiles('scripts/build-numpy-wasm.sh', 'recipes/numpy.json') }}
+
+      - name: Build numpy objects
+        run: |
+          # Copy cached objects if available, otherwise build from source
+          if [ -d /tmp/numpy-wasm-build/obj ] && [ "$(ls /tmp/numpy-wasm-build/obj/*.o 2>/dev/null | wc -l)" -gt 50 ]; then
+            echo "Using cached numpy objects"
+            mkdir -p build/zig-wasi/Modules/numpy
+            cp /tmp/numpy-wasm-build/obj/*.o build/zig-wasi/Modules/numpy/
+            # Also need numpy-site-packages.zip
+            if [ -f /tmp/numpy-wasm-build/numpy-site-packages.zip ]; then
+              cp /tmp/numpy-wasm-build/numpy-site-packages.zip worker/src/numpy-site-packages.zip
+            fi
+          else
+            bash scripts/build-numpy-wasm.sh
+          fi
+
+      - name: Link python-numpy.wasm
+        run: bash scripts/build-variant.sh numpy
 
       - name: Generate stdlib-fs.ts
         run: ./scripts/generate-stdlib-fs.sh
