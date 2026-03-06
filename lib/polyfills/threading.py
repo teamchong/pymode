@@ -199,7 +199,17 @@ _main_thread = _DummyThread()
 
 
 class Thread:
-    """Thread that raises on start() — use pymode.parallel instead."""
+    """Thread that runs target in a child Durable Object via pymode.parallel.
+
+    When host imports are available (running in PythonDO), Thread.start()
+    spawns the target function in a separate DO with its own 30s CPU and
+    128MB memory. Thread.join() blocks until the child completes.
+
+    When host imports are unavailable (test environment), falls back to
+    running the target synchronously in the current thread.
+    """
+
+    _next_ident = 2  # 1 is MainThread
 
     def __init__(self, group=None, target=None, name=None, args=(), kwargs=None, daemon=None):
         self._target = target
@@ -208,7 +218,11 @@ class Thread:
         self._kwargs = kwargs or {}
         self._daemon = daemon or False
         self._started = False
+        self._alive = False
         self._ident = None
+        self._handle = None  # pymode.parallel.TaskHandle
+        self._result = None
+        self._error = None
 
     @property
     def name(self):
@@ -231,16 +245,46 @@ class Thread:
         self._daemon = value
 
     def is_alive(self):
-        return False
+        return self._alive
+
+    isAlive = is_alive
 
     def start(self):
-        raise RuntimeError(
-            "threading.Thread.start() is not available in WASM. "
-            "Use pymode.parallel.spawn() for real parallelism via child DOs."
-        )
+        if self._started:
+            raise RuntimeError("threads can only be started once")
+        self._started = True
+        self._alive = True
+        self._ident = Thread._next_ident
+        Thread._next_ident += 1
+
+        if self._target is None:
+            self._alive = False
+            return
+
+        try:
+            from pymode.parallel import spawn
+            # Run in a child DO — real parallelism
+            self._handle = spawn(self._target, *self._args, **self._kwargs)
+        except (ImportError, RuntimeError):
+            # No host imports available — run synchronously
+            try:
+                self._result = self._target(*self._args, **self._kwargs)
+            except Exception as e:
+                self._error = e
+            self._alive = False
 
     def join(self, timeout=None):
-        pass
+        if not self._started:
+            raise RuntimeError("cannot join thread before it is started")
+        if self._handle is not None:
+            try:
+                self._result = self._handle.join()
+            except RuntimeError as e:
+                self._error = e
+            self._alive = False
+            self._handle = None
+        if self._error is not None:
+            raise self._error
 
     def run(self):
         if self._target:

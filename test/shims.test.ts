@@ -72,17 +72,18 @@ print(f"set={e.is_set()}")
     expect(r.text).toBe("set=False\nset=True\nset=False");
   });
 
-  it("Thread raises on start", async () => {
+  it("Thread.start runs target synchronously in test env", async () => {
     const r = await runPython(`
 import threading
-t = threading.Thread(target=lambda: None)
-try:
-    t.start()
-    print("BAD")
-except RuntimeError as e:
-    print(f"OK:{('WASM' in str(e))}")
+results = []
+def worker(x):
+    results.append(x * 2)
+t = threading.Thread(target=worker, args=(21,))
+t.start()
+t.join()
+print(f"result={results[0]},alive={t.is_alive()}")
 `);
-    expect(r.text).toBe("OK:True");
+    expect(r.text).toBe("result=42,alive=False");
   });
 
   it("provides active_count and enumerate", async () => {
