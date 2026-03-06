@@ -145,7 +145,9 @@ def main():
 
     # Create the zip
     os.makedirs(os.path.dirname(output), exist_ok=True)
-    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
+    # Use ZIP_STORED (no compression) because CPython's zipimport
+    # needs zlib to decompress, and zlib is disabled in our WASM build.
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_STORED) as zf:
         for path, content in sorted(all_files.items()):
             zf.writestr(path, content)
 

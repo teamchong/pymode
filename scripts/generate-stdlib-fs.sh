@@ -119,6 +119,11 @@ BOOT_FILES=(
     "pathlib/_local.py"
     # pprint
     "pprint.py"
+    # needed by many PyPI packages
+    "__future__.py"
+    "tempfile.py"
+    "shutil.py"
+    "gettext.py"
     # misc
     "keyword.py"
     "reprlib.py"

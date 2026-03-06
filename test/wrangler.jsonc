@@ -9,6 +9,11 @@
       "type": "CompiledWasm",
       "globs": ["**/*.wasm"],
       "fallthrough": false
+    },
+    {
+      "type": "Data",
+      "globs": ["**/*.zip"],
+      "fallthrough": false
     }
   ],
 

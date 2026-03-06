@@ -350,7 +350,7 @@ except ImportError:
     expect(result.trim()).toBe("MISSING");
   });
 
-  it("reports yaml as unavailable", async () => {
+  it("yaml is available via site-packages.zip", async () => {
     const result = await runPython(`
 try:
     import yaml
@@ -358,7 +358,7 @@ try:
 except ImportError:
     print("MISSING")
 `);
-    expect(result.trim()).toBe("MISSING");
+    expect(result.trim()).toBe("AVAILABLE");
   });
 });
 

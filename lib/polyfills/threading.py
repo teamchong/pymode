@@ -330,6 +330,11 @@ def get_native_id():
     return 1
 
 
+class local:
+    """Thread-local storage. In single-threaded WASM, just a regular object."""
+    pass
+
+
 # Factory functions
 Lock = _DummyLock
 RLock = _DummyRLock

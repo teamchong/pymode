@@ -14,6 +14,11 @@ import pythonWasm from "../worker/src/python.wasm";
 import { stdlibFS } from "../worker/src/stdlib-fs";
 import { ProcExit, createWasi } from "../worker/src/wasi";
 
+// Bundled third-party packages from pymode-install.py.
+// Imported as a Data module (ArrayBuffer) via wrangler rules.
+// @ts-ignore — conditional import
+import sitePackagesData from "../worker/src/site-packages.zip";
+
 // Re-export for cloudflare:test SELF binding
 export default {
   async fetch(request: Request): Promise<Response> {
@@ -34,10 +39,17 @@ export default {
       code = url.searchParams.get("code") || "print('Hello from PyMode!')";
     }
 
+    // Mount site-packages.zip if available
+    let pythonPath = "/stdlib";
+    if (sitePackagesData) {
+      files["site-packages.zip"] = new Uint8Array(sitePackagesData);
+      pythonPath = "/stdlib:/stdlib/site-packages.zip";
+    }
+
     try {
       const result = await runWasm(
         ["python", "-S", "-c", code],
-        { PYTHONPATH: "/stdlib", PYTHONDONTWRITEBYTECODE: "1", PYTHONNOUSERSITE: "1" },
+        { PYTHONPATH: pythonPath, PYTHONDONTWRITEBYTECODE: "1", PYTHONNOUSERSITE: "1" },
         files
       );
 
