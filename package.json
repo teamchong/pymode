@@ -6,14 +6,18 @@
   "scripts": {
     "build:phase1": "./scripts/build-phase1.sh",
     "build:phase2": "./scripts/build-phase2.sh",
-    "test": "./scripts/test.sh",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:legacy": "./scripts/test.sh",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.12.20",
     "@cloudflare/workers-types": "^4.20240512.0",
     "typescript": "^5.4.0",
+    "vitest": "^3.2.4",
     "wrangler": "^3.57.0"
   }
 }
