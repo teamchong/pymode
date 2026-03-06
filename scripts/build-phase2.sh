@@ -174,7 +174,7 @@ PKG_CONFIG=false \
     AR="$ZIG_WRAPPER_DIR/zig-ar" \
     RANLIB="$ZIG_WRAPPER_DIR/zig-ranlib" \
     CFLAGS="-Os -DNDEBUG -fno-strict-aliasing" \
-    LDFLAGS="-s" \
+    LDFLAGS="-s -L$BUILD_DIR/pymode-imports -lpymode_imports" \
     --disable-ipv6 \
     --disable-shared \
     --without-ensurepip \
@@ -236,39 +236,17 @@ extern PyObject* PyInit__pymode(void);
     info "  _pymode registered in config.c"
 fi
 
-# Step 3c: Compile WASI shims (single-threaded pthread, etc.)
-info "Compiling WASI shims..."
+# Step 3c: Compile dynload_pymode shim (custom dynamic loading for WASI)
+info "Compiling dynload_pymode shim..."
 SHIMS_DIR="$ROOT_DIR/lib/wasi-shims"
-SHIMS_OBJ_DIR="$BUILD_DIR/shims"
-mkdir -p "$SHIMS_OBJ_DIR"
-
-for shim_src in "$SHIMS_DIR"/*.c; do
-    [ -f "$shim_src" ] || continue
-    shim_name="$(basename "$shim_src" .c)"
-    # dynload_pymode needs CPython headers
-    if [ "$shim_name" = "dynload_pymode" ]; then
-        info "  Compiling $shim_name.c (with CPython headers)"
-        "$ZIG_WRAPPER_DIR/zig-cc" -c -Os \
-            -DPy_BUILD_CORE \
-            -I"$CPYTHON_DIR/Include" \
-            -I"$CPYTHON_DIR/Include/internal" \
-            -I"$BUILD_DIR" \
-            "$shim_src" -o "$SHIMS_OBJ_DIR/$shim_name.o"
-    else
-        info "  Compiling $shim_name.c"
-        "$ZIG_WRAPPER_DIR/zig-cc" -c -Os "$shim_src" -o "$SHIMS_OBJ_DIR/$shim_name.o"
-    fi
-done
-
-# Copy dynload_pymode.o to where the Makefile expects it
-if [ -f "$SHIMS_OBJ_DIR/dynload_pymode.o" ]; then
-    mkdir -p "$BUILD_DIR/Python"
-    cp "$SHIMS_OBJ_DIR/dynload_pymode.o" "$BUILD_DIR/Python/dynload_pymode.o"
-fi
-
-# Create static library from shims
-"$ZIG_WRAPPER_DIR/zig-ar" rcs "$SHIMS_OBJ_DIR/libwasi_shims.a" "$SHIMS_OBJ_DIR"/*.o
-info "  Built libwasi_shims.a"
+mkdir -p "$BUILD_DIR/Python"
+"$ZIG_WRAPPER_DIR/zig-cc" -c -Os \
+    -DPy_BUILD_CORE \
+    -I"$CPYTHON_DIR/Include" \
+    -I"$CPYTHON_DIR/Include/internal" \
+    -I"$BUILD_DIR" \
+    "$SHIMS_DIR/dynload_pymode.c" -o "$BUILD_DIR/Python/dynload_pymode.o"
+info "  Built Python/dynload_pymode.o"
 
 # Step 3d: Compile pymode host imports (WASM imports from the pymode.* namespace)
 info "Compiling pymode host imports..."
@@ -291,9 +269,7 @@ fi
 # Step 4: Build
 info "Building CPython with zig cc (ReleaseSmall)..."
 NCPU="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
-# Add shims and pymode imports libraries to LDFLAGS for linking
-# --allow-undefined lets the linker accept unresolved pymode.* WASM imports
-LDFLAGS="-s -L$SHIMS_OBJ_DIR -lwasi_shims -L$PYMODE_OBJ_DIR -lpymode_imports" make -j"$NCPU" 2>&1 | tee "$BUILD_DIR/build.log"
+make -j"$NCPU" 2>&1 | tee "$BUILD_DIR/build.log"
 
 # Step 5: Verify python.wasm exists
 if [ ! -f "$BUILD_DIR/python.wasm" ]; then
