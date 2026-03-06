@@ -94,8 +94,49 @@ async function runWasm(
   try {
     // WebAssembly.instantiate() with a Module (CompiledWasm binding) returns
     // Instance directly. With an ArrayBuffer it returns { module, instance }.
+    // pymode.* host imports — these are the JS↔WASM bridge functions that the
+    // production PythonDO provides (TCP, HTTP, KV, R2, D1, etc.). In the test
+    // environment, the Python code under test doesn't call these directly, so
+    // they return error codes indicating "not available".
+    const pymode: Record<string, Function> = {
+      tcp_connect: () => -1,
+      tcp_send: () => -1,
+      tcp_recv: () => -1,
+      tcp_close: () => {},
+      http_fetch: () => -1,
+      http_response_status: () => 0,
+      http_response_read: () => 0,
+      http_response_header: () => -1,
+      kv_get: () => -1,
+      kv_put: () => {},
+      kv_delete: () => {},
+      r2_get: () => -1,
+      r2_put: () => {},
+      d1_exec: () => -1,
+      env_get: () => -1,
+      thread_spawn: () => -1,
+      thread_join: () => -1,
+      dl_open: () => -1,
+      dl_sym: () => 0,
+      dl_close: () => {},
+      dl_error: () => 0,
+      console_log: () => {},
+    };
+
+    // Asyncify runtime functions injected by wasm-opt --asyncify.
+    // These manage stack unwinding/rewinding for async host calls.
+    // Since tests run synchronous Python, these are never invoked.
+    const asyncify: Record<string, Function> = {
+      start_unwind: () => {},
+      stop_unwind: () => {},
+      start_rewind: () => {},
+      stop_rewind: () => {},
+    };
+
     const result = await WebAssembly.instantiate(pythonWasm, {
       wasi_snapshot_preview1: wasi.imports,
+      pymode,
+      asyncify,
     });
     const instance = (result as any).exports ? result as WebAssembly.Instance : (result as any).instance;
     memory = instance.exports.memory as WebAssembly.Memory;
