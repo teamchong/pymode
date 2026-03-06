@@ -236,7 +236,7 @@ extern PyObject* PyInit__pymode(void);
     info "  _pymode registered in config.c"
 fi
 
-# Step 3c: Compile dynload_pymode shim (custom dynamic loading for WASI)
+# Step 3c: Compile dynload_pymode shim into build dir
 info "Compiling dynload_pymode shim..."
 SHIMS_DIR="$ROOT_DIR/lib/wasi-shims"
 mkdir -p "$BUILD_DIR/Python"
@@ -248,12 +248,11 @@ mkdir -p "$BUILD_DIR/Python"
     "$SHIMS_DIR/dynload_pymode.c" -o "$BUILD_DIR/Python/dynload_pymode.o"
 info "  Built Python/dynload_pymode.o"
 
-# Step 3d: Compile pymode host imports (WASM imports from the pymode.* namespace)
+# Step 3d: Compile pymode host imports
 info "Compiling pymode host imports..."
 PYMODE_IMPORTS_DIR="$ROOT_DIR/lib/pymode-imports"
-
 if [ -f "$PYMODE_IMPORTS_DIR/pymode_imports.c" ]; then
-    # Compile into Modules/ so the Makefile can find it
+    mkdir -p "$BUILD_DIR/Modules"
     "$ZIG_WRAPPER_DIR/zig-cc" -c -Os \
         -DPy_BUILD_CORE \
         -I"$PYMODE_IMPORTS_DIR" \
@@ -268,8 +267,10 @@ fi
 # Step 4: Build
 info "Building CPython with zig cc (ReleaseSmall)..."
 NCPU="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
-# Add pymode_imports.o to the link by appending to MODULE_OBJS in the Makefile
-sedi '/^MODULE_OBJS=/s|Modules/gcmodule.o|Modules/gcmodule.o Modules/pymode_imports.o|' "$BUILD_DIR/Makefile"
+# Patch Makefile to include pymode_imports.o in the build
+# Append to MODULE_OBJS so it gets linked into python.wasm
+echo 'MODULE_OBJS += Modules/pymode_imports.o' >> "$BUILD_DIR/Makefile"
+info "  Added Modules/pymode_imports.o to MODULE_OBJS"
 make -j"$NCPU" 2>&1 | tee "$BUILD_DIR/build.log"
 
 # Step 5: Verify python.wasm exists
