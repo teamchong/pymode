@@ -174,7 +174,7 @@ PKG_CONFIG=false \
     AR="$ZIG_WRAPPER_DIR/zig-ar" \
     RANLIB="$ZIG_WRAPPER_DIR/zig-ranlib" \
     CFLAGS="-Os -DNDEBUG -fno-strict-aliasing" \
-    LDFLAGS="-s -L$BUILD_DIR/pymode-imports -lpymode_imports" \
+    LDFLAGS="-s" \
     --disable-ipv6 \
     --disable-shared \
     --without-ensurepip \
@@ -269,6 +269,9 @@ fi
 # Step 4: Build
 info "Building CPython with zig cc (ReleaseSmall)..."
 NCPU="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
+# Append pymode imports library to LDFLAGS in Makefile (can't set at configure time
+# because the library doesn't exist yet during configure's compiler test)
+sedi "s|^LDFLAGS=.*|& -L$PYMODE_OBJ_DIR -lpymode_imports|" "$BUILD_DIR/Makefile"
 make -j"$NCPU" 2>&1 | tee "$BUILD_DIR/build.log"
 
 # Step 5: Verify python.wasm exists
