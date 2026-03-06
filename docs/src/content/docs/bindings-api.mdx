@@ -170,12 +170,17 @@ Spawn child Durable Objects for CPU-intensive work:
 from pymode.parallel import spawn, gather
 
 def on_fetch(request, env):
-    # Spawn parallel tasks (each gets 30s CPU, 128MB memory)
+    # Spawn individual tasks (each gets 30s CPU, 128MB memory)
     task1 = spawn(process_chunk, data[:1000])
     task2 = spawn(process_chunk, data[1000:])
+    result1 = task1.join()
+    result2 = task2.join()
 
-    # Wait for all results
-    results = gather(task1, task2)
+    # Or use gather for multiple independent tasks
+    results = gather(
+        (process_chunk, [data[:1000]]),
+        (process_chunk, [data[1000:]]),
+    )
 
     return Response.json({"results": results})
 
@@ -183,6 +188,8 @@ def process_chunk(data):
     # Runs in a separate Durable Object
     return [transform(item) for item in data]
 ```
+
+> **Note:** Functions passed to `spawn` and `gather` must be picklable (module-level functions, not lambdas). See [API Reference](/pymode/api-reference/) for full details.
 
 ## Durable Workflows
 

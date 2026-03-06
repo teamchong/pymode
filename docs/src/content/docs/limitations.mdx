@@ -1,0 +1,118 @@
+---
+title: Limitations
+description: Known gaps, missing stdlib modules, and platform constraints.
+---
+
+PyMode runs upstream CPython 3.13 compiled to `wasm32-wasi` inside Cloudflare Workers Durable Objects. This works well for most Python code, but the WASM/WASI/DO environment has inherent constraints.
+
+## Platform Constraints
+
+| Constraint | Details |
+|------------|---------|
+| **No filesystem persistence** | The WASM linear memory is reset per request. Use KV/R2/D1 for storage. |
+| **No network sockets** | Standard `socket` module is unavailable. Use `pymode.tcp` and `pymode.http` instead. |
+| **No threads** | `threading` is disabled (`--disable-threads`). Use `pymode.parallel` for real parallelism via child DOs. |
+| **No subprocess** | `os.system`, `subprocess`, `os.fork` are not available in WASI. |
+| **No signals** | Signal handling is emulated (`-lwasi-emulated-signal`), limited functionality. |
+| **30s CPU limit** | Per-request CPU time is capped at 30 seconds (CF Workers limit). |
+| **128MB memory** | Per-DO memory limit. Large data processing should use `pymode.parallel` to distribute across DOs. |
+| **10MB bundle size** | Total compressed worker size. PyMode itself uses ~2-3MB gzipped, leaving ~7MB for your code and dependencies. |
+
+## Bundled Stdlib Modules
+
+PyMode bundles a subset of CPython's stdlib as string constants in the worker. These are the modules available in the WASM runtime:
+
+### Always Available (bundled in stdlib-fs)
+
+| Category | Modules |
+|----------|---------|
+| **Encodings** | `encodings`, `encodings.aliases`, `encodings.utf_8`, `encodings.ascii`, `encodings.latin_1` |
+| **JSON** | `json` |
+| **Regex** | `re` |
+| **Collections** | `collections`, `collections.abc`, `functools`, `operator` |
+| **Types** | `enum`, `types`, `typing`, `abc` |
+| **Core** | `warnings`, `contextlib`, `dataclasses`, `copy`, `copyreg`, `weakref`, `_weakrefset` |
+| **Text** | `string`, `textwrap` |
+| **Crypto** | `base64`, `hashlib`, `hmac`, `secrets` |
+| **Numbers** | `random`, `bisect`, `heapq`, `numbers`, `fractions`, `decimal` |
+| **Date/Time** | `datetime`, `calendar` |
+| **Path** | `fnmatch`, `glob` |
+| **URL** | `urllib`, `urllib.parse`, `ipaddress` |
+| **Import** | `importlib`, `importlib.abc`, `importlib.machinery`, `importlib.util` |
+| **Serialization** | `pickle`, `_compat_pickle`, `struct` |
+| **I/O** | `io`, `_pyio` |
+| **Misc** | `keyword`, `reprlib`, `traceback`, `linecache`, `tokenize`, `token` |
+
+### Built-in C Modules (compiled into python.wasm)
+
+These are C extension modules linked directly into the WASM binary:
+
+`array`, `_asyncio`, `_bisect`, `_contextvars`, `_csv`, `_heapq`, `_json`, `_pickle`, `_random`, `_struct`, `_zoneinfo`, `math`, `cmath`, `_statistics`, `_datetime`, `_decimal`, `_md5`, `_sha1`, `_sha2`, `_sha3`, `_blake2`, `_codecs`, `_collections`, `errno`, `_io`, `itertools`, `_sre`, `_thread`, `time`, `_typing`, `_weakref`, `_abc`, `_functools`, `_locale`, `_operator`, `_stat`, `_symtable`, `unicodedata`, `pyexpat`, `_elementtree`
+
+### Polyfilled Modules
+
+| Module | Implementation | Notes |
+|--------|---------------|-------|
+| `binascii` | Pure Python (`lib/polyfills/binascii.py`) | Replaces the C extension. Covers hex, base64, crc32, uu encoding. |
+
+### Not Available
+
+These stdlib modules require OS features that WASI doesn't provide:
+
+| Module | Reason |
+|--------|--------|
+| `socket` | No WASI socket support. Use `pymode.tcp` instead. |
+| `ssl` | No TLS in WASI. HTTPS handled by CF's edge. |
+| `subprocess` | No process spawning in WASI. |
+| `multiprocessing` | No fork/spawn. Use `pymode.parallel`. |
+| `threading` | Disabled at build time. Use `pymode.parallel`. |
+| `sqlite3` | C extension not compiled for WASM. |
+| `ctypes` | No dynamic linking for arbitrary shared libraries. |
+| `tkinter` | No GUI in Workers. |
+| `curses` | No terminal in Workers. |
+| `readline` | No interactive terminal. |
+| `mmap` | Not available in WASI. |
+| `fcntl`, `termios`, `grp`, `pwd` | Unix-specific, not in WASI. |
+| `select`, `selectors` | No I/O multiplexing in WASI. |
+| `signal` | Emulated only, limited functionality. |
+| `resource` | No resource limits API in WASI. |
+
+### Not Bundled (but could work)
+
+These modules exist in CPython's stdlib but aren't bundled in `stdlib-fs.ts` to save space. They could be added if needed:
+
+| Module | Why not bundled |
+|--------|-----------------|
+| `csv` | Not yet added to BOOT_FILES |
+| `statistics` | Not yet added to BOOT_FILES |
+| `inspect` | Large dependency tree, needed for `dataclasses` field introspection |
+| `locale` | Needed for `calendar` formatting |
+| `html`, `html.parser` | Not yet added |
+| `email` | Large package, not yet added |
+| `logging` | Not yet added |
+| `argparse` | Not useful in Workers context |
+| `pathlib` | Not yet added |
+| `pprint` | Not yet added |
+
+> **Requesting a module:** If you need a stdlib module that's not bundled, [open an issue](https://github.com/teamchong/pymode/issues) or add it to `BOOT_FILES` in `scripts/generate-stdlib-fs.sh`.
+
+## Python Language Support
+
+Full CPython 3.13 language support including:
+- All syntax features (match/case, walrus operator, f-strings, etc.)
+- Generators, async generators, coroutines
+- Decorators, metaclasses, descriptors
+- Exception groups, `ExceptionGroup`
+- Type hints, `typing` module
+
+**Not supported:**
+- `async`/`await` at the handler level (use Asyncify for I/O instead)
+- `asyncio` event loop (no I/O multiplexing in WASI)
+
+## Package Support
+
+**Works:** Pure-Python packages from PyPI (`requests`, `jinja2`, `pydantic`, etc.)
+
+**Experimental:** C extension packages compiled to `.wasm` side modules via `scripts/build-extension.sh`. Currently supported: `markupsafe`, `simplejson`, `msgpack`.
+
+**Doesn't work:** Packages requiring OS features (network sockets, file I/O, subprocess), packages with complex C dependencies (numpy, pandas, scipy).

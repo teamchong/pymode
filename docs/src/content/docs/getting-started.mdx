@@ -14,7 +14,7 @@ description: Install PyMode and deploy your first Python handler to Cloudflare W
 ### 1. Create a new project
 
 ```bash
-pymode init my-worker
+npx pymode init my-worker
 cd my-worker
 ```
 
@@ -24,20 +24,22 @@ This scaffolds:
 my-worker/
   pyproject.toml          # Project config
   src/
-    main.py               # Your handler
-  wrangler.toml           # Cloudflare config
+    entry.py              # Your handler
+  .gitignore
 ```
 
 ### 2. Write your handler
 
 ```python
-# src/main.py
+# src/entry.py
 from pymode.workers import Response
 
 def on_fetch(request, env):
-    name = request.query.get("name", "World")
+    name = request.query.get("name", ["World"])[0]
     return Response(f"Hello, {name}!")
 ```
+
+> **Note:** `request.query` returns lists (via `parse_qs`), so use `[0]` to get the first value.
 
 ### 3. Run locally
 
@@ -61,13 +63,12 @@ A typical PyMode project:
 
 ```
 my-worker/
-  pyproject.toml          # [tool.pymode] main = "src/main.py"
+  pyproject.toml          # [tool.pymode] main = "src/entry.py"
   src/
-    main.py               # Entry point with on_fetch()
+    entry.py              # Entry point with on_fetch()
     routes.py             # Additional modules
     utils.py              # Standard Python imports work
   .dev.vars               # Local environment variables
-  wrangler.toml           # Cloudflare Workers config
 ```
 
 ### pyproject.toml
@@ -78,8 +79,8 @@ name = "my-worker"
 version = "0.1.0"
 
 [tool.pymode]
-main = "src/main.py"
-compatibility_date = "2024-01-01"
+main = "src/entry.py"
+# wizer = true    # Enable deploy-time snapshots (~5ms cold starts)
 
 [tool.pymode.kv_namespaces]
 MY_KV = "kv-namespace-id"
@@ -97,15 +98,26 @@ MY_DB = "d1-database-id"
 # Pure-Python packages
 pymode add requests jinja2
 
-# C extension packages (compiled to .wasm side modules)
-pymode add markupsafe simplejson
+# Install from pyproject.toml
+pymode install
 ```
 
 Packages are bundled into your worker at deploy time.
 
+## Examples
+
+The repo includes working examples you can use as starting points:
+
+| Example | Description |
+|---------|-------------|
+| [`examples/hello-worker`](https://github.com/teamchong/pymode/tree/main/examples/hello-worker) | Simple handler with GET routes and query params |
+| [`examples/api-worker`](https://github.com/teamchong/pymode/tree/main/examples/api-worker) | Multi-file project with middleware and routes |
+| [`examples/workflow-worker`](https://github.com/teamchong/pymode/tree/main/examples/workflow-worker) | Durable workflow with retries and backoff |
+
 ## Next Steps
 
+- [Architecture](/pymode/architecture/) — Understand the runtime model (DOs, WASM, Asyncify)
 - [Request Handling](/pymode/request-handling/) — Request/Response API, routing, middleware
 - [Bindings API](/pymode/bindings-api/) — KV, R2, D1, TCP, HTTP fetch
-- [CLI Reference](/pymode/cli/) — All `pymode` commands and options
-- [Deployment](/pymode/deployment/) — Production deployment, Wizer snapshots, monitoring
+- [API Reference](/pymode/api-reference/) — Full API for all `pymode.*` modules
+- [Limitations](/pymode/limitations/) — Known gaps, missing stdlib modules, platform constraints

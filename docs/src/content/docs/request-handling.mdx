@@ -23,11 +23,13 @@ The function receives a `Request` object and an `Env` object containing your Clo
 | `request.method` | `str` | HTTP method (`GET`, `POST`, etc.) |
 | `request.url` | `str` | Full URL |
 | `request.path` | `str` | URL path component |
-| `request.query` | `dict` | Parsed query parameters |
-| `request.headers` | `dict` | Request headers (case-insensitive keys) |
-| `request.body` | `bytes` | Raw request body |
-| `request.text` | `str` | Body decoded as UTF-8 |
+| `request.query` | `dict[str, list[str]]` | Parsed query parameters (values are lists) |
+| `request.headers` | `Headers` | Request headers (case-insensitive) |
+| `request.text()` | `str` | Body decoded as UTF-8 |
 | `request.json()` | `dict/list` | Body parsed as JSON |
+| `request.bytes()` | `bytes` | Raw body bytes |
+
+> **Note:** `request.query` uses `urllib.parse.parse_qs`, so values are always lists. Use `request.query.get("key", ["default"])[0]` to get a single value.
 
 ### Examples
 
@@ -41,8 +43,8 @@ def on_fetch(request, env):
     # Read headers
     auth = request.headers.get("authorization", "")
 
-    # Query parameters
-    page = int(request.query.get("page", "1"))
+    # Query parameters (values are lists)
+    page = int(request.query.get("page", ["1"])[0])
 
     return Response.json({"page": page})
 ```
@@ -71,10 +73,33 @@ Response.redirect("https://example.com", status=302)
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `body` | `str \| bytes` | `""` | Response body |
+| `body` | `str \| bytes \| dict \| list` | `""` | Response body (dicts/lists auto-serialize to JSON) |
 | `status` | `int` | `200` | HTTP status code |
-| `headers` | `dict` | `{}` | Response headers |
-| `content_type` | `str` | `"text/plain"` | Content-Type header |
+| `headers` | `dict` | auto | Response headers (Content-Type set automatically) |
+
+### Class Methods
+
+| Method | Description |
+|--------|-------------|
+| `Response.json(data, status=200, headers=None)` | JSON response with `application/json` content type |
+| `Response.redirect(url, status=302)` | Redirect response with `Location` header |
+
+## Headers Object
+
+The `Headers` class provides case-insensitive header access:
+
+```python
+# Get a header (case-insensitive)
+content_type = request.headers.get("Content-Type", "text/plain")
+
+# Check if header exists
+if "authorization" in request.headers:
+    ...
+
+# Iterate headers
+for name, value in request.headers.items():
+    print(f"{name}: {value}")
+```
 
 ## Routing Patterns
 
@@ -112,7 +137,7 @@ def on_fetch(request, env):
 
 ### Using a Micro-Framework
 
-Since standard Python packages work, you can use lightweight routers:
+Since standard Python packages work, you can build lightweight routers:
 
 ```python
 import re

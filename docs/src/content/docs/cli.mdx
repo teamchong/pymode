@@ -13,11 +13,7 @@ Scaffold a new PyMode project.
 pymode init my-worker
 ```
 
-Creates a project directory with `pyproject.toml`, `src/main.py`, `wrangler.toml`, and `.dev.vars`.
-
-| Option | Description |
-|--------|-------------|
-| `--template <name>` | Use a project template (`hello`, `api`, `workflow`) |
+Creates a project directory with `pyproject.toml`, `src/entry.py`, and `.gitignore`.
 
 ### `pymode dev`
 
@@ -85,13 +81,11 @@ pymode install
 [project]
 name = "my-worker"
 version = "0.1.0"
-requires-python = ">=3.13"
 
 [tool.pymode]
-main = "src/main.py"
-compatibility_date = "2024-01-01"
+main = "src/entry.py"
+# wizer = true    # Enable deploy-time snapshots (~5ms cold starts)
 
-# Cloudflare bindings
 [tool.pymode.kv_namespaces]
 MY_KV = "namespace-id"
 
@@ -100,11 +94,6 @@ MY_R2 = "bucket-name"
 
 [tool.pymode.d1_databases]
 MY_DB = "database-id"
-
-# Python dependencies
-[tool.pymode.dependencies]
-requests = ">=2.31"
-jinja2 = ">=3.1"
 ```
 
 ### .dev.vars
@@ -115,23 +104,4 @@ Local environment variables for development:
 API_KEY=sk-test-123
 DEBUG_MODE=true
 DATABASE_URL=postgres://localhost:5432/mydb
-```
-
-### wrangler.toml
-
-Standard Cloudflare Workers configuration. PyMode generates this during `pymode init` and updates it during `pymode deploy`.
-
-```toml
-name = "my-worker"
-main = "worker/src/worker.ts"
-compatibility_date = "2024-01-01"
-
-[durable_objects]
-bindings = [
-  { name = "PYTHON_DO", class_name = "PythonDO" }
-]
-
-[[kv_namespaces]]
-binding = "MY_KV"
-id = "namespace-id"
 ```

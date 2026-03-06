@@ -1,0 +1,294 @@
+---
+title: API Reference
+description: Complete API for all pymode.* modules.
+---
+
+## pymode.workers
+
+The core module for handling HTTP requests and responses.
+
+```python
+from pymode.workers import Request, Response, Headers, Env
+```
+
+### Request
+
+Constructed automatically from the incoming HTTP request. Do not instantiate directly.
+
+| Property / Method | Return Type | Description |
+|-------------------|-------------|-------------|
+| `request.method` | `str` | HTTP method (`GET`, `POST`, etc.) |
+| `request.url` | `str` | Full request URL |
+| `request.path` | `str` | URL path (parsed via `urlparse`) |
+| `request.query` | `dict[str, list[str]]` | Query parameters (via `parse_qs`, values are lists) |
+| `request.headers` | `Headers` | Case-insensitive headers |
+| `request.text()` | `str` | Body as UTF-8 string |
+| `request.json()` | `dict \| list` | Body parsed as JSON |
+| `request.bytes()` | `bytes` | Raw body bytes |
+
+### Response
+
+```python
+# Text response
+Response("Hello", status=200, headers={"X-Custom": "value"})
+
+# Auto-detects content type:
+#   str → text/plain
+#   bytes → application/octet-stream
+#   dict/list → application/json (auto-serialized)
+Response({"key": "value"})
+
+# Class methods
+Response.json(data, status=200, headers=None)
+Response.redirect(url, status=302)
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `body` | `str \| bytes \| dict \| list` | `""` | Response body |
+| `status` | `int` | `200` | HTTP status code |
+| `headers` | `dict \| None` | auto | Response headers |
+
+### Headers
+
+Case-insensitive HTTP header container.
+
+| Method | Return Type | Description |
+|--------|-------------|-------------|
+| `headers.get(name, default=None)` | `str \| None` | Get header value (case-insensitive) |
+| `headers[name]` | `str` | Get header (raises KeyError if missing) |
+| `name in headers` | `bool` | Check if header exists |
+| `headers.items()` | `list[tuple]` | All (name, value) pairs |
+| `headers.keys()` | `list[str]` | All header names |
+| `headers.values()` | `list[str]` | All header values |
+| `headers.to_dict()` | `dict` | Convert to plain dict |
+
+### Env
+
+Attribute access returns binding objects or string values:
+
+```python
+env.MY_KV    # → KVBinding (name ends with _KV or is "KV")
+env.MY_R2    # → R2Binding (name ends with _R2 or is "R2")
+env.MY_DB    # → D1Binding (name ends with _D1, _DB, or is "D1")
+env.API_KEY  # → str (environment variable / secret)
+```
+
+Binding type is auto-detected from the attribute name suffix.
+
+### KVBinding
+
+| Method | Description |
+|--------|-------------|
+| `kv.get(key, type="text")` | Get value. `type`: `"text"` (str), `"json"` (dict), or `"arrayBuffer"` (bytes) |
+| `kv.put(key, value)` | Store value (str or bytes) |
+| `kv.delete(key)` | Delete key |
+
+### R2Binding
+
+| Method | Description |
+|--------|-------------|
+| `r2.get(key)` | Get object (returns bytes or None) |
+| `r2.put(key, value)` | Store object (str auto-encoded to bytes) |
+
+### D1Binding
+
+```python
+# Returns a D1Statement
+stmt = db.prepare("SELECT * FROM users WHERE id = ?")
+
+# Bind parameters and execute
+rows = stmt.bind(42).all()       # {"results": [...]}
+row = stmt.bind(42).first()      # First row or None
+row = stmt.bind(42).first("name")  # Single column from first row
+stmt.bind(42).run()              # Execute without returning rows
+```
+
+---
+
+## pymode.http
+
+Outbound HTTP requests via WASM host imports.
+
+```python
+from pymode.http import fetch, get, post
+```
+
+### fetch(url, method="GET", headers=None, body=None)
+
+Performs an HTTP request. Suspends the WASM stack via Asyncify — synchronous from Python's perspective.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `url` | `str` | required | Request URL |
+| `method` | `str` | `"GET"` | HTTP method |
+| `headers` | `dict \| None` | `None` | Request headers |
+| `body` | `str \| bytes \| None` | `None` | Request body |
+
+Returns an `HTTPResponse`:
+
+| Property / Method | Type | Description |
+|-------------------|------|-------------|
+| `resp.status` | `int` | HTTP status code |
+| `resp.headers` | `dict` | Response headers (lowercase keys) |
+| `resp.read(amt=-1)` | `bytes` | Read body (all or `amt` bytes) |
+| `resp.getheader(name, default=None)` | `str \| None` | Get response header |
+
+### get(url, headers=None)
+
+Shorthand for `fetch(url, method="GET", headers=headers)`.
+
+### post(url, body=None, headers=None)
+
+Shorthand for `fetch(url, method="POST", headers=headers, body=body)`.
+
+### install()
+
+Patches `urllib.request.urlopen` to route through PyMode's HTTP bridge. Call once at startup if you need urllib compatibility.
+
+---
+
+## pymode.tcp
+
+Raw TCP connections via WASM host imports.
+
+```python
+from pymode.tcp import PyModeSocket
+```
+
+### PyModeSocket
+
+Drop-in socket replacement for TCP connections. Connections persist within the Durable Object's lifetime.
+
+```python
+sock = PyModeSocket()
+sock.connect(("db.example.com", 5432))
+sock.send(b"HELLO\r\n")
+data = sock.recv(4096)
+sock.close()
+```
+
+| Method | Description |
+|--------|-------------|
+| `sock.connect((host, port))` | Open TCP connection |
+| `sock.send(data)` | Send bytes |
+| `sock.recv(bufsize)` | Receive up to `bufsize` bytes |
+| `sock.close()` | Close connection |
+| `sock.settimeout(seconds)` | Set timeout (None = blocking) |
+| `sock.makefile(mode, buffering)` | Wrap in file-like object |
+
+### install()
+
+Patches the `socket` module so database drivers (psycopg2, etc.) use PyMode TCP transparently.
+
+---
+
+## pymode.parallel
+
+Real parallelism via child Durable Objects. Each task gets its own 30s CPU budget and 128MB memory.
+
+```python
+from pymode.parallel import spawn, gather, map_parallel
+```
+
+> **Constraint:** Arguments and return values must be picklable. Functions must be module-level (not lambdas or closures).
+
+### spawn(fn, *args, **kwargs)
+
+Spawn a function in a child DO. Returns a `TaskHandle`.
+
+```python
+handle = spawn(process_data, my_list)
+result = handle.join()  # blocks until complete
+```
+
+### TaskHandle.join()
+
+Block until the task completes. Returns the function's return value. Raises `RuntimeError` if the child raised an exception.
+
+### gather(*tasks)
+
+Run multiple independent tasks in parallel. Each task is `(fn, args)` or `(fn, args, kwargs)`.
+
+```python
+results = gather(
+    (fetch_users, [page]),
+    (compute_stats, [data]),
+    (send_email, [msg]),
+)
+# results[0] = fetch_users result, etc.
+```
+
+### map_parallel(fn, items, max_concurrent=32)
+
+Map a function over items in parallel. Returns results in order.
+
+```python
+results = map_parallel(process_item, items)
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `fn` | callable | required | Function to apply (must be picklable) |
+| `items` | iterable | required | Items to process |
+| `max_concurrent` | `int` | `32` | Max simultaneous child DOs |
+
+---
+
+## pymode.workflows
+
+Durable multi-step workflows with retries and state persistence.
+
+```python
+from pymode.workflows import Workflow
+```
+
+### Workflow(name)
+
+Create a named workflow. Steps execute sequentially.
+
+### @workflow.step / @workflow.step(retries=N, backoff=F, timeout=T)
+
+Register a step function. Each step receives a `StepContext`.
+
+```python
+app = Workflow("order-processing")
+
+@app.step
+def validate(ctx):
+    return {"valid": True}
+
+@app.step(retries=3, backoff=2.0)
+def charge(ctx):
+    prev = ctx.results["validate"]
+    return {"charged": True}
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `retries` | `int` | `0` | Max retry attempts on failure |
+| `backoff` | `float` | `1.0` | Base backoff delay (exponential: `backoff * 2^attempt`) |
+| `timeout` | `float \| None` | `None` | Step timeout in seconds |
+
+### StepContext
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `ctx.workflow_id` | `str` | Unique workflow execution ID |
+| `ctx.input` | `any` | Original workflow input data |
+| `ctx.results` | `dict` | Results from completed steps (keyed by step function name) |
+| `ctx.env` | `Env` | Access to CF bindings |
+
+### workflow.run(workflow_id, input_data, env, journal=None)
+
+Execute the workflow. Pass `journal` from a previous run to resume from the last completed step.
+
+Returns a `WorkflowResult`:
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `result.workflow_id` | `str` | Workflow execution ID |
+| `result.status` | `str` | `"completed"` or `"failed"` |
+| `result.results` | `dict` | All step results |
+| `result.error` | `dict \| None` | Error details if failed |
+| `result.to_dict()` | `dict` | Serialize to JSON-compatible dict |
