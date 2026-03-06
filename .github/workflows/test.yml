@@ -62,6 +62,7 @@ jobs:
       - name: Build python.wasm
         run: |
           if [ ! -f build/zig-wasi/python.wasm ]; then
+            cd cpython && git clean -fdx -e Doc/venv && cd ..
             ./scripts/build-phase2.sh
           fi
           cp build/zig-wasi/python.wasm worker/src/python.wasm
