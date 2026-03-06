@@ -44,6 +44,7 @@ version = "0.1.0"
 
 [tool.pymode]
 main = "src/entry.py"
+# wizer = true    # Enable deploy-time snapshots (~5ms cold starts)
 `
   );
 
@@ -92,6 +93,7 @@ def on_fetch(request, env):
 node_modules/
 .wrangler/
 .dev.vars
+.pymode/
 `
   );
 
@@ -104,7 +106,8 @@ node_modules/
 
   Next steps:
     cd ${name}
-    pymode dev          Start local dev server
-    pymode deploy       Deploy to Cloudflare Workers
+    pymode add requests     Add packages
+    pymode dev              Start local dev server
+    pymode deploy           Deploy to Cloudflare Workers
 `);
 }

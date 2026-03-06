@@ -27,6 +27,9 @@ worker/src/*.wasm
 # Secrets
 .dev.vars
 
+# Package cache
+.pymode/
+
 # OS
 .DS_Store
 

@@ -19,6 +19,9 @@ const USAGE = `
     pymode init <project-name>    Create a new PyMode project
     pymode dev                    Start local dev server with hot reload
     pymode deploy                 Bundle and deploy to Cloudflare Workers
+    pymode add <package>          Add a Python package dependency
+    pymode remove <package>       Remove a package dependency
+    pymode install                Install all dependencies from pyproject.toml
 
   Options:
     --version, -V                 Show version
@@ -29,8 +32,8 @@ const USAGE = `
   Examples:
     pymode init my-worker
     cd my-worker && pymode dev
-    pymode dev --verbose --env API_KEY=secret
-    pymode deploy
+    pymode add requests jinja2
+    pymode deploy --wizer
 `;
 
 async function main() {
@@ -58,6 +61,21 @@ async function main() {
     case "deploy": {
       const { deploy } = await import("../commands/deploy.js");
       await deploy(args);
+      break;
+    }
+    case "add": {
+      const { add } = await import("../commands/add.js");
+      await add(args);
+      break;
+    }
+    case "remove": {
+      const { remove } = await import("../commands/remove.js");
+      await remove(args);
+      break;
+    }
+    case "install": {
+      const { install } = await import("../commands/install.js");
+      await install(args);
       break;
     }
     default:

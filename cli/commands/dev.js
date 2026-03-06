@@ -6,7 +6,7 @@
 
 import { createServer } from "http";
 import { spawn } from "child_process";
-import { watch, readFileSync, existsSync } from "fs";
+import { watch, readFileSync, existsSync, readdirSync } from "fs";
 import { join, resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 
@@ -71,8 +71,16 @@ function findEntryModule(projectDir) {
 
 function runHandler(projectDir, pymodeLib, entryModule, requestJson) {
   return new Promise((resolve, reject) => {
-    // Build PYTHONPATH: pymode runtime + user project
-    const pythonPath = [pymodeLib, projectDir].filter(Boolean).join(":");
+    // Build PYTHONPATH: pymode runtime + user project + installed packages (.whl files)
+    const pathParts = [pymodeLib, projectDir];
+    const pkgDir = join(projectDir, ".pymode", "packages");
+    if (existsSync(pkgDir)) {
+      // Add .whl files directly — Python can import from wheel ZIPs on sys.path
+      for (const f of readdirSync(pkgDir)) {
+        if (f.endsWith(".whl")) pathParts.push(join(pkgDir, f));
+      }
+    }
+    const pythonPath = pathParts.filter(Boolean).join(":");
 
     const proc = spawn("python3", ["-m", "pymode._handler", entryModule], {
       cwd: projectDir,

@@ -68,6 +68,18 @@ def _run():
         _error_response(500, f"Error loading '{module_name}': {traceback.format_exc()}")
         return
 
+    # Check for workflow
+    from pymode.workflows import Workflow
+    wf = getattr(mod, "workflow", None)
+    if wf is not None and isinstance(wf, Workflow) and request.path.startswith("/workflow/"):
+        try:
+            response = _handle_workflow(wf, request, env)
+        except Exception as e:
+            _error_response(500, f"Workflow error: {_format_user_traceback(e)}")
+            return
+        _write_response(response)
+        return
+
     # Find handler
     handler = getattr(mod, "on_fetch", None) or getattr(mod, "fetch", None)
     if handler is None:
@@ -109,6 +121,35 @@ def _run():
 
     # Serialize response to stdout
     _write_response(response)
+
+
+def _handle_workflow(wf, request, env):
+    """Dispatch workflow requests."""
+    path = request.path
+
+    if path == "/workflow/run" and request.method == "POST":
+        body = request.json()
+        workflow_id = body.get("workflow_id", f"{wf.name}_{int(__import__('time').time())}")
+        input_data = body.get("input", {})
+        result = wf.run(workflow_id, input_data, env)
+        return Response.json(result.to_dict())
+
+    if path == "/workflow/resume" and request.method == "POST":
+        body = request.json()
+        workflow_id = body.get("workflow_id")
+        if not workflow_id:
+            return Response.json({"error": "workflow_id required"}, status=400)
+        journal = body.get("journal")
+        input_data = body.get("input", {})
+        result = wf.run(workflow_id, input_data, env, journal=journal)
+        return Response.json(result.to_dict())
+
+    if path == "/workflow/info":
+        steps = [{"name": s.name, "retries": s.retries, "backoff": s.backoff}
+                 for s in wf.steps]
+        return Response.json({"name": wf.name, "steps": steps})
+
+    return Response.json({"error": "Unknown workflow endpoint. Use /workflow/run, /workflow/resume, or /workflow/info"}, status=404)
 
 
 def _format_user_traceback(exc):

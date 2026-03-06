@@ -1,0 +1,6 @@
+[project]
+name = "workflow-worker"
+version = "0.1.0"
+
+[tool.pymode]
+main = "src/entry.py"

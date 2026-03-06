@@ -112,6 +112,7 @@ PYMODE_FILES=(
     "pymode/tcp.py"
     "pymode/env.py"
     "pymode/parallel.py"
+    "pymode/workflows.py"
     "pymode/importer.py"
 )
 

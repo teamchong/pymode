@@ -86,6 +86,28 @@ def on_fetch(request, env):
 
 Under the hood, `env.MY_KV.get("key")` calls `_pymode.kv_get()` which is a WASM host import. Asyncify suspends the WASM stack, JS awaits the real CF KV binding, then resumes Python.
 
+### Packages
+
+Install pure-Python packages from PyPI:
+
+```bash
+pymode add requests jinja2
+pymode install            # reinstall from pyproject.toml
+```
+
+Packages are downloaded as wheels to `.pymode/packages/` and available
+in both dev mode and production. Only pure-Python packages work on
+Workers (no C extensions).
+
+```python
+import requests
+from pymode.workers import Response
+
+def on_fetch(request, env):
+    resp = requests.get("https://api.example.com/data")
+    return Response.json(resp.json())
+```
+
 ### Multi-File Projects
 
 ```
@@ -140,12 +162,48 @@ task2 = spawn(process_chunk, data[1000:])
 results = gather(task1, task2)
 ```
 
+### Workflows
+
+Durable multi-step execution with retries and backoff:
+
+```python
+from pymode.workflows import Workflow
+
+workflow = Workflow("order-processing")
+
+@workflow.step
+def validate(ctx):
+    return {"valid": True, "item": ctx.input["item"]}
+
+@workflow.step(retries=3, backoff=2.0)
+def charge(ctx):
+    order = ctx.results["validate"]
+    return {"charged": True, "total": 29.97}
+
+@workflow.step
+def confirm(ctx):
+    return {"status": "confirmed"}
+```
+
+```bash
+# Run the workflow
+curl -X POST http://localhost:8787/workflow/run \
+  -d '{"input": {"item": "widget", "quantity": 3}}'
+```
+
 ### Deploy-Time Snapshots (Wizer)
 
 Pre-initialize the interpreter at deploy time for ~5ms cold starts:
 
 ```bash
-./scripts/build-wizer.sh   # Snapshots warm interpreter state
+pymode deploy --wizer
+```
+
+Or enable permanently in `pyproject.toml`:
+
+```toml
+[tool.pymode]
+wizer = true
 ```
 
 | | Without Wizer | With Wizer |
@@ -199,12 +257,17 @@ Pre-initialize the interpreter at deploy time for ~5ms cold starts:
 pymode init <name>       # Scaffold a new project
 pymode dev               # Local dev server (native Python, hot reload)
 pymode deploy            # Bundle + deploy to Cloudflare Workers
+pymode add <package>     # Add a Python package dependency
+pymode remove <package>  # Remove a package dependency
+pymode install           # Install all deps from pyproject.toml
 ```
 
 Options:
 - `pymode dev --port 3000` — Custom port (default: 8787)
 - `pymode dev --entry app.py` — Override entry point
 - `pymode dev --env API_KEY=secret` — Pass env vars (repeatable)
+- `pymode dev --verbose` — Log request/response bodies
+- `pymode deploy --wizer` — Build Wizer snapshot for fast cold starts
 - `pymode deploy ./path/to/project` — Deploy from a specific directory
 
 The dev server uses native Python for instant feedback (~35ms per request).
@@ -260,6 +323,7 @@ Users can use the pre-built binary from npm/releases.
 | `lib/pymode/http.py` | HTTP fetch |
 | `lib/pymode/env.py` | KV, R2, D1 via host imports |
 | `lib/pymode/parallel.py` | Threading via child DOs |
+| `lib/pymode/workflows.py` | Durable multi-step workflows |
 | `lib/pymode-imports/` | C extension wrapping WASM host imports |
 | `lib/wizer/` | Wizer entry point for deploy-time snapshots |
 | `scripts/bundle-project.sh` | Bundle .py project into worker |
@@ -268,6 +332,7 @@ Users can use the pre-built binary from npm/releases.
 | `scripts/generate-stdlib-fs.sh` | Bundle stdlib + pymode into worker |
 | `examples/hello-worker/` | Simple handler example |
 | `examples/api-worker/` | Multi-file project with KV |
+| `examples/workflow-worker/` | Durable workflow with retries |
 
 ## Comparison: PyMode vs CF Python Workers
 
@@ -281,7 +346,7 @@ Users can use the pre-built binary from npm/releases.
 | Cold start | ~50ms (snapshot) | ~5ms (Wizer) |
 | TCP connections | No | Yes |
 | Threading | `asyncio.gather` only | Real parallelism (child DOs) |
-| Package support | 280+ (Pyodide wheels) | Static profiles + zipimport |
+| Package support | 280+ (Pyodide wheels) | Pure-Python PyPI packages |
 | Portability | CF only (Emscripten) | Any WASI host |
 
 ## License
