@@ -6,7 +6,7 @@ import { execSync, spawnSync } from "child_process";
 import { existsSync, readFileSync, mkdirSync, writeFileSync, cpSync, copyFileSync } from "fs";
 import { join, dirname, resolve } from "path";
 import { fileURLToPath } from "url";
-import { parseDeps, resolveVariant, applyVariant } from "../lib/variants.js";
+import { parseDeps, resolveVariant, applyVariant, checkPackage } from "../lib/variants.js";
 
 function findRepoRoot() {
   const cliDir = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -92,13 +92,24 @@ function installDeps(projectDir) {
 
   if (deps.length === 0) return;
 
-  console.log(`  Installing ${deps.length} package(s)...`);
+  // Filter out C extension packages — they're provided by the WASM variant
+  const pureDeps = deps.filter(dep => {
+    const info = checkPackage(dep);
+    return !info; // null = pure Python
+  });
+
+  if (pureDeps.length === 0) {
+    console.log("  No pure-Python packages to download.");
+    return;
+  }
+
+  console.log(`  Installing ${pureDeps.length} pure-Python package(s)...`);
   const result = spawnSync("python3", ["-m", "pip", "download",
     "--only-binary", ":all:",
     "--python-version", "3.13",
     "--platform", "any",
     "--dest", join(projectDir, ".pymode", "packages"),
-    ...deps,
+    ...pureDeps,
   ], { stdio: "inherit", cwd: projectDir });
 
   if (result.status !== 0) {
