@@ -1,0 +1,165 @@
+---
+title: Deployment
+description: Deploy PyMode to Cloudflare Workers with production optimizations.
+---
+
+## Standard Deployment
+
+```bash
+pymode deploy
+```
+
+This bundles your Python code, stdlib, and dependencies into a Cloudflare Worker with a PythonDO Durable Object.
+
+### What Gets Deployed
+
+| Component | Size | Description |
+|-----------|------|-------------|
+| `python.wasm` | 5.7MB (1.8MB gz) | CPython 3.13 runtime |
+| stdlib bundle | ~150KB | Essential stdlib modules |
+| Your code | varies | Python source files |
+| Dependencies | varies | Installed packages |
+| Worker JS | ~20KB | Worker entry + WASI + Asyncify runtime |
+
+Total bundle size is typically 2-3MB gzipped, well within Cloudflare's 10MB limit.
+
+## Wizer Snapshots
+
+Wizer pre-initializes the Python runtime at deploy time, reducing cold start from ~28ms to ~5ms:
+
+```bash
+pymode deploy --wizer
+```
+
+### How It Works
+
+1. At deploy time, Wizer runs `python.wasm` up to the point where CPython is fully initialized
+2. It takes a memory snapshot at that point
+3. At runtime, the snapshot is loaded directly — skipping all initialization
+
+This is particularly effective because CPython's startup (loading frozen modules, initializing builtins, importing `site`) is the dominant cold-start cost.
+
+## Environment Variables and Secrets
+
+### Development
+
+Create a `.dev.vars` file in your project root:
+
+```bash
+API_KEY=sk-test-123
+DATABASE_URL=postgres://localhost:5432/mydb
+```
+
+### Production
+
+Use Wrangler to set secrets:
+
+```bash
+# Set a secret
+wrangler secret put API_KEY
+
+# List secrets
+wrangler secret list
+
+# Delete a secret
+wrangler secret delete API_KEY
+```
+
+Access in Python:
+
+```python
+def on_fetch(request, env):
+    api_key = env.API_KEY
+```
+
+## Custom Domains
+
+Configure in `wrangler.toml`:
+
+```toml
+routes = [
+  { pattern = "api.example.com/*", zone_name = "example.com" }
+]
+```
+
+Or use Cloudflare's dashboard to add a custom domain to your Worker.
+
+## Monitoring
+
+### Logs
+
+View real-time logs:
+
+```bash
+wrangler tail
+```
+
+### Metrics
+
+Cloudflare Workers analytics are available in the dashboard:
+- Request count
+- CPU time per request
+- Error rate
+- Cold start frequency
+
+### Error Tracking
+
+Python tracebacks are captured in Worker logs. Use `wrangler tail` or the Cloudflare dashboard to view them.
+
+```python
+def on_fetch(request, env):
+    try:
+        return handle(request, env)
+    except Exception as e:
+        # Logged automatically to Worker logs
+        print(f"Error: {e}", file=sys.stderr)
+        return Response("Internal Server Error", status=500)
+```
+
+## Limits
+
+| Resource | Limit |
+|----------|-------|
+| Worker size | 10MB (compressed) |
+| CPU time per request | 30s |
+| Memory per DO | 128MB |
+| Subrequests per request | 50 |
+| KV value size | 25MB |
+| R2 object size | 5GB |
+| D1 database size | 10GB |
+
+## CI/CD
+
+### GitHub Actions
+
+```yaml
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Deploy
+        run: npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+```
+
+### Required Secrets
+
+| Secret | Description |
+|--------|-------------|
+| `CF_API_TOKEN` | Cloudflare API token with Workers write permission |

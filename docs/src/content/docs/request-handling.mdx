@@ -1,0 +1,161 @@
+---
+title: Request Handling
+description: Request and Response API, routing patterns, and middleware.
+---
+
+## The Handler Function
+
+Every PyMode worker exports an `on_fetch` function:
+
+```python
+from pymode.workers import Response
+
+def on_fetch(request, env):
+    return Response("Hello!")
+```
+
+The function receives a `Request` object and an `Env` object containing your Cloudflare bindings.
+
+## Request Object
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `request.method` | `str` | HTTP method (`GET`, `POST`, etc.) |
+| `request.url` | `str` | Full URL |
+| `request.path` | `str` | URL path component |
+| `request.query` | `dict` | Parsed query parameters |
+| `request.headers` | `dict` | Request headers (case-insensitive keys) |
+| `request.body` | `bytes` | Raw request body |
+| `request.text` | `str` | Body decoded as UTF-8 |
+| `request.json()` | `dict/list` | Body parsed as JSON |
+
+### Examples
+
+```python
+def on_fetch(request, env):
+    # Check method
+    if request.method == "POST":
+        data = request.json()
+        return Response.json({"received": data})
+
+    # Read headers
+    auth = request.headers.get("authorization", "")
+
+    # Query parameters
+    page = int(request.query.get("page", "1"))
+
+    return Response.json({"page": page})
+```
+
+## Response Object
+
+### Creating Responses
+
+```python
+from pymode.workers import Response
+
+# Plain text
+Response("Hello, World!")
+
+# With status and headers
+Response("Not Found", status=404, headers={"X-Custom": "value"})
+
+# JSON response
+Response.json({"key": "value"})
+
+# Redirect
+Response.redirect("https://example.com", status=302)
+```
+
+### Response Constructor
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `body` | `str \| bytes` | `""` | Response body |
+| `status` | `int` | `200` | HTTP status code |
+| `headers` | `dict` | `{}` | Response headers |
+| `content_type` | `str` | `"text/plain"` | Content-Type header |
+
+## Routing Patterns
+
+PyMode doesn't include a built-in router. Use Python's standard control flow:
+
+### Simple Path Matching
+
+```python
+def on_fetch(request, env):
+    if request.path == "/":
+        return Response("Home")
+    elif request.path == "/api/users":
+        return handle_users(request, env)
+    elif request.path.startswith("/api/users/"):
+        user_id = request.path.split("/")[-1]
+        return handle_user(request, env, user_id)
+    return Response("Not Found", status=404)
+```
+
+### Method-Based Routing
+
+```python
+def on_fetch(request, env):
+    handlers = {
+        ("GET", "/api/items"): list_items,
+        ("POST", "/api/items"): create_item,
+        ("DELETE", "/api/items"): delete_item,
+    }
+
+    handler = handlers.get((request.method, request.path))
+    if handler:
+        return handler(request, env)
+    return Response("Not Found", status=404)
+```
+
+### Using a Micro-Framework
+
+Since standard Python packages work, you can use lightweight routers:
+
+```python
+import re
+from pymode.workers import Response
+
+routes = []
+
+def route(pattern, methods=("GET",)):
+    def decorator(fn):
+        routes.append((re.compile(f"^{pattern}$"), methods, fn))
+        return fn
+    return decorator
+
+@route(r"/api/users/(\d+)", methods=("GET",))
+def get_user(request, env, user_id):
+    return Response.json({"id": user_id})
+
+@route(r"/api/users", methods=("POST",))
+def create_user(request, env):
+    data = request.json()
+    return Response.json(data, status=201)
+
+def on_fetch(request, env):
+    for pattern, methods, handler in routes:
+        if request.method in methods:
+            match = pattern.match(request.path)
+            if match:
+                return handler(request, env, *match.groups())
+    return Response("Not Found", status=404)
+```
+
+## Error Handling
+
+Unhandled exceptions return a 500 response with the traceback (in development mode) or a generic error message (in production).
+
+```python
+def on_fetch(request, env):
+    try:
+        data = request.json()
+        result = process(data)
+        return Response.json(result)
+    except ValueError as e:
+        return Response.json({"error": str(e)}, status=400)
+    except Exception as e:
+        return Response.json({"error": "Internal Server Error"}, status=500)
+```

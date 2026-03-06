@@ -1,0 +1,152 @@
+---
+title: Architecture
+description: How PyMode compiles CPython to WASM and runs it on Cloudflare Workers.
+---
+
+## Overview
+
+PyMode compiles upstream CPython 3.13 to `wasm32-wasi` using `zig cc`, then runs it inside Cloudflare Workers via Durable Objects. Each request gets its own sandboxed Python runtime.
+
+```
+┌─────────────────────────────────────────────────────┐
+│  Cloudflare Edge                                     │
+│                                                       │
+│  ┌──────────┐     ┌──────────────────────────────┐   │
+│  │  Worker   │────▶│  PythonDO (Durable Object)   │   │
+│  │(stateless)│     │                              │   │
+│  └──────────┘     │  ┌────────────────────────┐  │   │
+│                    │  │  python.wasm (CPython)  │  │   │
+│                    │  │                        │  │   │
+│                    │  │  on_fetch(req, env)     │  │   │
+│                    │  │       │                 │  │   │
+│                    │  │       ▼                 │  │   │
+│                    │  │  WASM Host Imports      │  │   │
+│                    │  └───────┬────────────────┘  │   │
+│                    │          │                    │   │
+│                    │    ┌─────▼─────┐             │   │
+│                    │    │ Asyncify  │             │   │
+│                    │    │ (suspend/ │             │   │
+│                    │    │  resume)  │             │   │
+│                    │    └─────┬─────┘             │   │
+│                    └──────────┼───────────────────┘   │
+│                               │                       │
+│                    ┌──────────▼───────────────┐       │
+│                    │  KV │ R2 │ D1 │ TCP │ HTTP │     │
+│                    └─────────────────────────────┘    │
+└─────────────────────────────────────────────────────┘
+```
+
+## Build Pipeline
+
+### Phase 1: Native Python
+
+A native CPython 3.13 is built first — this serves as the "build Python" for cross-compilation.
+
+### Phase 2: WASM Cross-Compilation
+
+CPython is cross-compiled to `wasm32-wasi` using zig cc wrappers:
+
+| Component | Purpose |
+|-----------|---------|
+| `zig-cc` | C compiler wrapper targeting `wasm32-wasi` with `-Os` |
+| `zig-ar` | Static archiver |
+| `zig-cpp` | C preprocessor |
+| `config.site-wasi` | Pre-answers configure checks for WASI |
+
+Key build flags:
+- **Target**: `wasm32-wasi`
+- **Optimization**: `-Os` (ReleaseSmall)
+- **Disabled**: threads, shared libs, IPv6, pymalloc
+- **WASI emulation**: `-lwasi-emulated-signal`, `-lwasi-emulated-getpid`, `-lwasi-emulated-process-clocks`
+
+### Phase 3: Asyncify
+
+`wasm-opt --asyncify` instruments the binary so host imports can suspend and resume the WASM stack:
+
+```
+Python calls fetch()
+    → WASM host import pymode.http_fetch
+    → Asyncify unwinds the stack
+    → JS awaits the actual HTTP fetch
+    → Asyncify rewinds the stack
+    → Python receives the response
+```
+
+This means Python code looks synchronous while the host performs async I/O.
+
+### Phase 4: Stdlib Bundle
+
+`generate-stdlib-fs.sh` packages the CPython stdlib and PyMode runtime into a TypeScript map that's embedded in the worker:
+
+```typescript
+export const stdlibFS: Record<string, string> = {
+  "encodings/__init__.py": "...",
+  "encodings/utf_8.py": "...",
+  "json/__init__.py": "...",
+  // ~70 stdlib modules
+};
+```
+
+## WASM Host Imports
+
+Instead of JS interop or virtual filesystem hacks, PyMode uses direct WASM imports:
+
+```c
+// pymode_imports.h
+__attribute__((import_module("pymode"), import_name("kv_get")))
+int32_t pymode_kv_get(const char* key, int32_t key_len,
+                       uint8_t* buf, int32_t buf_len);
+```
+
+The JavaScript host (PythonDO) provides these functions at WASM instantiation time. Python calls them through a C extension module (`_pymode`).
+
+### Import Namespaces
+
+| Namespace | Functions |
+|-----------|-----------|
+| `wasi_snapshot_preview1` | WASI standard (fd_read, fd_write, path_open, etc.) |
+| `pymode` | KV, R2, D1, TCP, HTTP, threading, dynamic loading |
+| `asyncify` | Stack unwind/rewind control |
+
+## PythonDO (Durable Object)
+
+Each request is handled by a Durable Object instance that:
+
+1. **Instantiates** `python.wasm` with WASI + pymode imports
+2. **Writes** the request as JSON to WASM stdin
+3. **Calls** `_start` (which runs `_handler.py` → `on_fetch()`)
+4. **Reads** the response from WASM stdout
+5. **Manages** async I/O via Asyncify during execution
+
+The DO holds:
+- Active TCP connections (for connection pooling)
+- HTTP response handles
+- Thread/child DO results
+- Dynamic loading state (`.wasm` side modules)
+
+## Dynamic Loading
+
+C extension packages (markupsafe, simplejson, etc.) are compiled to `.wasm` side modules. PyMode intercepts `dlopen`/`dlsym` calls:
+
+```
+import markupsafe
+    → CPython calls dlopen("markupsafe/_speedups.so")
+    → dynload_pymode.c intercepts
+    → WASM host import pymode.dl_open("markupsafe/_speedups.wasm")
+    → JS loads + instantiates the side module
+    → dlsym("PyInit__speedups") returns the init function
+    → CPython initializes the extension module
+```
+
+## Comparison with Pyodide
+
+| | PyMode | Pyodide (CF Python Workers) |
+|---|---|---|
+| **CPython** | Upstream 3.13 | Patched 3.12 fork |
+| **Compiler** | zig cc | Emscripten |
+| **Target** | wasm32-wasi | wasm32-emscripten |
+| **Binary size** | 5.7MB (1.8MB gz) | 20MB (6.4MB gz) |
+| **Cold start** | ~28ms (5ms with Wizer) | ~200ms (with snapshot) |
+| **Async I/O** | Asyncify (transparent) | VFS trampoline |
+| **CF Bindings** | WASM host imports | JS interop bridge |
+| **Status** | Active | Deprecated by CF |

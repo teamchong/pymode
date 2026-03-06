@@ -1,0 +1,137 @@
+---
+title: CLI Reference
+description: All pymode commands, options, and configuration.
+---
+
+## Commands
+
+### `pymode init <name>`
+
+Scaffold a new PyMode project.
+
+```bash
+pymode init my-worker
+```
+
+Creates a project directory with `pyproject.toml`, `src/main.py`, `wrangler.toml`, and `.dev.vars`.
+
+| Option | Description |
+|--------|-------------|
+| `--template <name>` | Use a project template (`hello`, `api`, `workflow`) |
+
+### `pymode dev`
+
+Start a local development server with hot reload.
+
+```bash
+pymode dev
+```
+
+The dev server runs your Python handler natively (not in WASM) for instant feedback (~35ms per request).
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--port <port>` | `8787` | Port to listen on |
+| `--entry <file>` | from `pyproject.toml` | Override entry point |
+| `--env <KEY=VALUE>` | — | Set environment variable |
+| `--verbose` | `false` | Log request/response bodies |
+
+### `pymode deploy`
+
+Bundle and deploy to Cloudflare Workers.
+
+```bash
+pymode deploy
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--entry <file>` | from `pyproject.toml` | Override entry point |
+| `--env <KEY=VALUE>` | — | Set environment variable |
+| `--wizer` | `false` | Build Wizer snapshot for fast cold starts |
+| `--dry-run` | `false` | Bundle without deploying |
+
+### `pymode add <packages...>`
+
+Add Python package dependencies.
+
+```bash
+pymode add requests jinja2 markupsafe
+```
+
+Pure-Python packages are bundled directly. C extension packages are compiled to `.wasm` side modules using `build-extension.sh`.
+
+### `pymode remove <packages...>`
+
+Remove Python package dependencies.
+
+```bash
+pymode remove requests
+```
+
+### `pymode install`
+
+Install all dependencies from `pyproject.toml`.
+
+```bash
+pymode install
+```
+
+## Configuration
+
+### pyproject.toml
+
+```toml
+[project]
+name = "my-worker"
+version = "0.1.0"
+requires-python = ">=3.13"
+
+[tool.pymode]
+main = "src/main.py"
+compatibility_date = "2024-01-01"
+
+# Cloudflare bindings
+[tool.pymode.kv_namespaces]
+MY_KV = "namespace-id"
+
+[tool.pymode.r2_buckets]
+MY_R2 = "bucket-name"
+
+[tool.pymode.d1_databases]
+MY_DB = "database-id"
+
+# Python dependencies
+[tool.pymode.dependencies]
+requests = ">=2.31"
+jinja2 = ">=3.1"
+```
+
+### .dev.vars
+
+Local environment variables for development:
+
+```bash
+API_KEY=sk-test-123
+DEBUG_MODE=true
+DATABASE_URL=postgres://localhost:5432/mydb
+```
+
+### wrangler.toml
+
+Standard Cloudflare Workers configuration. PyMode generates this during `pymode init` and updates it during `pymode deploy`.
+
+```toml
+name = "my-worker"
+main = "worker/src/worker.ts"
+compatibility_date = "2024-01-01"
+
+[durable_objects]
+bindings = [
+  { name = "PYTHON_DO", class_name = "PythonDO" }
+]
+
+[[kv_namespaces]]
+binding = "MY_KV"
+id = "namespace-id"
+```

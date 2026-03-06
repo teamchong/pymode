@@ -1,0 +1,111 @@
+---
+title: Getting Started
+description: Install PyMode and deploy your first Python handler to Cloudflare Workers.
+---
+
+## Prerequisites
+
+- [Node.js](https://nodejs.org/) 20+
+- A [Cloudflare account](https://dash.cloudflare.com/sign-up)
+- [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/install-and-update/) (`npm install -g wrangler`)
+
+## Quick Start
+
+### 1. Create a new project
+
+```bash
+pymode init my-worker
+cd my-worker
+```
+
+This scaffolds:
+
+```
+my-worker/
+  pyproject.toml          # Project config
+  src/
+    main.py               # Your handler
+  wrangler.toml           # Cloudflare config
+```
+
+### 2. Write your handler
+
+```python
+# src/main.py
+from pymode.workers import Response
+
+def on_fetch(request, env):
+    name = request.query.get("name", "World")
+    return Response(f"Hello, {name}!")
+```
+
+### 3. Run locally
+
+```bash
+pymode dev
+```
+
+Opens a local dev server at `http://localhost:8787`. Changes to your Python files are picked up automatically.
+
+### 4. Deploy
+
+```bash
+pymode deploy
+```
+
+Your handler is live on Cloudflare's edge network within seconds.
+
+## Project Structure
+
+A typical PyMode project:
+
+```
+my-worker/
+  pyproject.toml          # [tool.pymode] main = "src/main.py"
+  src/
+    main.py               # Entry point with on_fetch()
+    routes.py             # Additional modules
+    utils.py              # Standard Python imports work
+  .dev.vars               # Local environment variables
+  wrangler.toml           # Cloudflare Workers config
+```
+
+### pyproject.toml
+
+```toml
+[project]
+name = "my-worker"
+version = "0.1.0"
+
+[tool.pymode]
+main = "src/main.py"
+compatibility_date = "2024-01-01"
+
+[tool.pymode.kv_namespaces]
+MY_KV = "kv-namespace-id"
+
+[tool.pymode.r2_buckets]
+MY_R2 = "r2-bucket-name"
+
+[tool.pymode.d1_databases]
+MY_DB = "d1-database-id"
+```
+
+## Adding Packages
+
+```bash
+# Pure-Python packages
+pymode add requests jinja2
+
+# C extension packages (compiled to .wasm side modules)
+pymode add markupsafe simplejson
+```
+
+Packages are bundled into your worker at deploy time.
+
+## Next Steps
+
+- [Request Handling](/pymode/request-handling/) — Request/Response API, routing, middleware
+- [Bindings API](/pymode/bindings-api/) — KV, R2, D1, TCP, HTTP fetch
+- [CLI Reference](/pymode/cli/) — All `pymode` commands and options
+- [Deployment](/pymode/deployment/) — Production deployment, Wizer snapshots, monitoring

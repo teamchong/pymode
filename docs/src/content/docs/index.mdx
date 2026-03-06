@@ -1,0 +1,67 @@
+---
+title: pymode
+description: Run Python on Cloudflare Workers with CPython 3.13 compiled to WebAssembly.
+template: splash
+hero:
+  tagline: Full CPython 3.13 on Cloudflare Workers. Write Python handlers with direct access to KV, R2, D1, and TCP — compiled to a 1.8MB gzipped WASM binary using zig cc.
+  actions:
+    - text: Get Started
+      link: /pymode/getting-started/
+      icon: right-arrow
+    - text: GitHub
+      link: https://github.com/teamchong/pymode
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from "@astrojs/starlight/components";
+
+## Why PyMode?
+
+Cloudflare deprecated their Python Workers (Pyodide-based) in 2024. PyMode is the replacement — upstream CPython compiled to WASM, not a patched fork.
+
+<CardGrid>
+  <Card title="Upstream CPython 3.13" icon="seti:python">
+    No patches or forks. Vanilla CPython compiled with `zig cc` to `wasm32-wasi`. Full stdlib included.
+  </Card>
+  <Card title="1.8MB Gzipped" icon="rocket">
+    5.7MB raw, 1.8MB gzipped — vs Pyodide's 20MB/6.4MB. Fits well within CF's 10MB limit.
+  </Card>
+  <Card title="Native CF Bindings" icon="puzzle">
+    Direct WASM host imports for KV, R2, D1, TCP, and HTTP. No JS interop overhead.
+  </Card>
+  <Card title="5ms Cold Starts" icon="star">
+    Optional Wizer snapshots reduce cold start from ~28ms to ~5ms.
+  </Card>
+</CardGrid>
+
+## How It Works
+
+```
+Request → Worker (stateless) → PythonDO (Durable Object)
+                                    ↓
+                            python.wasm (_start)
+                                    ↓
+                            on_fetch(request, env)
+                                    ↓
+                            KV / R2 / D1 / TCP
+                                    ↓
+                            Response → Client
+```
+
+Each request gets its own sandboxed Python runtime inside a Durable Object. The WASM stack is instrumented with Asyncify so host imports (HTTP fetch, KV reads, TCP recv) suspend and resume transparently.
+
+<CardGrid>
+  <Card title="HTTP Fetch" icon="external">
+    `fetch("https://api.example.com")` calls the host directly — no network stack in WASM.
+  </Card>
+  <Card title="Parallel Execution" icon="random">
+    `spawn()` launches child Durable Objects with separate 30s CPU budgets and 128MB memory.
+  </Card>
+  <Card title="C Extensions" icon="setting">
+    Pure-Python packages work out of the box. C extensions (markupsafe, simplejson) compile to `.wasm` side modules.
+  </Card>
+  <Card title="Multi-File Projects" icon="document">
+    Standard Python imports work. Organize your project with packages, modules, and `pyproject.toml`.
+  </Card>
+</CardGrid>
