@@ -140,3 +140,7 @@ pkg_cv_LIBB2_LIBS=
 # Enable dynamic loading detection so importdl.c compiles the
 # _Py_ext_module_loader_* functions needed for builtin modules
 ac_cv_func_dlopen=yes
+
+# Use our pymode dynload shim instead of dynload_shlib.o (which calls real dlopen).
+# dynload_pymode.c routes through WASM host imports (pymode.dl_open/dl_sym).
+DYNLOADFILE="dynload_pymode.o"

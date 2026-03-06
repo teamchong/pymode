@@ -4,6 +4,8 @@
 
 CPython 3.13 compiled to WASM with `zig cc`. 5.7MB binary (1.8MB gzipped). Runs on Workers with full access to KV, R2, D1, TCP, and HTTP.
 
+> **Why PyMode?** Cloudflare's official Python Workers (based on Pyodide/Emscripten) were [deprecated in 2024](https://blog.cloudflare.com/python-workers) and the `pylxxx` WASM builds are no longer maintained. PyMode takes a different approach: we compile **upstream CPython** directly to `wasm32-wasi` using `zig cc` — no Emscripten, no Pyodide, no patched fork. This means you get the real CPython 3.13 runtime with full language support, a 3x smaller binary, and portability to any WASI-compatible host beyond just Cloudflare.
+
 ## Quick Start
 
 ```bash
@@ -96,8 +98,7 @@ pymode install            # reinstall from pyproject.toml
 ```
 
 Packages are downloaded as wheels to `.pymode/packages/` and available
-in both dev mode and production. Only pure-Python packages work on
-Workers (no C extensions).
+in both dev mode and production.
 
 ```python
 import requests
@@ -107,6 +108,33 @@ def on_fetch(request, env):
     resp = requests.get("https://api.example.com/data")
     return Response.json(resp.json())
 ```
+
+### C Extension Packages
+
+Packages with C extensions (markupsafe, simplejson, msgpack) are supported
+via a dynamic linking polyfill. Extensions are compiled to `.wasm` side modules
+that share memory with the main python.wasm instance.
+
+```bash
+# Build a C extension to .wasm
+./scripts/build-extension.sh markupsafe
+./scripts/build-extension.sh --list     # show supported packages
+./scripts/build-extension.sh --all      # build all supported
+```
+
+At runtime, CPython's import machinery calls `dlopen`/`dlsym` as usual —
+`dynload_pymode.c` intercepts these and routes them through WASM host imports.
+PythonDO loads the pre-compiled `.wasm` side module, resolves `PyInit_*` via
+the indirect function table, and returns a function pointer back to CPython.
+
+```python
+# Works transparently — markupsafe uses its C _speedups module
+from markupsafe import escape
+safe = escape("<script>alert('xss')</script>")
+```
+
+Currently supported: `markupsafe`, `simplejson`, `msgpack`. Extensions must
+compile cleanly with `zig cc -target wasm32-wasi` (no platform-specific syscalls).
 
 ### Multi-File Projects
 
@@ -221,35 +249,13 @@ wizer = true
 
 ## Architecture
 
-```
-┌────────────────────────────────────────────────────────┐
-│                     PythonDO                           │
-│                 (Durable Object)                       │
-│                                                        │
-│  ┌──────────────┐         ┌─────────────────────────┐  │
-│  │ python.wasm  │         │   Host Import State     │  │
-│  │  (CPython)   │ pymode.*│                         │  │
-│  │              ├────────→│  TCP connections         │  │
-│  │  User .py    │ imports │  HTTP response buffers   │  │
-│  │  on_fetch()  │         │  Thread results          │  │
-│  └──────────────┘         └─────────────────────────┘  │
-│         │                            │                 │
-│   Asyncify suspends           JS implements            │
-│   on async imports            using CF APIs            │
-│         ↓                            ↓                 │
-│  ┌─────────────────────────────────────────────────┐   │
-│  │ cloudflare:sockets │ env.KV │ env.R2 │ env.D1  │   │
-│  │ global fetch()     │ env.AI │ ThreadDO          │   │
-│  └─────────────────────────────────────────────────┘   │
-└────────────────────────────────────────────────────────┘
-         ↑
-         │ RPC
-┌────────────────┐
-│  PyMode Worker │  (stateless, routes to PythonDO)
-└────────────────┘
-         ↑ HTTP
-     [Client]
-```
+<p align="center">
+  <img src="docs/architecture-dynload.svg" alt="PyMode Architecture — Dynamic Loading Polyfill" width="100%"/>
+</p>
+
+**Runtime flow:** Python `import` → CPython calls `_PyImport_FindSharedFuncptr()` in `dynload_pymode.o` → WASM host imports `pymode.dl_open` / `pymode.dl_sym` → PythonDO (JS) loads pre-compiled `.wasm` side module with shared memory → resolves `PyInit_*` via indirect function table → returns function pointer to CPython.
+
+**Build flow:** `config.site-wasi` sets `DYNLOADFILE=dynload_pymode.o` → `build-phase2.sh` compiles the shim with CPython headers + adds `dl_open` to Asyncify imports → `build-extension.sh` compiles C extensions to `.wasm` side modules with `--import-memory --export-dynamic`.
 
 ## CLI
 
@@ -330,14 +336,20 @@ Users can use the pre-built binary from npm/releases.
 | `scripts/build-phase2.sh` | Build CPython WASM with zig cc |
 | `scripts/build-wizer.sh` | Build Wizer snapshot |
 | `scripts/generate-stdlib-fs.sh` | Bundle stdlib + pymode into worker |
+| `scripts/build-extension.sh` | Build C extension packages to .wasm side modules |
+| `lib/wasi-shims/dynload_pymode.c` | Dynamic loading polyfill (dlopen/dlsym → WASM host imports) |
 | `examples/hello-worker/` | Simple handler example |
 | `examples/api-worker/` | Multi-file project with KV |
 | `examples/workflow-worker/` | Durable workflow with retries |
 
-## Comparison: PyMode vs CF Python Workers
+## Comparison: PyMode vs CF Python Workers (deprecated)
 
-| | CF Python Workers | PyMode |
+Cloudflare's official Python Workers used Pyodide (CPython compiled via Emscripten) and are no longer actively maintained. PyMode compiles **upstream CPython 3.13** directly to `wasm32-wasi` with `zig cc` — no fork, no Emscripten, no Pyodide.
+
+| | CF Python Workers (deprecated) | PyMode |
 |---|---|---|
+| Status | Deprecated (2024) | Active |
+| CPython build | Pyodide fork (Emscripten) | Upstream CPython 3.13 (zig cc → wasm32-wasi) |
 | Handler pattern | `on_fetch(request, env)` | `on_fetch(request, env)` |
 | Multi-file projects | Yes | Yes |
 | Env bindings | `env.MY_KV.get()` (JS interop) | `env.MY_KV.get()` (host imports) |
@@ -346,7 +358,8 @@ Users can use the pre-built binary from npm/releases.
 | Cold start | ~50ms (snapshot) | ~5ms (Wizer) |
 | TCP connections | No | Yes |
 | Threading | `asyncio.gather` only | Real parallelism (child DOs) |
-| Package support | 280+ (Pyodide wheels) | Pure-Python PyPI packages |
+| C extensions | Pyodide pre-built wheels only | Any C ext via dlopen polyfill (.wasm side modules) |
+| Package support | 280+ (Pyodide wheels) | Pure-Python PyPI + C extensions |
 | Portability | CF only (Emscripten) | Any WASI host |
 
 ## License

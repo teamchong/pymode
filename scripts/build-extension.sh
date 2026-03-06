@@ -1,69 +1,120 @@
 #!/usr/bin/env bash
-# Build a C extension package as wasm32-wasi and register it in the inittab.
+# Build a C extension package as a .wasm side module for PyMode.
 #
-# Downloads the package source (wheel or sdist), compiles C files with zig cc,
-# creates a static archive, and generates a modules.map entry for auto-discovery.
+# Side modules are loaded at runtime by PythonDO via the dl_open/dl_sym
+# host imports. They share linear memory with the main python.wasm and
+# export PyInit_<name> functions that CPython calls through the standard
+# _PyImport_FindSharedFuncptr() flow in dynload_pymode.c.
 #
 # Usage:
 #   ./scripts/build-extension.sh markupsafe
 #   ./scripts/build-extension.sh simplejson==3.19.3
 #   ./scripts/build-extension.sh --list    # show supported packages
+#   ./scripts/build-extension.sh --all     # build all supported
 #
 # Output:
-#   build/extensions/{name}/lib{name}.a     — static archive
-#   build/extensions/{name}/modules.map     — PyInit symbol → dotted module name
-#   build/extensions/{name}/*.py            — pure Python files from package
+#   .pymode/extensions/{name}/{module}.wasm  — side module
+#   .pymode/extensions/{name}/*.py           — pure Python files from package
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
-EXT_DIR="$ROOT_DIR/build/extensions"
-SYSROOT="$ROOT_DIR/build/sysroot/wasm32-wasi"
+EXT_DIR="$ROOT_DIR/.pymode/extensions"
 CPYTHON_DIR="$ROOT_DIR/cpython"
-PYTHON_INCLUDE="$CPYTHON_DIR/Include"
-PYTHON_INTERNAL="$CPYTHON_DIR/Include/internal"
-PYCONFIG_H="$ROOT_DIR/build/zig-wasi/pyconfig.h"
-
-ZIG_CC="zig cc -target wasm32-wasi -Os -fPIC -DNDEBUG"
-ZIG_AR="zig ar"
+BUILD_DIR="$ROOT_DIR/build/zig-wasi"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
 NC='\033[0m'
 
 info() { echo -e "${GREEN}[INFO]${NC} $*"; }
+warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 error() { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 
-# Verify prerequisites
+# Check prerequisites
+command -v zig >/dev/null || error "zig not found. Install: https://ziglang.org/download/"
 [ -d "$CPYTHON_DIR/Include" ] || error "CPython not found. Run build-phase1.sh first."
-[ -f "$PYCONFIG_H" ] || error "pyconfig.h not found. Run build-phase2.sh first."
+[ -f "$BUILD_DIR/pyconfig.h" ] || error "pyconfig.h not found. Run build-phase2.sh first."
 
-mkdir -p "$EXT_DIR"
+CFLAGS_COMMON=(
+    -target wasm32-wasi
+    -Os -DNDEBUG
+    -I"$CPYTHON_DIR/Include"
+    -I"$CPYTHON_DIR/Include/internal"
+    -I"$BUILD_DIR"
+    -Wno-error=int-conversion
+    -Wno-error=incompatible-pointer-types
+)
 
-CFLAGS_COMMON="-I$PYTHON_INCLUDE -I$PYTHON_INCLUDE/.. -I$SYSROOT/include -include $PYCONFIG_H"
+# Compile C files into a .wasm side module
+# Args: output_wasm src_dir [extra_c_files...]
+compile_side_module() {
+    local output_wasm="$1"
+    shift
+    local src_files=("$@")
 
-# Scan a .a file for PyInit_ symbols → modules.map
-generate_modules_map() {
-    local archive="$1" output="$2" pkg_name="$3"
-    info "Scanning $archive for PyInit_ symbols..."
-    echo "# Auto-generated modules.map for $pkg_name" > "$output"
-    echo "# Format: PyInit_symbol dotted.module.name" >> "$output"
+    local obj_dir
+    obj_dir=$(mktemp -d)
+    trap 'rm -rf "$obj_dir"' RETURN
 
-    nm "$archive" 2>/dev/null | grep "T _\?PyInit_" | while read -r line; do
-        # Extract symbol name (handle both _PyInit_ and PyInit_ prefixes)
-        local sym
-        sym=$(echo "$line" | grep -o 'PyInit_[a-zA-Z0-9_]*')
-        if [ -n "$sym" ]; then
-            # Convert PyInit_foo_bar to foo.bar (heuristic)
-            local mod_name="${sym#PyInit_}"
-            # For top-level modules, the dotted name equals the symbol suffix
-            # For sub-modules, we'd need package-specific knowledge
-            echo "$sym $pkg_name.$mod_name" >> "$output"
-        fi
+    local objects=()
+    for src in "${src_files[@]}"; do
+        local obj_name
+        obj_name="$(basename "$src" .c).o"
+        info "  Compiling $(basename "$src")"
+        zig cc "${CFLAGS_COMMON[@]}" \
+            -c "$src" -o "$obj_dir/$obj_name" || {
+                warn "  Failed to compile $(basename "$src")"
+                return 1
+            }
+        objects+=("$obj_dir/$obj_name")
     done
 
-    info "  Generated $(grep -c -v '^#' "$output") entries in modules.map"
+    if [ ${#objects[@]} -eq 0 ]; then
+        error "No object files produced"
+    fi
+
+    info "  Linking -> $(basename "$output_wasm")"
+    # Link as a WASM side module:
+    # --import-memory: share memory with python.wasm (host provides it)
+    # --allow-undefined: CPython API symbols resolved by main module
+    # --no-entry: library, not executable
+    # --export-dynamic: export all non-static symbols (including PyInit_*)
+    zig cc -target wasm32-wasi \
+        -nostdlib \
+        -Os -s \
+        -Wl,--import-memory \
+        -Wl,--allow-undefined \
+        -Wl,--no-entry \
+        -Wl,--export-dynamic \
+        "${objects[@]}" \
+        -o "$output_wasm"
+}
+
+# Download and extract a package source
+download_source() {
+    local name="$1" dest="$2"
+    mkdir -p "$dest/dl"
+
+    # Try sdist first (has C source), fall back to wheel
+    pip3 download --no-binary :all: "$name" -d "$dest/dl" 2>/dev/null || \
+        pip3 download "$name" -d "$dest/dl" 2>/dev/null || \
+        error "Failed to download $name"
+
+    local sdist
+    sdist=$(ls "$dest/dl/"*.tar.gz 2>/dev/null | head -1)
+    local wheel
+    wheel=$(ls "$dest/dl/"*.whl 2>/dev/null | head -1)
+
+    if [ -n "$sdist" ]; then
+        tar xzf "$sdist" -C "$dest" --strip-components=1
+    elif [ -n "$wheel" ]; then
+        python3 -m zipfile -e "$wheel" "$dest/src"
+    else
+        error "No sdist or wheel found for $name"
+    fi
 }
 
 # Build a single extension
@@ -74,112 +125,110 @@ build_ext() {
 
     case "$name" in
         markupsafe)
-            info "Building markupsafe..."
-            pip3 download --no-binary :all: markupsafe -d "$pkg_dir/dl" 2>/dev/null || \
-                pip3 download markupsafe -d "$pkg_dir/dl" 2>/dev/null
-            local sdist=$(ls "$pkg_dir/dl/"*.tar.gz 2>/dev/null | head -1)
-            local wheel=$(ls "$pkg_dir/dl/"*.whl 2>/dev/null | head -1)
+            info "Building markupsafe (_speedups.wasm)..."
+            download_source markupsafe "$pkg_dir"
 
-            if [ -n "$sdist" ]; then
-                tar xzf "$sdist" -C "$pkg_dir" --strip-components=1
-            elif [ -n "$wheel" ]; then
-                python3 -m zipfile -e "$wheel" "$pkg_dir/src"
-            fi
-
-            # markupsafe has one C file: _speedups.c
             local src_dir="$pkg_dir/src/markupsafe"
             [ -d "$src_dir" ] || src_dir="$pkg_dir/markupsafe"
-            $ZIG_CC $CFLAGS_COMMON -c "$src_dir/_speedups.c" -o "$pkg_dir/_speedups.o"
-            $ZIG_AR rcs "$pkg_dir/libmarkupsafe.a" "$pkg_dir/_speedups.o"
-            echo "PyInit__speedups markupsafe._speedups" > "$pkg_dir/modules.map"
-            info "markupsafe: done"
+            [ -f "$src_dir/_speedups.c" ] || error "markupsafe/_speedups.c not found"
+
+            compile_side_module "$pkg_dir/_speedups.wasm" "$src_dir/_speedups.c"
+
+            # Copy pure Python files alongside the .wasm
+            for pyfile in "$src_dir"/*.py; do
+                [ -f "$pyfile" ] && cp "$pyfile" "$pkg_dir/"
+            done
             ;;
 
         simplejson)
-            info "Building simplejson..."
-            pip3 download --no-binary :all: simplejson -d "$pkg_dir/dl" 2>/dev/null
-            tar xzf "$pkg_dir/dl/"*.tar.gz -C "$pkg_dir" --strip-components=1
-            $ZIG_CC $CFLAGS_COMMON -c "$pkg_dir/simplejson/_speedups.c" -o "$pkg_dir/_speedups.o"
-            $ZIG_AR rcs "$pkg_dir/libsimplejson.a" "$pkg_dir/_speedups.o"
-            echo "PyInit__speedups simplejson._speedups" > "$pkg_dir/modules.map"
-            info "simplejson: done"
+            info "Building simplejson (_speedups.wasm)..."
+            download_source simplejson "$pkg_dir"
+
+            local src_dir="$pkg_dir/simplejson"
+            [ -f "$src_dir/_speedups.c" ] || error "simplejson/_speedups.c not found"
+
+            compile_side_module "$pkg_dir/_speedups.wasm" "$src_dir/_speedups.c"
+
+            for pyfile in "$src_dir"/*.py; do
+                [ -f "$pyfile" ] && cp "$pyfile" "$pkg_dir/"
+            done
             ;;
 
         msgpack)
-            info "Building msgpack..."
-            pip3 download --no-binary :all: msgpack -d "$pkg_dir/dl" 2>/dev/null
-            tar xzf "$pkg_dir/dl/"*.tar.gz -C "$pkg_dir" --strip-components=1
-            $ZIG_CC $CFLAGS_COMMON -c "$pkg_dir/msgpack/_cmsgpack.c" -o "$pkg_dir/_cmsgpack.o"
-            $ZIG_AR rcs "$pkg_dir/libmsgpack.a" "$pkg_dir/_cmsgpack.o"
-            echo "PyInit__cmsgpack msgpack._cmsgpack" > "$pkg_dir/modules.map"
-            info "msgpack: done"
+            info "Building msgpack (_cmsgpack.wasm)..."
+            download_source msgpack "$pkg_dir"
+
+            local src_dir="$pkg_dir/msgpack"
+            [ -f "$src_dir/_cmsgpack.c" ] || error "msgpack/_cmsgpack.c not found"
+
+            compile_side_module "$pkg_dir/_cmsgpack.wasm" "$src_dir/_cmsgpack.c"
+
+            for pyfile in "$src_dir"/*.py; do
+                [ -f "$pyfile" ] && cp "$pyfile" "$pkg_dir/"
+            done
+            ;;
+
+        pyyaml|PyYAML)
+            info "Building pyyaml (_yaml.wasm)..."
+            download_source pyyaml "$pkg_dir"
+
+            local src_dir="$pkg_dir/yaml"
+            [ -f "$src_dir/_yaml.c" ] || src_dir="$pkg_dir"
+            [ -f "$src_dir/_yaml.c" ] || error "yaml/_yaml.c not found"
+
+            compile_side_module "$pkg_dir/_yaml.wasm" "$src_dir/_yaml.c"
+
+            for pyfile in "$src_dir"/*.py; do
+                [ -f "$pyfile" ] && cp "$pyfile" "$pkg_dir/"
+            done
             ;;
 
         *)
             error "Unknown extension: $name. Run with --list to see supported packages."
             ;;
     esac
+
+    # Report
+    if ls "$pkg_dir"/*.wasm >/dev/null 2>&1; then
+        for wasm_file in "$pkg_dir"/*.wasm; do
+            local size
+            size=$(du -h "$wasm_file" | cut -f1)
+            info "Built: $wasm_file ($size)"
+        done
+    fi
 }
 
 # List supported extensions
 list_extensions() {
-    echo "Supported C extensions:"
-    echo "  markupsafe   - HTML escaping (1 C file)"
-    echo "  simplejson   - Fast JSON (1 C file)"
-    echo "  msgpack      - MessagePack (1 C file)"
+    echo "Supported C extension packages:"
+    echo "  markupsafe   - HTML escaping (1 C file, ~15KB .wasm)"
+    echo "  simplejson   - Fast JSON encoder/decoder (1 C file)"
+    echo "  msgpack      - MessagePack serialization (1 C file)"
+    echo "  pyyaml       - YAML parser (requires libyaml headers)"
     echo ""
-    echo "More coming: ujson, pyyaml, regex, bitarray, crcmod, mmh3"
+    echo "Usage:"
+    echo "  ./scripts/build-extension.sh markupsafe"
+    echo "  ./scripts/build-extension.sh --all"
+    echo ""
+    echo "Output goes to .pymode/extensions/<name>/<module>.wasm"
+    echo "These .wasm files are loaded at runtime by PythonDO via dl_open/dl_sym."
 }
 
-# Generate a combined inittab C file from all built extensions
-generate_inittab() {
-    local output="$EXT_DIR/pymode_inittab.c"
-    info "Generating combined inittab..."
-
-    cat > "$output" << 'HEADER'
-/* Auto-generated by build-extension.sh
- * Registers all compiled C extensions in CPython's inittab.
- * Include this file and call pymode_extend_inittab() before Py_Initialize().
- */
-#include "Python.h"
-
-HEADER
-
-    # Collect all modules.map files
-    local count=0
-    for mapfile in "$EXT_DIR"/*/modules.map; do
-        [ -f "$mapfile" ] || continue
-        while IFS=' ' read -r sym modname; do
-            [[ "$sym" == \#* ]] && continue
-            [ -z "$sym" ] && continue
-            echo "extern PyObject* $sym(void);" >> "$output"
-            count=$((count + 1))
-        done < "$mapfile"
+# Build all supported extensions
+build_all() {
+    local failed=0
+    for ext in markupsafe simplejson msgpack; do
+        build_ext "$ext" || {
+            warn "Failed to build $ext"
+            failed=$((failed + 1))
+        }
     done
 
-    cat >> "$output" << 'MID'
-
-int pymode_extend_inittab(void) {
-    static struct _inittab extensions[] = {
-MID
-
-    for mapfile in "$EXT_DIR"/*/modules.map; do
-        [ -f "$mapfile" ] || continue
-        while IFS=' ' read -r sym modname; do
-            [[ "$sym" == \#* ]] && continue
-            [ -z "$sym" ] && continue
-            echo "        {\"$modname\", $sym}," >> "$output"
-        done < "$mapfile"
-    done
-
-    cat >> "$output" << 'FOOTER'
-        {NULL, NULL}
-    };
-    return PyImport_ExtendInittab(extensions);
-}
-FOOTER
-
-    info "Generated $output with $count extensions"
+    if [ $failed -eq 0 ]; then
+        info "All extensions built successfully"
+    else
+        warn "$failed extension(s) failed to build"
+    fi
 }
 
 # Main
@@ -188,12 +237,12 @@ case "${1:-}" in
         list_extensions
         exit 0
         ;;
-    --inittab)
-        generate_inittab
+    --all|-a)
+        build_all
         exit 0
         ;;
     "")
-        error "Usage: $0 <package-name> | --list | --inittab"
+        error "Usage: $0 <package-name> | --list | --all"
         ;;
     *)
         build_ext "$1"

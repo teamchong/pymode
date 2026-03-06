@@ -227,8 +227,18 @@ mkdir -p "$SHIMS_OBJ_DIR"
 for shim_src in "$SHIMS_DIR"/*.c; do
     [ -f "$shim_src" ] || continue
     shim_name="$(basename "$shim_src" .c)"
-    info "  Compiling $shim_name.c"
-    "$ZIG_WRAPPER_DIR/zig-cc" -c -Os "$shim_src" -o "$SHIMS_OBJ_DIR/$shim_name.o"
+    # dynload_pymode needs CPython headers
+    if [ "$shim_name" = "dynload_pymode" ]; then
+        info "  Compiling $shim_name.c (with CPython headers)"
+        "$ZIG_WRAPPER_DIR/zig-cc" -c -Os \
+            -I"$CPYTHON_DIR/Include" \
+            -I"$CPYTHON_DIR/Include/internal" \
+            -I"$BUILD_DIR" \
+            "$shim_src" -o "$SHIMS_OBJ_DIR/$shim_name.o"
+    else
+        info "  Compiling $shim_name.c"
+        "$ZIG_WRAPPER_DIR/zig-cc" -c -Os "$shim_src" -o "$SHIMS_OBJ_DIR/$shim_name.o"
+    fi
 done
 
 # Create static library from shims
@@ -278,7 +288,7 @@ if command -v wasm-opt >/dev/null 2>&1; then
     ORIG_SIZE=$(stat -f%z "$BUILD_DIR/python.wasm" 2>/dev/null || stat -c%s "$BUILD_DIR/python.wasm")
 
     # List of async pymode imports that can suspend the WASM stack
-    ASYNC_IMPORTS="pymode.tcp_recv,pymode.http_fetch,pymode.kv_get,pymode.kv_put,pymode.kv_delete,pymode.r2_get,pymode.r2_put,pymode.d1_exec,pymode.thread_spawn,pymode.thread_join"
+    ASYNC_IMPORTS="pymode.tcp_recv,pymode.http_fetch,pymode.kv_get,pymode.kv_put,pymode.kv_delete,pymode.r2_get,pymode.r2_put,pymode.d1_exec,pymode.thread_spawn,pymode.thread_join,pymode.dl_open"
 
     info "Running wasm-opt --asyncify (async imports: tcp_recv, http_fetch, kv_*, r2_*, d1_exec)..."
     wasm-opt -O2 --asyncify \

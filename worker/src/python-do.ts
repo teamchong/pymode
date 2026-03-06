@@ -43,6 +43,7 @@ const ASYNC_IMPORTS = new Set([
   "pymode.d1_exec",
   "pymode.thread_spawn",
   "pymode.thread_join",
+  "pymode.dl_open",
 ]);
 
 export class PythonDO extends DurableObject<PythonDOEnv> {
@@ -69,8 +70,21 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
   private threadResults = new Map<number, Promise<Uint8Array>>();
   private nextThreadId = 1;
 
-  // Stored references for spawning child DOs
+  // Dynamic loading state — loaded .wasm side modules for C extensions
+  private dlModules = new Map<number, {
+    instance: WebAssembly.Instance;
+    exports: WebAssembly.Exports;
+  }>();
+  private nextDlHandle = 1;
+  private dlLastError: string | null = null;
+
+  // Pre-compiled C extension .wasm modules (set by worker before calling run())
+  // Keys are paths like "markupsafe/_speedups.wasm", values are compiled WebAssembly.Module
+  public extensionModules = new Map<string, WebAssembly.Module>();
+
+  // Stored references for spawning child DOs and dynamic loading
   private wasmModule: WebAssembly.Module | null = null;
+  private wasmInstance: WebAssembly.Instance | null = null;
   private createWasiFn: ((getMemory: () => WebAssembly.Memory, stdinData?: Uint8Array) => {
     imports: Record<string, Function>;
     getStdout: () => Uint8Array;
@@ -289,6 +303,102 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
         return self.writeBytes(bufPtr, result, bufLen);
       },
 
+      // --- Dynamic Loading (C extension polyfill) ---
+      // Async — loads a .wasm side module with shared linear memory
+      dl_open: async (pathPtr: number, pathLen: number): Promise<number> => {
+        const path = self.readString(pathPtr, pathLen);
+        self.dlLastError = null;
+
+        // Look up pre-compiled extension module by path
+        // Try exact path first, then basename, then various normalizations
+        let wasmModule = self.extensionModules.get(path);
+        if (!wasmModule) {
+          // Try basename (e.g. "_speedups.wasm" from full path)
+          const basename = path.split("/").pop() || path;
+          wasmModule = self.extensionModules.get(basename);
+        }
+        if (!wasmModule) {
+          // Try matching by module name pattern in the path
+          for (const [key, mod] of self.extensionModules) {
+            if (path.endsWith(key) || key.endsWith(path.split("/").pop() || "")) {
+              wasmModule = mod;
+              break;
+            }
+          }
+        }
+
+        if (!wasmModule) {
+          self.dlLastError = `module not found: ${path}`;
+          return -1;
+        }
+
+        try {
+          // Instantiate the side module sharing python.wasm's linear memory.
+          // Side modules export PyInit_<name> and import CPython API functions.
+          // We provide the shared memory so the extension can read/write Python objects.
+          const sideImports: WebAssembly.Imports = {
+            env: {
+              memory: self.wasmMemory!,
+            },
+          };
+
+          const instance = await WebAssembly.instantiate(wasmModule, sideImports);
+          const handle = self.nextDlHandle++;
+          self.dlModules.set(handle, { instance, exports: instance.exports });
+          return handle;
+        } catch (e: unknown) {
+          self.dlLastError = `failed to load ${path}: ${e instanceof Error ? e.message : String(e)}`;
+          return -1;
+        }
+      },
+
+      // Resolve a symbol (e.g. PyInit__speedups) in a loaded side module.
+      // Returns a WASM function table index, or 0 if not found.
+      dl_sym: (handle: number, symbolPtr: number, symbolLen: number): number => {
+        const mod = self.dlModules.get(handle);
+        if (!mod) {
+          self.dlLastError = `invalid handle: ${handle}`;
+          return 0;
+        }
+
+        const symbol = self.readString(symbolPtr, symbolLen);
+        const exported = mod.exports[symbol];
+        if (typeof exported !== "function") {
+          self.dlLastError = `symbol '${symbol}' not found`;
+          return 0;
+        }
+
+        // To call a function from a side module as a function pointer in the main
+        // module, we need to add it to the main module's indirect call table.
+        // The main module's __indirect_function_table is exported by python.wasm.
+        const table = self.wasmInstance?.exports.__indirect_function_table as WebAssembly.Table | undefined;
+        if (!table) {
+          // Fallback: return a non-zero sentinel. The C side may not need table-based
+          // calling if using direct calls. This shouldn't happen with a properly
+          // built python.wasm (Asyncify always exports the table).
+          self.dlLastError = "indirect function table not available";
+          return 0;
+        }
+
+        // Grow the table by 1 and set the new slot to our function
+        const idx = table.length;
+        table.grow(1);
+        table.set(idx, exported as WebAssembly.Function);
+        return idx;
+      },
+
+      dl_close: (handle: number): void => {
+        self.dlModules.delete(handle);
+      },
+
+      dl_error: (bufPtr: number, bufLen: number): number => {
+        if (!self.dlLastError) return 0;
+        const encoded = new TextEncoder().encode(self.dlLastError);
+        const n = self.writeBytes(bufPtr, encoded, bufLen);
+        self.dlLastError = null;
+        return n;
+      },
+
       // --- Logging (sync) ---
       console_log: (msgPtr: number, msgLen: number): void => {
         console.log(self.readString(msgPtr, msgLen));
@@ -341,6 +451,7 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
     );
 
     const instance = new WebAssembly.Instance(wasmModule, wrappedImports);
+    this.wasmInstance = instance;
     this.wasmMemory = instance.exports.memory as WebAssembly.Memory;
 
     // Initialize asyncify data buffer in linear memory

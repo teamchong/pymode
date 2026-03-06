@@ -115,6 +115,24 @@ int32_t pymode_thread_spawn(
 __attribute__((import_module("pymode"), import_name("thread_join")))
 int32_t pymode_thread_join(int32_t thread_id, uint8_t* buf, int32_t buf_len);
 
+/* --- Dynamic Loading (C extension polyfill) --- */
+
+/* Load a .wasm side module. Returns handle ID >= 0, -1 on error. */
+__attribute__((import_module("pymode"), import_name("dl_open")))
+int32_t pymode_dl_open(const char* path, int32_t path_len);
+
+/* Resolve a symbol (PyInit_xxx) in a loaded module. Returns function pointer. */
+__attribute__((import_module("pymode"), import_name("dl_sym")))
+void* pymode_dl_sym(int32_t handle, const char* symbol, int32_t symbol_len);
+
+/* Close/release a loaded module handle. */
+__attribute__((import_module("pymode"), import_name("dl_close")))
+void pymode_dl_close(int32_t handle);
+
+/* Get last dlopen error message. Returns bytes written, 0 if no error. */
+__attribute__((import_module("pymode"), import_name("dl_error")))
+int32_t pymode_dl_error(char* buf, int32_t buf_len);
+
 /* --- Logging --- */
 
 __attribute__((import_module("pymode"), import_name("console_log")))
