@@ -54,6 +54,9 @@ These are C extension modules linked directly into the WASM binary:
 | Module | Implementation | Notes |
 |--------|---------------|-------|
 | `binascii` | Pure Python (`lib/polyfills/binascii.py`) | Replaces the C extension. Covers hex, base64, crc32, uu encoding. |
+| `socket` | Pure Python (`lib/polyfills/socket.py`) | Routes through `pymode.tcp` host imports. Provides constants, `getaddrinfo`, `create_connection`. |
+| `threading` | Pure Python (`lib/polyfills/threading.py`) | No-op locks for single-threaded WASM. `Thread.start()` raises — use `pymode.parallel` instead. |
+| `logging` | Pure Python (`lib/polyfills/logging/`) | Threading-free logging that writes to stderr. Full API: `getLogger`, `basicConfig`, handlers. |
 
 ### Not Available
 
@@ -61,11 +64,11 @@ These stdlib modules require OS features that WASI doesn't provide:
 
 | Module | Reason |
 |--------|--------|
-| `socket` | No WASI socket support. Use `pymode.tcp` instead. |
+| `socket` | Polyfilled — routes through `pymode.tcp` host imports. |
 | `ssl` | No TLS in WASI. HTTPS handled by CF's edge. |
 | `subprocess` | No process spawning in WASI. |
 | `multiprocessing` | No fork/spawn. Use `pymode.parallel`. |
-| `threading` | Disabled at build time. Use `pymode.parallel`. |
+| `threading` | Polyfilled — no-op locks, `Thread.start()` raises. Use `pymode.parallel` for real parallelism. |
 | `sqlite3` | C extension not compiled for WASM. |
 | `ctypes` | No dynamic linking for arbitrary shared libraries. |
 | `tkinter` | No GUI in Workers. |
@@ -87,7 +90,6 @@ These modules exist in CPython's stdlib but aren't bundled in `stdlib-fs.ts` to 
 | `locale` | Needed for `calendar` formatting |
 | `html`, `html.parser` | Not yet added |
 | `email` | Large package, not yet added |
-| `logging` | Requires `threading` (unavailable in single-threaded WASM) |
 | `argparse` | Not useful in Workers context |
 
 > **Requesting a module:** If you need a stdlib module that's not bundled, [open an issue](https://github.com/teamchong/pymode/issues) or add it to `BOOT_FILES` in `scripts/generate-stdlib-fs.sh`.

@@ -324,17 +324,14 @@ print("|".join(books))
 // 9. Logging module
 // ---------------------------------------------------------------------------
 describe("logging module", () => {
-  it("fails because logging requires threading (unavailable in WASM)", async () => {
+  it("imports and works via threading shim", async () => {
     const result = await runPython(`
-try:
-    import logging
-    print("AVAILABLE")
-except ImportError as e:
-    print(f"MISSING:{e}")
+import logging
+logger = logging.getLogger("test")
+logger.setLevel(logging.INFO)
+print(f"name={logger.name},level={logger.level}")
 `);
-    // logging depends on threading which is not available in single-threaded WASM
-    expect(result).toContain("MISSING");
-    expect(result).toContain("threading");
+    expect(result.trim()).toBe("name=test,level=20");
   });
 });
 

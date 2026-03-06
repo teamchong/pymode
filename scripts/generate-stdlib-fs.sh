@@ -100,9 +100,8 @@ BOOT_FILES=(
     "opcode.py"
     "_opcode_metadata.py"
     "ast.py"
-    # logging
-    "logging/__init__.py"
-    "logging/handlers.py"
+    # logging — provided by polyfills/logging/__init__.py instead
+    # (stdlib logging requires threading; polyfill is threading-free)
     # xml
     "xml/__init__.py"
     "xml/etree/__init__.py"
@@ -196,6 +195,9 @@ done
 POLYFILL_DIR="$ROOT_DIR/lib/polyfills"
 POLYFILL_FILES=(
     "binascii.py"
+    "socket.py"
+    "threading.py"
+    "logging/__init__.py"
 )
 
 for relpath in "${POLYFILL_FILES[@]}"; do
