@@ -92,51 +92,56 @@ Under the hood, `env.MY_KV.get("key")` calls `_pymode.kv_get()` which is a WASM 
 
 ### Packages
 
-Install pure-Python packages from PyPI:
+<p align="center">
+  <img src="docs/package-loading.svg" alt="PyMode Package Loading Architecture" width="100%"/>
+</p>
+
+PyMode supports three types of packages, all loaded transparently through CPython's standard import machinery:
+
+**Pure Python packages** — install from PyPI, bundled into `site-packages.zip`:
 
 ```bash
-pymode add requests jinja2
+pymode add jinja2 click beautifulsoup4
 pymode install            # reinstall from pyproject.toml
 ```
 
-Packages are downloaded as wheels to `.pymode/packages/` and available
-in both dev mode and production.
+32 packages work out of the box including jinja2, click, beautifulsoup4, pyyaml, starlette, attrs, packaging, pyparsing, six, idna, anyio, certifi, and more.
 
 ```python
-import requests
+from jinja2 import Environment
 from pymode.workers import Response
 
 def on_fetch(request, env):
-    resp = requests.get("https://api.example.com/data")
-    return Response.json(resp.json())
+    t = Environment().from_string("Hello {{ name }}!")
+    return Response(t.render(name="World"))
 ```
 
-### C Extension Packages
+**CPython stdlib** — 193 modules bundled as TypeScript string constants in `stdlib-fs.ts`, mounted into the MemFS at `/stdlib/`. Includes encodings, json, re, collections, email, http, html, importlib, unittest, and more. WASI polyfills replace unavailable C modules (socket, ssl, select, threading, logging) so stdlib modules that depend on them work correctly.
 
-Packages with C extensions (markupsafe, simplejson, msgpack) are supported
-via a dynamic linking polyfill. Extensions are compiled to `.wasm` side modules
-that share memory with the main python.wasm instance.
+**C extension packages** — compiled to `.wasm` side modules via recipe-based builds:
 
 ```bash
-# Build a C extension to .wasm
+# Build using a recipe (recipes/*.json)
+./scripts/build-variant.sh numpy
 ./scripts/build-extension.sh markupsafe
-./scripts/build-extension.sh --list     # show supported packages
-./scripts/build-extension.sh --all      # build all supported
 ```
 
 At runtime, CPython's import machinery calls `dlopen`/`dlsym` as usual —
 `dynload_pymode.c` intercepts these and routes them through WASM host imports.
-PythonDO loads the pre-compiled `.wasm` side module, resolves `PyInit_*` via
-the indirect function table, and returns a function pointer back to CPython.
+PythonDO loads the pre-compiled `.wasm` side module with shared linear memory,
+resolves `PyInit_*` via the indirect function table, and returns a function
+pointer back to CPython.
 
 ```python
-# Works transparently — markupsafe uses its C _speedups module
-from markupsafe import escape
-safe = escape("<script>alert('xss')</script>")
+# Works transparently — numpy's C core is statically linked
+import numpy as np
+arr = np.array([1, 2, 3])
+print(arr.mean())  # 2.0
 ```
 
-Currently supported: `markupsafe`, `simplejson`, `msgpack`. Extensions must
-compile cleanly with `zig cc -target wasm32-wasi` (no platform-specific syscalls).
+Recipes define how to compile each C extension (`recipes/*.json`). Currently
+supported: numpy, markupsafe, pyyaml, regex, multidict, yarl, frozenlist,
+propcache, zstandard. Extensions must compile with `zig cc -target wasm32-wasi`.
 
 ### Multi-File Projects
 
