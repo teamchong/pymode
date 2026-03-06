@@ -112,6 +112,14 @@ BOOT_FILES=(
     "xml/etree/cElementTree.py"
     # uuid
     "uuid.py"
+    # csv
+    "csv.py"
+    # pathlib
+    "pathlib/__init__.py"
+    "pathlib/_abc.py"
+    "pathlib/_local.py"
+    # pprint
+    "pprint.py"
     # misc
     "keyword.py"
     "reprlib.py"

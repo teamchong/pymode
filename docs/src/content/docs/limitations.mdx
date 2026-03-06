@@ -36,12 +36,12 @@ PyMode bundles a subset of CPython's stdlib as string constants in the worker. T
 | **Crypto** | `base64`, `hashlib`, `hmac`, `secrets` |
 | **Numbers** | `random`, `bisect`, `heapq`, `numbers`, `fractions`, `decimal` |
 | **Date/Time** | `datetime`, `calendar` |
-| **Path** | `fnmatch`, `glob` |
+| **Path** | `fnmatch`, `glob`, `pathlib` |
 | **URL** | `urllib`, `urllib.parse`, `ipaddress` |
 | **Import** | `importlib`, `importlib.abc`, `importlib.machinery`, `importlib.util` |
 | **Serialization** | `pickle`, `_compat_pickle`, `struct` |
 | **I/O** | `io`, `_pyio` |
-| **Misc** | `keyword`, `reprlib`, `traceback`, `linecache`, `tokenize`, `token` |
+| **Misc** | `keyword`, `reprlib`, `traceback`, `linecache`, `tokenize`, `token`, `csv`, `pprint` |
 
 ### Built-in C Modules (compiled into python.wasm)
 
@@ -83,15 +83,12 @@ These modules exist in CPython's stdlib but aren't bundled in `stdlib-fs.ts` to 
 
 | Module | Why not bundled |
 |--------|-----------------|
-| `csv` | Not yet added to BOOT_FILES |
 | `statistics` | Not yet added to BOOT_FILES |
 | `locale` | Needed for `calendar` formatting |
 | `html`, `html.parser` | Not yet added |
 | `email` | Large package, not yet added |
 | `logging` | Requires `threading` (unavailable in single-threaded WASM) |
 | `argparse` | Not useful in Workers context |
-| `pathlib` | Not yet added |
-| `pprint` | Not yet added |
 
 > **Requesting a module:** If you need a stdlib module that's not bundled, [open an issue](https://github.com/teamchong/pymode/issues) or add it to `BOOT_FILES` in `scripts/generate-stdlib-fs.sh`.
 
