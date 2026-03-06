@@ -259,6 +259,12 @@ for shim_src in "$SHIMS_DIR"/*.c; do
     fi
 done
 
+# Copy dynload_pymode.o to where the Makefile expects it
+if [ -f "$SHIMS_OBJ_DIR/dynload_pymode.o" ]; then
+    mkdir -p "$BUILD_DIR/Python"
+    cp "$SHIMS_OBJ_DIR/dynload_pymode.o" "$BUILD_DIR/Python/dynload_pymode.o"
+fi
+
 # Create static library from shims
 "$ZIG_WRAPPER_DIR/zig-ar" rcs "$SHIMS_OBJ_DIR/libwasi_shims.a" "$SHIMS_OBJ_DIR"/*.o
 info "  Built libwasi_shims.a"
