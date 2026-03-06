@@ -251,27 +251,25 @@ info "  Built Python/dynload_pymode.o"
 # Step 3d: Compile pymode host imports (WASM imports from the pymode.* namespace)
 info "Compiling pymode host imports..."
 PYMODE_IMPORTS_DIR="$ROOT_DIR/lib/pymode-imports"
-PYMODE_OBJ_DIR="$BUILD_DIR/pymode-imports"
-mkdir -p "$PYMODE_OBJ_DIR"
 
 if [ -f "$PYMODE_IMPORTS_DIR/pymode_imports.c" ]; then
+    # Compile into Modules/ so the Makefile can find it
     "$ZIG_WRAPPER_DIR/zig-cc" -c -Os \
+        -DPy_BUILD_CORE \
         -I"$PYMODE_IMPORTS_DIR" \
         -I"$CPYTHON_DIR/Include" \
         -I"$CPYTHON_DIR/Include/internal" \
         -I"$BUILD_DIR" \
         "$PYMODE_IMPORTS_DIR/pymode_imports.c" \
-        -o "$PYMODE_OBJ_DIR/pymode_imports.o"
-    "$ZIG_WRAPPER_DIR/zig-ar" rcs "$PYMODE_OBJ_DIR/libpymode_imports.a" "$PYMODE_OBJ_DIR/pymode_imports.o"
-    info "  Built libpymode_imports.a"
+        -o "$BUILD_DIR/Modules/pymode_imports.o"
+    info "  Built Modules/pymode_imports.o"
 fi
 
 # Step 4: Build
 info "Building CPython with zig cc (ReleaseSmall)..."
 NCPU="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
-# Append pymode imports library to LDFLAGS in Makefile (can't set at configure time
-# because the library doesn't exist yet during configure's compiler test)
-sedi "s|^LDFLAGS=.*|& -L$PYMODE_OBJ_DIR -lpymode_imports|" "$BUILD_DIR/Makefile"
+# Add pymode_imports.o to the link by appending to MODULE_OBJS in the Makefile
+sedi '/^MODULE_OBJS=/s|Modules/gcmodule.o|Modules/gcmodule.o Modules/pymode_imports.o|' "$BUILD_DIR/Makefile"
 make -j"$NCPU" 2>&1 | tee "$BUILD_DIR/build.log"
 
 # Step 5: Verify python.wasm exists
