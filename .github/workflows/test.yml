@@ -54,7 +54,7 @@ jobs:
       - name: Cache native Python build
         uses: actions/cache@v4
         with:
-          path: build/native/python
+          path: build/native/
           key: native-python-3.13.0-${{ runner.os }}
 
       - name: Cache python.wasm build
@@ -68,7 +68,6 @@ jobs:
       - name: Build python.wasm
         run: |
           if [ ! -f build/zig-wasi/python.wasm ]; then
-            cd cpython && git clean -fdx -e Doc/venv && cd ..
             ./scripts/build-phase2.sh
           fi
           cp build/zig-wasi/python.wasm worker/src/python.wasm

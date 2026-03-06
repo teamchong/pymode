@@ -36,6 +36,7 @@ NATIVE_PYTHON=""
 for candidate in \
     "$CPYTHON_DIR/cross-build/build/python.exe" \
     "$CPYTHON_DIR/cross-build/build/python" \
+    "$ROOT_DIR/build/native/python.exe" \
     "$ROOT_DIR/build/native/python"; do
     if [ -x "$candidate" ]; then
         NATIVE_PYTHON="$candidate"
@@ -44,28 +45,21 @@ for candidate in \
 done
 
 if [ -z "$NATIVE_PYTHON" ]; then
-    info "No native Python found. Building one..."
-    mkdir -p "$ROOT_DIR/build/native"
-    cd "$CPYTHON_DIR"
-    make distclean 2>/dev/null || true
-    ./configure --prefix="$ROOT_DIR/build/native/install"
+    info "No native Python found. Building one (out-of-tree)..."
+    NATIVE_BUILD_DIR="$ROOT_DIR/build/native"
+    mkdir -p "$NATIVE_BUILD_DIR"
+    cd "$NATIVE_BUILD_DIR"
+    "$CPYTHON_DIR/configure" --prefix="$NATIVE_BUILD_DIR/install"
     make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 2)"
-    # Copy native python out of source tree before cleaning
-    if [ -x "$CPYTHON_DIR/python.exe" ]; then
-        cp "$CPYTHON_DIR/python.exe" "$ROOT_DIR/build/native/python"
-    elif [ -x "$CPYTHON_DIR/python" ]; then
-        cp "$CPYTHON_DIR/python" "$ROOT_DIR/build/native/python"
+    if [ -x "$NATIVE_BUILD_DIR/python.exe" ]; then
+        NATIVE_PYTHON="$NATIVE_BUILD_DIR/python.exe"
+    else
+        NATIVE_PYTHON="$NATIVE_BUILD_DIR/python"
     fi
-    NATIVE_PYTHON="$ROOT_DIR/build/native/python"
+    cd "$ROOT_DIR"
 fi
 
 info "Using native Python: $NATIVE_PYTHON"
-
-# Clean CPython source tree after native build (required for out-of-tree WASI build)
-cd "$CPYTHON_DIR"
-make distclean 2>/dev/null || true
-git clean -fdx 2>/dev/null || true
-cd "$ROOT_DIR"
 
 # Step 2: Create zig cc wrapper scripts
 # These filter out flags zig cc doesn't support and apply ReleaseSmall optimizations
