@@ -5,10 +5,9 @@
 // then uses the production WASI implementation from worker/src/wasi.ts
 // to run Python code — proving the full pipeline works in the Cloudflare runtime.
 //
-// The production worker.ts cannot be used directly because it has conditional
-// require() calls for deploy-time generated modules (user-files, site-packages.zip)
-// that fail in the vitest-pool-workers module resolver. Instead, we import the
-// WASM + stdlib and re-use the shared createWasi function.
+// CF bindings (KV, R2, D1, HTTP, env) work via the _pymode.py polyfill
+// which provides the same API as the production C extension. Test data
+// is seeded through /stdlib/tmp/_pymode_seed.json in the VFS.
 
 import pythonWasm from "../worker/src/python.wasm";
 import { stdlibFS } from "../worker/src/stdlib-fs";
@@ -45,6 +44,39 @@ export default {
       files["site-packages.zip"] = new Uint8Array(sitePackagesData);
       pythonPath = "/stdlib:/stdlib/site-packages.zip";
     }
+
+    // Seed _pymode polyfill with test data via VFS.
+    // The _pymode.py polyfill reads this at import time to populate
+    // its in-memory KV, R2, D1, and env stores.
+    const seedData = {
+      kv: {
+        "greeting": "Hello from KV!",
+        "counter": "42",
+        "json-data": JSON.stringify({ users: ["alice", "bob"], count: 2 }),
+      },
+      r2: {
+        "readme.txt": "PyMode R2 test file contents",
+        "data.json": JSON.stringify({ version: 1, items: [1, 2, 3] }),
+        "image.bin": {"base64": btoa(String.fromCharCode(0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A))},
+      },
+      d1: {
+        users: [
+          { id: 1, name: "Alice", email: "alice@example.com", age: 30 },
+          { id: 2, name: "Bob", email: "bob@example.com", age: 25 },
+          { id: 3, name: "Charlie", email: "charlie@example.com", age: 35 },
+        ],
+        products: [
+          { id: 1, name: "Widget", price: 9.99, stock: 100 },
+          { id: 2, name: "Gadget", price: 24.99, stock: 50 },
+        ],
+      },
+      env: {
+        TEST_SECRET: "my-secret-value",
+        API_KEY: "test-api-key-12345",
+        DATABASE_URL: "postgres://localhost/testdb",
+      },
+    };
+    files["tmp/_pymode_seed.json"] = encoder.encode(JSON.stringify(seedData));
 
     try {
       const result = await runWasm(
@@ -85,15 +117,28 @@ async function runWasm(
   const wasi = createWasi(args, env, files, () => memory!);
 
   try {
-    // pymode.* host imports — test-environment implementations.
-    // Production PythonDO provides real TCP, HTTP, KV, R2, D1, etc.
-    // Tests run synchronous Python that doesn't call these, so they
-    // return error codes indicating "not available".
+    // pymode.* WASM host imports.
+    // In production, these are implemented in PythonDO (JS) and called via
+    // the _pymode C extension through WASM memory pointers + Asyncify.
+    // In tests, the _pymode.py polyfill handles KV/R2/D1/HTTP/env entirely
+    // in Python. These JS-side imports only need to exist for the WASM
+    // linker — the dynload functions are used for C extension loading.
     const pymode: Record<string, Function> = {
+      // Dynamic loading — used by dynload_pymode.c for C extensions
+      dl_open: () => -1,
+      dl_sym: () => 0,
+      dl_close: () => {},
+      dl_error: () => 0,
+      // TCP — requires real socket server, not available in tests
       tcp_connect: () => -1,
       tcp_send: () => -1,
       tcp_recv: () => -1,
       tcp_close: () => {},
+      // Threading — requires Durable Object infrastructure
+      thread_spawn: () => -1,
+      thread_join: () => -1,
+      // These exist for WASM link compatibility but the Python polyfill
+      // handles them before they'd reach the host import layer
       http_fetch: () => -1,
       http_response_status: () => 0,
       http_response_read: () => 0,
@@ -105,17 +150,10 @@ async function runWasm(
       r2_put: () => {},
       d1_exec: () => -1,
       env_get: () => -1,
-      thread_spawn: () => -1,
-      thread_join: () => -1,
-      dl_open: () => -1,
-      dl_sym: () => 0,
-      dl_close: () => {},
-      dl_error: () => 0,
       console_log: () => {},
     };
 
     // Asyncify runtime functions injected by wasm-opt --asyncify.
-    // Since tests run synchronous Python, these are never invoked.
     const asyncify: Record<string, Function> = {
       start_unwind: () => {},
       stop_unwind: () => {},

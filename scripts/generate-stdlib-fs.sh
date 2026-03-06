@@ -313,6 +313,7 @@ POLYFILL_FILES=(
     "ssl.py"
     "threading.py"
     "logging/__init__.py"
+    "_pymode.py"
 )
 
 for relpath in "${POLYFILL_FILES[@]}"; do

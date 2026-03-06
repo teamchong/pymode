@@ -80,11 +80,19 @@ async function runWasm(
   const wasi = createWasi(args, env, files, () => memory!);
 
   try {
+    // pymode.* WASM host imports for linker compatibility.
+    // Bindings (KV/R2/D1/HTTP/env) handled by _pymode.py polyfill in Python.
     const pymode: Record<string, Function> = {
+      dl_open: () => -1,
+      dl_sym: () => 0,
+      dl_close: () => {},
+      dl_error: () => 0,
       tcp_connect: () => -1,
       tcp_send: () => -1,
       tcp_recv: () => -1,
       tcp_close: () => {},
+      thread_spawn: () => -1,
+      thread_join: () => -1,
       http_fetch: () => -1,
       http_response_status: () => 0,
       http_response_read: () => 0,
@@ -96,12 +104,6 @@ async function runWasm(
       r2_put: () => {},
       d1_exec: () => -1,
       env_get: () => -1,
-      thread_spawn: () => -1,
-      thread_join: () => -1,
-      dl_open: () => -1,
-      dl_sym: () => 0,
-      dl_close: () => {},
-      dl_error: () => 0,
       console_log: () => {},
     };
 
