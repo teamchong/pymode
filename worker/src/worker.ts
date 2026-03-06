@@ -771,17 +771,19 @@ function createWasi(
   };
 }
 
-// Run Python WASM and return the result (does not throw)
-function runWasm(
+// Run Python WASM and return the result (does not throw).
+// Uses async WebAssembly.instantiate() — workerd blocks synchronous
+// instantiation for modules >4MB, and python.wasm is ~5.6MB.
+async function runWasm(
   args: string[],
   env: Record<string, string>,
   files: Record<string, Uint8Array>
-): WasiResult {
+): Promise<WasiResult> {
   let memory: WebAssembly.Memory | undefined;
   const wasi = createWasi(args, env, files, () => memory!);
 
   try {
-    const instance = new WebAssembly.Instance(pythonWasm, {
+    const { instance } = await WebAssembly.instantiate(pythonWasm, {
       wasi_snapshot_preview1: wasi.imports,
     });
     memory = instance.exports.memory as WebAssembly.Memory;
@@ -810,17 +812,17 @@ function runWasm(
 
 // Run Python WASM with stdin data — used for project mode handler invocation.
 // Pipes stdinData as stdin so the Python handler can read the serialized request.
-function runWasmWithStdin(
+async function runWasmWithStdin(
   args: string[],
   env: Record<string, string>,
   files: Record<string, Uint8Array>,
   stdinData: Uint8Array
-): WasiResult {
+): Promise<WasiResult> {
   let memory: WebAssembly.Memory | undefined;
   const wasi = createWasi(args, env, files, () => memory!, stdinData);
 
   try {
-    const instance = new WebAssembly.Instance(pythonWasm, {
+    const { instance } = await WebAssembly.instantiate(pythonWasm, {
       wasi_snapshot_preview1: wasi.imports,
     });
     memory = instance.exports.memory as WebAssembly.Memory;
@@ -1092,7 +1094,7 @@ async function runPythonWithFetch(
   }
 
   for (let round = 0; round < MAX_TRAMPOLINE_ROUNDS; round++) {
-    const result = runWasm(
+    const result = await runWasm(
       ["python", "-S", "-c", code],
       { PYTHONPATH: pythonPath, PYTHONDONTWRITEBYTECODE: "1", PYTHONNOUSERSITE: "1" },
       files
@@ -1320,7 +1322,7 @@ export default {
         }
 
         // Fallback: run without host imports (no KV/R2/D1/TCP, but works)
-        const result = runWasmWithStdin(
+        const result = await runWasmWithStdin(
           ["python", "-S", "-m", "pymode._handler", userFilesModule.entryModule],
           { PYTHONPATH: pythonPath, PYTHONDONTWRITEBYTECODE: "1", PYTHONNOUSERSITE: "1" },
           files,

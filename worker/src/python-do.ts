@@ -450,7 +450,8 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
       ASYNC_IMPORTS
     );
 
-    const instance = new WebAssembly.Instance(wasmModule, wrappedImports);
+    // Async instantiation required — workerd blocks sync instantiation for >4MB modules
+    const { instance } = await WebAssembly.instantiate(wasmModule, wrappedImports);
     this.wasmInstance = instance;
     this.wasmMemory = instance.exports.memory as WebAssembly.Memory;
 

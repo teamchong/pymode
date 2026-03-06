@@ -5,7 +5,7 @@
  * Usage:
  *   zigpy deploy handler.py          Deploy a Python handler
  *   zigpy build                      Build CPython WASM binary
- *   zigpy test handler.py            Test handler locally with miniflare
+ *   zigpy test handler.py            Test handler locally with wrangler dev
  *   zigpy bench handler.py           Benchmark cold start and request latency
  */
 
