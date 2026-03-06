@@ -504,35 +504,28 @@ print(f"cjk_upper={cjk.upper()}")
     expect(text).toContain("BONJO"); // upper()[:5] truncates to 5 chars
   });
 
-  it("should parse URL query parameters (urllib.parse needs ipaddress)", async () => {
-    // FINDING: urllib.parse imports ipaddress which is not bundled in stdlib-fs.
-    // This is a gap — urllib.parse is bundled but its dependency ipaddress is not.
-    const { text, status } = await runPython(`
-try:
-    from urllib.parse import urlparse, parse_qs, urlencode
+  it("should parse URL query parameters", async () => {
+    const { text } = await runPython(`
+from urllib.parse import urlparse, parse_qs, urlencode
 
-    url = "https://api.example.com/search?q=python+wasm&page=2&limit=50&sort=date"
-    parsed = urlparse(url)
-    params = parse_qs(parsed.query)
+url = "https://api.example.com/search?q=python+wasm&page=2&limit=50&sort=date"
+parsed = urlparse(url)
+params = parse_qs(parsed.query)
 
-    print(f"scheme={parsed.scheme}")
-    print(f"host={parsed.netloc}")
-    print(f"path={parsed.path}")
-    print(f"q={params['q'][0]}")
-    print(f"page={params['page'][0]}")
+print(f"scheme={parsed.scheme}")
+print(f"host={parsed.netloc}")
+print(f"path={parsed.path}")
+print(f"q={params['q'][0]}")
+print(f"page={params['page'][0]}")
 
-    new_params = urlencode({"q": "cloudflare workers", "page": 1})
-    print(f"encoded={new_params}")
-except ImportError as e:
-    print(f"MISSING_DEP: {e}")
+# Build URL
+new_params = urlencode({"q": "cloudflare workers", "page": 1})
+print(f"encoded={new_params}")
     `);
-    if (text.includes("MISSING_DEP")) {
-      // Known gap: urllib.parse -> ipaddress not bundled
-      expect(text).toContain("ipaddress");
-    } else {
-      expect(text).toContain("scheme=https");
-      expect(text).toContain("q=python wasm");
-    }
+    expect(text).toContain("scheme=https");
+    expect(text).toContain("host=api.example.com");
+    expect(text).toContain("q=python wasm");
+    expect(text).toContain("page=2");
   });
 });
 

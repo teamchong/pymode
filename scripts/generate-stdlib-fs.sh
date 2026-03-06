@@ -80,6 +80,7 @@ BOOT_FILES=(
     # url
     "urllib/__init__.py"
     "urllib/parse.py"
+    "ipaddress.py"
     # import machinery (needed for pymode._handler)
     "importlib/__init__.py"
     "importlib/_bootstrap.py"
