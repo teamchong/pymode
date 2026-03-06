@@ -80,6 +80,7 @@ for arg in "$@"; do
         -lm) ARGS+=("$arg") ;;
         -Wl,--version-script=*) continue ;;
         -Wl,-export-dynamic|-Wl,--no-as-needed) continue ;;
+        -Wl,--allow-undefined) continue ;;
         -Wl,-z,*) continue ;;
         -Wl,--initial-memory=*) continue ;;
         -Wl,--stack-first) continue ;;
@@ -292,7 +293,7 @@ info "Building CPython with zig cc (ReleaseSmall)..."
 NCPU="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
 # Add shims and pymode imports libraries to LDFLAGS for linking
 # --allow-undefined lets the linker accept unresolved pymode.* WASM imports
-LDFLAGS="-s -L$SHIMS_OBJ_DIR -lwasi_shims -L$PYMODE_OBJ_DIR -lpymode_imports -Wl,--allow-undefined" make -j"$NCPU" 2>&1 | tee "$BUILD_DIR/build.log"
+LDFLAGS="-s -L$SHIMS_OBJ_DIR -lwasi_shims -L$PYMODE_OBJ_DIR -lpymode_imports" make -j"$NCPU" 2>&1 | tee "$BUILD_DIR/build.log"
 
 # Step 5: Verify python.wasm exists
 if [ ! -f "$BUILD_DIR/python.wasm" ]; then
