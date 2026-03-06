@@ -3,6 +3,7 @@
 import { readFileSync, writeFileSync, existsSync } from "fs";
 import { join } from "path";
 import { spawnSync } from "child_process";
+import { checkPackage } from "../lib/variants.js";
 
 export async function add(args) {
   if (args.includes("--help") || args.includes("-h")) {
@@ -57,6 +58,18 @@ export async function add(args) {
       console.log(`  ${baseName} already in dependencies, skipping`);
       continue;
     }
+
+    // Check if package needs a C extension variant
+    const extInfo = checkPackage(pkg);
+    if (extInfo) {
+      if (!extInfo.supported) {
+        console.error(`  ${baseName} requires C extensions not yet available for WASM.`);
+        console.error(`  Only pure-Python packages and supported extensions (numpy) work.`);
+        process.exit(1);
+      }
+      console.log(`  ${baseName} — C extension, will use '${extInfo.variantKey}' WASM variant at deploy`);
+    }
+
     existingDeps.push(pkg);
     existingNames.add(baseName);
     added.push(pkg);

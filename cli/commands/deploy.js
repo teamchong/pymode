@@ -3,9 +3,10 @@
 // Chains: install deps → build wizer snapshot → bundle-project.sh → wrangler deploy
 
 import { execSync, spawnSync } from "child_process";
-import { existsSync, readFileSync, mkdirSync, writeFileSync, cpSync } from "fs";
+import { existsSync, readFileSync, mkdirSync, writeFileSync, cpSync, copyFileSync } from "fs";
 import { join, dirname, resolve } from "path";
 import { fileURLToPath } from "url";
+import { parseDeps, resolveVariant, applyVariant } from "../lib/variants.js";
 
 function findRepoRoot() {
   const cliDir = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -185,12 +186,31 @@ export async function deploy(args) {
     process.exit(1);
   }
 
-  // Check python.wasm exists
-  const wasmPath = join(repoRoot, "worker", "src", "python.wasm");
-  if (!existsSync(wasmPath)) {
-    console.error(`python.wasm not found at ${wasmPath}`);
-    console.error("Build it with: ./scripts/build-phase2.sh");
-    console.error("Or download a pre-built release from the GitHub releases page.");
+  // Resolve WASM variant based on project dependencies
+  const deps = parseDeps(projectDir);
+  const { variant: variantKey, unsupported } = resolveVariant(deps);
+
+  if (unsupported.length > 0) {
+    console.error(`\n  Unsupported C extension packages: ${unsupported.join(", ")}`);
+    console.error("  These packages require C extensions not yet available for WASM.");
+    console.error("  Only pure-Python packages and supported extensions (numpy) work.\n");
+    process.exit(1);
+  }
+
+  // Check that the variant binary exists
+  const workerSrc = join(repoRoot, "worker", "src");
+  const registryPath = join(repoRoot, "lib", "variants.json");
+  const registry = JSON.parse(readFileSync(registryPath, "utf-8"));
+  const variant = registry.variants[variantKey];
+  const variantWasm = join(workerSrc, variant.wasm);
+
+  if (!existsSync(variantWasm)) {
+    console.error(`\n  WASM binary not found: ${variant.wasm}`);
+    if (variantKey === "base") {
+      console.error("  Build it with: ./scripts/build-phase2.sh");
+    } else {
+      console.error(`  Build it with: ./scripts/build-${variantKey}-wasm.sh`);
+    }
     process.exit(1);
   }
 
@@ -199,12 +219,25 @@ export async function deploy(args) {
   console.log(`
   PyMode Deploy
 
-  Project: ${projectDir}
-  Entry:   ${entryPoint}
-  Wizer:   ${wizerEnabled ? "enabled" : "disabled"}
+  Project:  ${projectDir}
+  Entry:    ${entryPoint}
+  Variant:  ${variantKey} (${variant.description})
+  Wizer:    ${wizerEnabled ? "enabled" : "disabled"}
   `);
 
   try {
+    // Select and copy the right WASM binary based on dependencies
+    applyVariant(repoRoot, variantKey);
+
+    // Copy extension site-packages if variant needs them
+    if (variant.sitePackages) {
+      const srcZip = join(workerSrc, variant.sitePackages);
+      const dstZip = join(workerSrc, "extension-site-packages.zip");
+      if (existsSync(srcZip)) {
+        copyFileSync(srcZip, dstZip);
+      }
+    }
+
     installDeps(projectDir);
     if (wizerEnabled) {
       buildWizerSnapshot(repoRoot);

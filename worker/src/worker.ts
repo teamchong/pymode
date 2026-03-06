@@ -29,6 +29,16 @@ try {
   // No site-packages bundled
 }
 
+// Optional: extension site-packages (e.g. numpy Python layer).
+// Deployed by `pymode deploy` when a variant with C extensions is selected.
+let extensionPackagesData: ArrayBuffer | undefined;
+try {
+  // @ts-ignore — conditional import, only present for extension variants
+  extensionPackagesData = require("./extension-site-packages.zip");
+} catch {
+  // No extension packages bundled
+}
+
 interface TcpOp {
   op: "connect" | "send" | "recv" | "close";
   connId: string;
@@ -644,7 +654,11 @@ export default {
     let pythonPath = "/stdlib:/stdlib/app";
     if (sitePackagesData) {
       files["site-packages.zip"] = new Uint8Array(sitePackagesData);
-      pythonPath = "/stdlib:/stdlib/app:/stdlib/site-packages.zip";
+      pythonPath += ":/stdlib/site-packages.zip";
+    }
+    if (extensionPackagesData) {
+      files["extension-site-packages.zip"] = new Uint8Array(extensionPackagesData);
+      pythonPath += ":/stdlib/extension-site-packages.zip";
     }
 
     try {

@@ -17,6 +17,15 @@ import pythonWasm from "./python.wasm";
 import { stdlibFS } from "./stdlib-fs";
 import { ProcExit, createWasi } from "./wasi";
 
+// Optional: extension site-packages (e.g. numpy Python layer)
+let extensionPackagesData: ArrayBuffer | undefined;
+try {
+  // @ts-ignore — conditional import, only present for extension variants
+  extensionPackagesData = require("./extension-site-packages.zip");
+} catch {
+  // No extension packages
+}
+
 interface PythonDOEnv {
   KV?: KVNamespace;
   R2?: R2Bucket;
@@ -436,6 +445,15 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
     // Mount site-packages
     if (sitePackagesData) {
       files["site-packages.zip"] = new Uint8Array(sitePackagesData);
+    }
+
+    // Mount extension site-packages (numpy, etc.)
+    if (extensionPackagesData) {
+      files["extension-site-packages.zip"] = new Uint8Array(extensionPackagesData);
+      // Append to PYTHONPATH if not already there
+      if (wasmEnv.PYTHONPATH && !wasmEnv.PYTHONPATH.includes("extension-site-packages.zip")) {
+        wasmEnv = { ...wasmEnv, PYTHONPATH: wasmEnv.PYTHONPATH + ":/stdlib/extension-site-packages.zip" };
+      }
     }
 
     const wasi = createWasi(args, wasmEnv, files, () => this.wasmMemory!, stdinData);

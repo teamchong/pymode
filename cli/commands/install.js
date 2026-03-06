@@ -3,6 +3,7 @@
 import { readFileSync, existsSync, mkdirSync } from "fs";
 import { join } from "path";
 import { spawnSync } from "child_process";
+import { checkPackage } from "../lib/variants.js";
 
 function findPip() {
   for (const cmd of ["pip3", "pip", "python3 -m pip"]) {
@@ -64,7 +65,28 @@ export async function install(args) {
   const pkgDir = join(projectDir, ".pymode", "packages");
   mkdirSync(pkgDir, { recursive: true });
 
-  console.log(`  Installing ${deps.length} package(s)...\n`);
+  // Separate C extension packages (handled by WASM variants) from pure-Python
+  const pureDeps = [];
+  const extensionDeps = [];
+  for (const dep of deps) {
+    const extInfo = checkPackage(dep);
+    if (extInfo) {
+      extensionDeps.push(dep);
+    } else {
+      pureDeps.push(dep);
+    }
+  }
+
+  if (extensionDeps.length > 0) {
+    console.log(`  C extension packages (provided by WASM variant): ${extensionDeps.join(", ")}`);
+  }
+
+  if (pureDeps.length === 0) {
+    console.log("  No pure-Python packages to download.");
+    return;
+  }
+
+  console.log(`  Installing ${pureDeps.length} pure-Python package(s)...\n`);
 
   // Download pure-python wheels
   // --only-binary :all: ensures we only get wheels (no source builds)
@@ -76,7 +98,7 @@ export async function install(args) {
     "--python-version", "3.13",
     "--platform", "any",
     "--dest", pkgDir,
-    ...deps,
+    ...pureDeps,
   ];
 
   const result = spawnSync(pip[0], pipArgs, {

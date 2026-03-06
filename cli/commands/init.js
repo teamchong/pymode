@@ -41,6 +41,10 @@ export async function init(args) {
     `[project]
 name = "${name}"
 version = "0.1.0"
+# dependencies = [
+#     "requests",    # pure-Python packages work out of the box
+#     "numpy",       # C extensions auto-select the right WASM variant
+# ]
 
 [tool.pymode]
 main = "src/entry.py"
