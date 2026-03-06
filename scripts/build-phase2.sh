@@ -295,6 +295,10 @@ if command -v wasm-opt >/dev/null 2>&1; then
 
     info "Running wasm-opt --asyncify (async imports: tcp_recv, http_fetch, kv_*, r2_*, d1_exec)..."
     wasm-opt -O2 --asyncify \
+        --enable-nontrapping-float-to-int \
+        --enable-bulk-memory \
+        --enable-sign-ext \
+        --enable-mutable-globals \
         --pass-arg="asyncify-imports@${ASYNC_IMPORTS}" \
         --pass-arg=asyncify-ignore-indirect \
         "$BUILD_DIR/python.wasm" -o "$BUILD_DIR/python.wasm.asyncified"
