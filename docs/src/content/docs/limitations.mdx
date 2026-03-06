@@ -85,11 +85,10 @@ These modules exist in CPython's stdlib but aren't bundled in `stdlib-fs.ts` to 
 |--------|-----------------|
 | `csv` | Not yet added to BOOT_FILES |
 | `statistics` | Not yet added to BOOT_FILES |
-| `inspect` | Large dependency tree, needed for `dataclasses` field introspection |
 | `locale` | Needed for `calendar` formatting |
 | `html`, `html.parser` | Not yet added |
 | `email` | Large package, not yet added |
-| `logging` | Not yet added |
+| `logging` | Requires `threading` (unavailable in single-threaded WASM) |
 | `argparse` | Not useful in Workers context |
 | `pathlib` | Not yet added |
 | `pprint` | Not yet added |
@@ -116,3 +115,5 @@ Full CPython 3.13 language support including:
 **Experimental:** C extension packages compiled to `.wasm` side modules via `scripts/build-extension.sh`. Currently supported: `markupsafe`, `simplejson`, `msgpack`.
 
 **Doesn't work:** Packages requiring OS features (network sockets, file I/O, subprocess), packages with complex C dependencies (numpy, pandas, scipy).
+
+**Heavy packages via multi-worker RPC:** Deploy heavy packages (numpy, pandas) in a separate Pyodide worker and call it via Service Bindings. Each worker gets its own 10MB bundle limit, 128MB memory, and 30s CPU. See [Architecture: Multi-Worker RPC](/pymode/architecture/#multi-worker-rpc-architecture).

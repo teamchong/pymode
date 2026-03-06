@@ -13,6 +13,9 @@
 import { DurableObject } from "cloudflare:workers";
 import { connect } from "cloudflare:sockets";
 import { AsyncifyRuntime } from "./asyncify";
+import pythonWasm from "./python.wasm";
+import { stdlibFS } from "./stdlib-fs";
+import { ProcExit, createWasi } from "./wasi";
 
 interface PythonDOEnv {
   KV?: KVNamespace;
@@ -20,14 +23,6 @@ interface PythonDOEnv {
   D1?: D1Database;
   THREAD_DO?: DurableObjectNamespace;
   [key: string]: unknown;
-}
-
-class ProcExit extends Error {
-  code: number;
-  constructor(code: number) {
-    super(`proc_exit(${code})`);
-    this.code = code;
-  }
 }
 
 // The set of pymode.* imports that are async (return Promises).
@@ -83,13 +78,7 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
   public extensionModules = new Map<string, WebAssembly.Module>();
 
   // Stored references for spawning child DOs and dynamic loading
-  private wasmModule: WebAssembly.Module | null = null;
   private wasmInstance: WebAssembly.Instance | null = null;
-  private createWasiFn: ((getMemory: () => WebAssembly.Memory, stdinData?: Uint8Array) => {
-    imports: Record<string, Function>;
-    getStdout: () => Uint8Array;
-    getStderr: () => Uint8Array;
-  }) | null = null;
 
   private getMemBytes(): Uint8Array {
     return new Uint8Array(this.wasmMemory!.buffer);
@@ -413,31 +402,43 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
    * suspending/resuming the WASM stack when async imports are called.
    * No trampoline, no re-execution.
    *
-   * @param wasmModule - Compiled python.wasm module
-   * @param createWasi - WASI factory (accepts getMemory + optional stdinData)
-   * @param stdinData  - Optional data piped as stdin (for request handler mode)
+   * PythonDO imports python.wasm and stdlib-fs directly — no need to
+   * pass non-serializable objects (WebAssembly.Module, closures) via RPC.
    */
-  async run(
-    wasmModule: WebAssembly.Module,
-    createWasi: (getMemory: () => WebAssembly.Memory, stdinData?: Uint8Array) => {
-      imports: Record<string, Function>;
-      getStdout: () => Uint8Array;
-      getStderr: () => Uint8Array;
-    },
-    stdinData?: Uint8Array
+  private async run(
+    args: string[],
+    wasmEnv: Record<string, string>,
+    userFiles?: Record<string, string>,
+    stdinData?: Uint8Array,
+    sitePackagesData?: ArrayBuffer,
   ): Promise<{
     stdout: string;
     stderr: string;
     exitCode: number;
   }> {
+    const encoder = new TextEncoder();
     const decoder = new TextDecoder();
     const asyncify = new AsyncifyRuntime();
 
-    // Store references so thread_spawn can pass them to child DOs
-    this.wasmModule = wasmModule;
-    this.createWasiFn = createWasi as any;
+    // Build VFS from stdlib + pymode runtime
+    const files: Record<string, Uint8Array> = {};
+    for (const [path, content] of Object.entries(stdlibFS)) {
+      files[path] = encoder.encode(content);
+    }
 
-    const wasi = createWasi(() => this.wasmMemory!, stdinData);
+    // Mount user project files
+    if (userFiles) {
+      for (const [path, content] of Object.entries(userFiles)) {
+        files[path] = encoder.encode(content);
+      }
+    }
+
+    // Mount site-packages
+    if (sitePackagesData) {
+      files["site-packages.zip"] = new Uint8Array(sitePackagesData);
+    }
+
+    const wasi = createWasi(args, wasmEnv, files, () => this.wasmMemory!, stdinData);
     const pymodeImports = this.buildImports();
 
     // Wrap imports with Asyncify — async pymode imports will trigger
@@ -450,8 +451,11 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
       ASYNC_IMPORTS
     );
 
-    // Async instantiation required — workerd blocks sync instantiation for >4MB modules
-    const { instance } = await WebAssembly.instantiate(wasmModule, wrappedImports);
+    // Async instantiation required — workerd blocks sync instantiation for >4MB modules.
+    // WebAssembly.instantiate() with a Module returns Instance directly;
+    // with an ArrayBuffer it returns { module, instance }.
+    const result = await WebAssembly.instantiate(pythonWasm, wrappedImports);
+    const instance = (result as any).exports ? result as WebAssembly.Instance : (result as any).instance;
     this.wasmInstance = instance;
     this.wasmMemory = instance.exports.memory as WebAssembly.Memory;
 
@@ -479,53 +483,47 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
   }
 
   /**
-   * RPC entry point — called by the stateless Worker via DO binding.
-   * Legacy: run arbitrary code string.
+   * RPC entry point — execute arbitrary Python code.
+   * Only serializable params (strings) cross the RPC boundary.
    */
   async executeCode(
-    wasmModule: WebAssembly.Module,
-    createWasi: (getMemory: () => WebAssembly.Memory, stdinData?: Uint8Array) => {
-      imports: Record<string, Function>;
-      getStdout: () => Uint8Array;
-      getStderr: () => Uint8Array;
-    },
     code: string
   ): Promise<{
     stdout: string;
     stderr: string;
     exitCode: number;
   }> {
-    return this.run(wasmModule, createWasi);
+    return this.run(
+      ["python", "-S", "-c", code],
+      { PYTHONPATH: "/stdlib", PYTHONDONTWRITEBYTECODE: "1", PYTHONNOUSERSITE: "1" },
+    );
   }
 
   /**
-   * Project mode RPC — handles an HTTP request through a Python handler.
+   * RPC entry point — handle an HTTP request through a Python handler.
    *
-   * The Worker serializes the CF Request to JSON and passes it here.
-   * PythonDO runs the handler with full host imports (KV, R2, D1, TCP, HTTP)
-   * via Asyncify. The Python handler reads the request from stdin, calls
-   * on_fetch(), and writes the serialized Response to stdout.
-   *
-   * This gives Python handlers the same capabilities as CF Python Workers:
-   * - Direct access to KV, R2, D1 via _pymode host imports
-   * - Real async I/O via Asyncify (no trampoline)
-   * - TCP connections for database drivers
-   * - HTTP fetch for external APIs
+   * All params are serializable (strings, plain objects) so they can
+   * cross the worker→DO RPC boundary without structured clone issues.
    */
   async handleRequest(
-    wasmModule: WebAssembly.Module,
-    createWasi: (getMemory: () => WebAssembly.Memory, stdinData?: Uint8Array) => {
-      imports: Record<string, Function>;
-      getStdout: () => Uint8Array;
-      getStderr: () => Uint8Array;
-    },
-    requestJson: Uint8Array
+    entryModule: string,
+    userFiles: Record<string, string>,
+    pythonPath: string,
+    requestJson: string,
+    sitePackagesData?: ArrayBuffer,
   ): Promise<{
     stdout: string;
     stderr: string;
     exitCode: number;
   }> {
-    return this.run(wasmModule, createWasi, requestJson);
+    const encoder = new TextEncoder();
+    return this.run(
+      ["python", "-S", "-m", "pymode._handler", entryModule],
+      { PYTHONPATH: pythonPath, PYTHONDONTWRITEBYTECODE: "1", PYTHONNOUSERSITE: "1" },
+      userFiles,
+      encoder.encode(requestJson),
+      sitePackagesData,
+    );
   }
 
   /**

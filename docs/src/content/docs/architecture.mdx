@@ -83,7 +83,7 @@ export const stdlibFS: Record<string, string> = {
   "encodings/__init__.py": "...",
   "encodings/utf_8.py": "...",
   "json/__init__.py": "...",
-  // ~70 stdlib modules
+  // ~90 stdlib modules
 };
 ```
 
@@ -137,6 +137,66 @@ import markupsafe
     → dlsym("PyInit__speedups") returns the init function
     → CPython initializes the extension module
 ```
+
+## Multi-Worker RPC Architecture
+
+The 10MB compressed bundle limit applies **per worker** (total of all JS, WASM, and static assets). For applications needing large packages (numpy, pandas, image processing), you can split across multiple workers connected via Service Bindings:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Cloudflare Edge (same colo, sub-ms latency)                │
+│                                                              │
+│  ┌──────────────────┐    Service    ┌────────────────────┐  │
+│  │  PyMode Worker    │───Binding───▶│  Compute Worker    │  │
+│  │  (~3MB gz)        │              │  (~8MB gz)          │  │
+│  │                   │              │                     │  │
+│  │  python.wasm      │    RPC       │  Pyodide + numpy   │  │
+│  │  on_fetch()       │◀────────────│  or custom WASM    │  │
+│  │  routing, auth    │              │  heavy compute      │  │
+│  └──────────────────┘              └────────────────────┘  │
+│           │                                                  │
+│           │ Service Binding                                   │
+│           ▼                                                  │
+│  ┌────────────────────┐                                      │
+│  │  Extension Worker   │                                     │
+│  │  (~5MB gz)          │                                     │
+│  │  C extensions as    │                                     │
+│  │  WASM side modules  │                                     │
+│  └────────────────────┘                                      │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### How It Works
+
+Each worker is a separate deployment with its own 10MB budget, 128MB memory, and 30s CPU time. Workers communicate via [Service Bindings](https://developers.cloudflare.com/workers/runtime-apis/bindings/service-bindings/) — direct worker-to-worker calls within the same Cloudflare colo with no network overhead.
+
+```toml
+# wrangler.toml for the PyMode handler worker
+[[services]]
+binding = "COMPUTE"
+service = "compute-worker"
+```
+
+```python
+# PyMode handler — fast routing, auth, template rendering
+def on_fetch(request, env):
+    # Delegate heavy compute to a separate worker
+    resp = env.COMPUTE.fetch("http://internal/process",
+        method="POST",
+        body=json.dumps({"data": payload})
+    )
+    result = resp.json()
+    return Response.json(result)
+```
+
+### When to Use Multi-Worker
+
+| Scenario | Approach |
+|----------|----------|
+| Pure Python packages (jinja2, pyyaml) | Bundle in main worker |
+| Small C extensions (markupsafe) | WASM side modules in main worker |
+| Large C packages (numpy, scipy) | Separate Pyodide worker via Service Binding |
+| Heavy compute (ML inference, image processing) | Separate worker with dedicated WASM |
 
 ## Comparison with Pyodide
 

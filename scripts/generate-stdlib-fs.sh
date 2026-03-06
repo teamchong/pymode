@@ -88,15 +88,35 @@ BOOT_FILES=(
     "importlib/_bootstrap.py"
     "importlib/_bootstrap_external.py"
     "importlib/abc.py"
+    "importlib/_abc.py"
     "importlib/machinery.py"
     "importlib/util.py"
     # pickle (needed for pymode.parallel)
     "pickle.py"
     "_compat_pickle.py"
+    # inspect + dependencies (needed for dataclasses)
+    "inspect.py"
+    "dis.py"
+    "opcode.py"
+    "_opcode_metadata.py"
+    "ast.py"
+    # logging
+    "logging/__init__.py"
+    "logging/handlers.py"
+    # xml
+    "xml/__init__.py"
+    "xml/etree/__init__.py"
+    "xml/etree/ElementTree.py"
+    "xml/etree/ElementPath.py"
+    "xml/etree/ElementInclude.py"
+    "xml/etree/cElementTree.py"
+    # uuid
+    "uuid.py"
     # misc
     "keyword.py"
     "reprlib.py"
     "traceback.py"
+    "_colorize.py"
     "struct.py"
     # io (needed for stdin reading)
     "io.py"
