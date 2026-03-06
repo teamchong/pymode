@@ -230,6 +230,8 @@ BOOT_FILES=(
     "contextvars.py"
     "platform.py"
     "argparse.py"
+    # needed by requests/urllib3 (IDNA)
+    "stringprep.py"
     # misc
     "keyword.py"
     "reprlib.py"
@@ -314,6 +316,8 @@ POLYFILL_FILES=(
     "threading.py"
     "logging/__init__.py"
     "_pymode.py"
+    "zlib.py"
+    "_wasi_compat.py"
 )
 
 for relpath in "${POLYFILL_FILES[@]}"; do

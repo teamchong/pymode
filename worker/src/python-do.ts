@@ -512,7 +512,7 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
     exitCode: number;
   }> {
     return this.run(
-      ["python", "-S", "-c", code],
+      ["python", "-S", "-c", "import _wasi_compat\n" + code],
       { PYTHONPATH: "/stdlib", PYTHONDONTWRITEBYTECODE: "1", PYTHONNOUSERSITE: "1" },
     );
   }

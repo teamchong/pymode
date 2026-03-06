@@ -38,6 +38,11 @@ export default {
       code = url.searchParams.get("code") || "print('Hello from PyMode!')";
     }
 
+    // WASI compatibility bootstrap — runs before user code to patch
+    // os functions that WASI doesn't provide (getpid, getuid, etc.)
+    // Loaded from _wasi_compat module bundled in stdlib-fs.
+    code = "import _wasi_compat\n" + code;
+
     // Mount site-packages.zip if available
     let pythonPath = "/stdlib";
     if (sitePackagesData) {
@@ -81,7 +86,7 @@ export default {
     try {
       const result = await runWasm(
         ["python", "-S", "-c", code],
-        { PYTHONPATH: pythonPath, PYTHONDONTWRITEBYTECODE: "1", PYTHONNOUSERSITE: "1" },
+        { PYTHONPATH: pythonPath, PYTHONDONTWRITEBYTECODE: "1", PYTHONNOUSERSITE: "1", TMPDIR: "/tmp" },
         files
       );
 

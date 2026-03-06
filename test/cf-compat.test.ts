@@ -7,8 +7,8 @@
 // C extensions: tested via numpy.test.ts (statically linked into python-numpy.wasm)
 // CPython built-in modules: hashlib, decimal, etc.
 //
-// Packages that need C extensions not yet available (zlib, pydantic_core)
-// are tested for import only with appropriate skip markers.
+// Packages needing Rust C extensions (pydantic_core) have skip markers.
+// zlib is provided by a pure-Python polyfill (lib/polyfills/zlib.py).
 
 import { describe, it, expect } from "vitest";
 import { SELF } from "cloudflare:test";
@@ -551,12 +551,12 @@ print(f"total={total}")
   });
 });
 
-// ─── Packages needing zlib (not yet available) ──────────────────────
-// requests, httpx, urllib3 need zlib for HTTP compression.
-// They will work once zlib is compiled into python.wasm.
+// ─── Packages needing zlib ──────────────────────────────────────────
+// zlib polyfill (lib/polyfills/zlib.py) provides pure-Python DEFLATE
+// decompression, enabling requests, httpx, urllib3 to import and work.
 
-describe("requests (needs zlib)", () => {
-  it.skip("imports and builds requests — blocked on zlib C extension", async () => {
+describe("requests", () => {
+  it("imports and builds requests with sessions", async () => {
     const { text, status } = await run(`
 import requests
 s = requests.Session()
@@ -567,28 +567,36 @@ prepared = s.prepare_request(req)
 print(f"url={prepared.url}")
 `);
     expect(status).toBe(200);
+    expect(text).toContain("ua=PyMode/1.0");
+    expect(text).toContain("url=http://example.com/?q=test");
   });
 });
 
-describe("httpx (needs zlib)", () => {
-  it.skip("builds requests and parses URLs — blocked on zlib C extension", async () => {
+describe("httpx", () => {
+  it("builds requests and parses URLs", async () => {
     const { text, status } = await run(`
 import httpx
 url = httpx.URL("https://api.example.com/v1/users?page=2")
 print(f"host={url.host}")
+print(f"path={url.raw_path.decode()}")
 `);
     expect(status).toBe(200);
+    expect(text).toContain("host=api.example.com");
   });
 });
 
-describe("urllib3 (needs zlib)", () => {
-  it.skip("URL parsing and retry config — blocked on zlib C extension", async () => {
+describe("urllib3", () => {
+  it("URL parsing and retry config", async () => {
     const { text, status } = await run(`
 from urllib3.util.url import parse_url
 url = parse_url("https://api.example.com:8443/v2/data")
 print(f"host={url.host}")
+print(f"port={url.port}")
+print(f"scheme={url.scheme}")
 `);
     expect(status).toBe(200);
+    expect(text).toContain("host=api.example.com");
+    expect(text).toContain("port=8443");
   });
 });
 

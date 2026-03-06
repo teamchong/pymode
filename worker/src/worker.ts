@@ -467,9 +467,12 @@ async function runPythonWithFetch(
     await loadDataFromKV(kv, files);
   }
 
+  // WASI compat bootstrap — patches os.getpid etc. before user code
+  const bootstrappedCode = "import _wasi_compat\n" + code;
+
   for (let round = 0; round < MAX_TRAMPOLINE_ROUNDS; round++) {
     const result = await runWasm(
-      ["python", "-S", "-c", code],
+      ["python", "-S", "-c", bootstrappedCode],
       { PYTHONPATH: pythonPath, PYTHONDONTWRITEBYTECODE: "1", PYTHONNOUSERSITE: "1" },
       files
     );

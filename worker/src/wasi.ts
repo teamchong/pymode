@@ -32,9 +32,11 @@ export function createWasi(
   const FD_STDERR = 2;
   const FD_PREOPEN = 3;       // /stdlib (read-only stdlib + pymode runtime)
   const FD_DATA_PREOPEN = 4;  // /data (read-write, backed by CF KV)
+  const FD_TMP_PREOPEN = 5;   // /tmp (writable temp directory)
 
   const preopenPath = "/stdlib";
   const dataPreopenPath = "/data";
+  const tmpPreopenPath = "/tmp";
 
   interface OpenFile {
     path: string;
@@ -45,7 +47,7 @@ export function createWasi(
   }
 
   const openFiles = new Map<number, OpenFile>();
-  let nextFd = FD_DATA_PREOPEN + 1;
+  let nextFd = FD_TMP_PREOPEN + 1;
 
   const stdoutChunks: Uint8Array[] = [];
   const stderrChunks: Uint8Array[] = [];
@@ -149,6 +151,7 @@ export function createWasi(
   function resolvePath(dirFd: number, relPath: string): string | null {
     if (dirFd === FD_PREOPEN) return normalizePath(relPath);
     if (dirFd === FD_DATA_PREOPEN) return normalizePath("data/" + relPath);
+    if (dirFd === FD_TMP_PREOPEN) return normalizePath("tmp/" + relPath);
     const dir = openFiles.get(dirFd);
     if (!dir) return null;
     if (dir.path === "") return normalizePath(relPath);
@@ -321,6 +324,7 @@ export function createWasi(
       const preopens: Record<number, string> = {
         [FD_PREOPEN]: preopenPath,
         [FD_DATA_PREOPEN]: dataPreopenPath,
+        [FD_TMP_PREOPEN]: tmpPreopenPath,
       };
       const path = preopens[fd];
       if (path !== undefined) {
@@ -336,6 +340,7 @@ export function createWasi(
       const preopens: Record<number, string> = {
         [FD_PREOPEN]: preopenPath,
         [FD_DATA_PREOPEN]: dataPreopenPath,
+        [FD_TMP_PREOPEN]: tmpPreopenPath,
       };
       const path = preopens[fd];
       if (path !== undefined) {
@@ -356,7 +361,7 @@ export function createWasi(
         v.setBigUint64(retPtr + 16, BigInt(0x1FF), true);
         return ESUCCESS;
       }
-      if (fd === FD_PREOPEN || fd === FD_DATA_PREOPEN) {
+      if (fd === FD_PREOPEN || fd === FD_DATA_PREOPEN || fd === FD_TMP_PREOPEN) {
         v.setUint8(retPtr, 3); // DIRECTORY
         v.setBigUint64(retPtr + 8, BigInt(0x1FFFFFF), true);
         v.setBigUint64(retPtr + 16, BigInt(0x1FFFFFF), true);
@@ -381,10 +386,13 @@ export function createWasi(
       if (fullPath === null) return EBADF;
 
       const OFLAGS_CREAT = 1;
+      const OFLAGS_EXCL = 4;
       const OFLAGS_TRUNC = 8;
 
       // O_CREAT — create a new writable file (or open existing writable file)
       if (oflags & OFLAGS_CREAT) {
+        // O_EXCL: fail if file already exists (needed by tempfile.mkstemp)
+        if ((oflags & OFLAGS_EXCL) && fileExists(fullPath)) return EEXIST;
         const fd = nextFd++;
         if (!writtenFiles.has(fullPath) || (oflags & OFLAGS_TRUNC)) {
           writtenFiles.set(fullPath, new Uint8Array(0));
@@ -449,7 +457,7 @@ export function createWasi(
         v.setBigUint64(retPtr + 24, BigInt(1), true);
         return ESUCCESS;
       }
-      if (fd === FD_PREOPEN || fd === FD_DATA_PREOPEN) {
+      if (fd === FD_PREOPEN || fd === FD_DATA_PREOPEN || fd === FD_TMP_PREOPEN) {
         v.setUint8(retPtr + 16, 3);
         v.setBigUint64(retPtr + 24, BigInt(1), true);
         return ESUCCESS;

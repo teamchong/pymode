@@ -193,7 +193,7 @@ def analyze_wheel(wheel_data: bytes, filename: str) -> tuple[list[str], list[str
                 native_files.append(name)
             elif name.endswith((".py", ".pyi")):
                 python_files.append(name)
-            elif name.endswith((".typed", ".txt", ".cfg", ".ini", ".json", ".toml", ".yaml", ".yml")):
+            elif name.endswith((".typed", ".txt", ".cfg", ".ini", ".json", ".toml", ".yaml", ".yml", ".pem")):
                 data_files.append(name)
 
     return python_files, native_files, data_files
@@ -213,7 +213,7 @@ def extract_python_files(wheel_data: bytes) -> list[tuple[str, bytes]]:
             if any(name.endswith(s) for s in NATIVE_SUFFIXES):
                 continue
             if name.endswith((".py", ".pyi", ".typed", ".txt", ".cfg",
-                              ".ini", ".json", ".toml", ".yaml", ".yml")):
+                              ".ini", ".json", ".toml", ".yaml", ".yml", ".pem")):
                 files.append((name, whl.read(name)))
     return files
 
