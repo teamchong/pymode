@@ -124,6 +124,10 @@ BOOT_FILES=(
     "tempfile.py"
     "shutil.py"
     "gettext.py"
+    # needed by numpy
+    "contextvars.py"
+    "platform.py"
+    "argparse.py"
     # misc
     "keyword.py"
     "reprlib.py"
@@ -149,6 +153,7 @@ PYMODE_FILES=(
     "pymode/parallel.py"
     "pymode/workflows.py"
     "pymode/importer.py"
+    "pymode/compute.py"
 )
 
 echo "Generating $OUTPUT..."
