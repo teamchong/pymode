@@ -49,7 +49,7 @@ if [ -z "$NATIVE_PYTHON" ]; then
     cd "$CPYTHON_DIR"
     make distclean 2>/dev/null || true
     ./configure --prefix="$ROOT_DIR/build/native/install"
-    make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" python.exe
+    make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 2)"
     NATIVE_PYTHON="$CPYTHON_DIR/python.exe"
     if [ ! -x "$NATIVE_PYTHON" ]; then
         NATIVE_PYTHON="$CPYTHON_DIR/python"
@@ -152,7 +152,12 @@ cd "$BUILD_DIR"
 rm -rf "$BUILD_DIR"/*
 rm -f "$BUILD_DIR"/../config.cache 2>/dev/null
 
-BUILD_TRIPLE="$(uname -m)-apple-darwin"
+# Detect build triple for cross-compilation
+case "$(uname -s)" in
+    Darwin) BUILD_TRIPLE="$(uname -m)-apple-darwin" ;;
+    Linux)  BUILD_TRIPLE="$(uname -m)-pc-linux-gnu" ;;
+    *)      BUILD_TRIPLE="$(uname -m)-unknown-$(uname -s | tr '[:upper:]' '[:lower:]')" ;;
+esac
 
 CONFIG_SITE="$ROOT_DIR/scripts/config.site-wasi" \
 PKG_CONFIG=false \
@@ -198,9 +203,18 @@ PKG_CONFIG=false \
     py_cv_module__tkinter=n/a \
     py_cv_module__scproxy=n/a
 
+# Cross-platform sed -i (macOS requires '' arg, Linux does not)
+sedi() {
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        sed -i '' "$@"
+    else
+        sed -i "$@"
+    fi
+}
+
 # Step 3b: Patch pyconfig.h - use CPython pthread types instead of musl
 info "Patching pyconfig.h for WASI..."
-sed -i '' 's/^#define HAVE_PTHREAD_H 1/\/* #undef HAVE_PTHREAD_H *\//' "$BUILD_DIR/pyconfig.h"
+sedi 's/^#define HAVE_PTHREAD_H 1/\/* #undef HAVE_PTHREAD_H *\//' "$BUILD_DIR/pyconfig.h"
 
 # Step 3b2: Register _pymode as a built-in module in config.c
 # This makes `import _pymode` work without needing shared library loading.
@@ -208,11 +222,11 @@ info "Registering _pymode built-in module..."
 CONFIG_C="$BUILD_DIR/Modules/config.c"
 if [ -f "$CONFIG_C" ] && ! grep -q "PyInit__pymode" "$CONFIG_C"; then
     # Add extern declaration before the ADDMODULE MARKER 1
-    sed -i '' '/\/\* -- ADDMODULE MARKER 1 --/i\
+    sedi '/\/\* -- ADDMODULE MARKER 1 --/i\
 extern PyObject* PyInit__pymode(void);
 ' "$CONFIG_C"
     # Add entry to _PyImport_Inittab before the ADDMODULE MARKER 2
-    sed -i '' '/\/\* -- ADDMODULE MARKER 2 --/i\
+    sedi '/\/\* -- ADDMODULE MARKER 2 --/i\
     {"_pymode", PyInit__pymode},
 ' "$CONFIG_C"
     info "  _pymode registered in config.c"

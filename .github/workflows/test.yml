@@ -1,0 +1,76 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential
+
+      - name: Install zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: "0.15.2"
+
+      - name: Install wasmtime
+        run: |
+          curl https://wasmtime.dev/install.sh -sSf | bash
+          echo "$HOME/.wasmtime/bin" >> $GITHUB_PATH
+
+      - name: Install binaryen (wasm-opt)
+        run: |
+          BINARYEN_VERSION=122
+          curl -L "https://github.com/WebAssembly/binaryen/releases/download/version_${BINARYEN_VERSION}/binaryen-version_${BINARYEN_VERSION}-x86_64-linux.tar.gz" | tar xz
+          sudo mv binaryen-version_${BINARYEN_VERSION}/bin/* /usr/local/bin/
+
+      - name: Cache CPython source
+        uses: actions/cache@v4
+        with:
+          path: cpython
+          key: cpython-3.13.0-source
+
+      - name: Clone CPython
+        run: |
+          if [ ! -d cpython ]; then
+            git clone --depth 1 --branch v3.13.0 https://github.com/python/cpython.git cpython
+          fi
+
+      - name: Cache python.wasm build
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/zig-wasi/python.wasm
+            build/zig-wrappers/
+          key: python-wasm-${{ hashFiles('scripts/build-phase2.sh', 'scripts/config.site-wasi', 'lib/wasi-shims/**', 'lib/pymode-imports/**') }}
+
+      - name: Build python.wasm
+        run: |
+          if [ ! -f build/zig-wasi/python.wasm ]; then
+            ./scripts/build-phase2.sh
+          fi
+          cp build/zig-wasi/python.wasm worker/src/python.wasm
+
+      - name: Generate stdlib-fs.ts
+        run: ./scripts/generate-stdlib-fs.sh
+
+      - name: Install npm dependencies
+        run: npm install
+
+      - name: Run tests (workerd)
+        run: npm test
