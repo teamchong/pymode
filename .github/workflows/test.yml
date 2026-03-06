@@ -51,6 +51,12 @@ jobs:
             git clone --depth 1 --branch v3.13.0 https://github.com/python/cpython.git cpython
           fi
 
+      - name: Cache native Python build
+        uses: actions/cache@v4
+        with:
+          path: build/native/python
+          key: native-python-3.13.0-${{ runner.os }}
+
       - name: Cache python.wasm build
         uses: actions/cache@v4
         with:

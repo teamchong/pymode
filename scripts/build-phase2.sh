@@ -50,13 +50,22 @@ if [ -z "$NATIVE_PYTHON" ]; then
     make distclean 2>/dev/null || true
     ./configure --prefix="$ROOT_DIR/build/native/install"
     make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 2)"
-    NATIVE_PYTHON="$CPYTHON_DIR/python.exe"
-    if [ ! -x "$NATIVE_PYTHON" ]; then
-        NATIVE_PYTHON="$CPYTHON_DIR/python"
+    # Copy native python out of source tree before cleaning
+    if [ -x "$CPYTHON_DIR/python.exe" ]; then
+        cp "$CPYTHON_DIR/python.exe" "$ROOT_DIR/build/native/python"
+    elif [ -x "$CPYTHON_DIR/python" ]; then
+        cp "$CPYTHON_DIR/python" "$ROOT_DIR/build/native/python"
     fi
+    NATIVE_PYTHON="$ROOT_DIR/build/native/python"
 fi
 
 info "Using native Python: $NATIVE_PYTHON"
+
+# Clean CPython source tree after native build (required for out-of-tree WASI build)
+cd "$CPYTHON_DIR"
+make distclean 2>/dev/null || true
+git clean -fdx 2>/dev/null || true
+cd "$ROOT_DIR"
 
 # Step 2: Create zig cc wrapper scripts
 # These filter out flags zig cc doesn't support and apply ReleaseSmall optimizations
