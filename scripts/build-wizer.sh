@@ -85,7 +85,8 @@ echo "    Raw: $(echo "scale=1; $RAW_SIZE / 1048576" | bc)MB"
 
 # Verify wizer.initialize is exported
 if command -v wasm-objdump &>/dev/null; then
-    if wasm-objdump -x "$WIZER_RAW" 2>/dev/null | grep -q "wizer.initialize"; then
+    EXPORTS=$(wasm-objdump -x "$WIZER_RAW" 2>/dev/null | grep "wizer" || true)
+    if echo "$EXPORTS" | grep -q "wizer"; then
         echo "    wizer.initialize export: OK"
     else
         echo "    ERROR: wizer.initialize not found in exports!"
@@ -119,12 +120,18 @@ echo "  [6/6] Wizer snapshot (booting CPython + pre-importing stdlib)..."
 # Map the full CPython Lib so Py_InitializeFromConfig can find stdlib
 STDLIB_DIR="$CPYTHON/Lib"
 
+# Create a temp dir for wizer's /tmp preopen so wasi-libc registers it
+WIZER_TMP=$(mktemp -d)
+trap "rm -rf $WIZER_TMP" EXIT
+
 if wizer "$WIZER_RAW" \
     -o "$OUTPUT" \
     --allow-wasi \
     --wasm-bulk-memory true \
     --wasm-simd true \
-    --mapdir /stdlib::"$STDLIB_DIR" 2>&1; then
+    --mapdir /stdlib::"$STDLIB_DIR" \
+    --mapdir /tmp::"$WIZER_TMP" \
+    --mapdir /data::"$WIZER_TMP" 2>&1; then
 
     FINAL_SIZE=$(wc -c < "$OUTPUT" | tr -d ' ')
     echo "    Snapshot: $(echo "scale=1; $FINAL_SIZE / 1048576" | bc)MB"
