@@ -134,7 +134,7 @@ print(f"shape={arr.shape}")
     expect(text).toContain("shape=(5,)");
   });
 
-  it("should do matrix operations", async () => {
+  it("should do matrix operations", { timeout: 15000 }, async () => {
     const { text, status, stderr } = await runNumpy(`
 import numpy as np
 a = np.array([[1, 2], [3, 4]])

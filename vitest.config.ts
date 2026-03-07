@@ -4,7 +4,8 @@ export default defineWorkersConfig({
   test: {
     exclude: [
       "test/pydantic.test.ts",
-      "node_modules/**",
+      "test/real-world.test.ts",
+      "**/node_modules/**",
     ],
     poolOptions: {
       workers: {

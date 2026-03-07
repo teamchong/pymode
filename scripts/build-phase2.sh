@@ -368,7 +368,7 @@ info "  $BUILD_DIR/python.sh -c \"print('hello from zig-compiled WASI Python')\"
 if command -v wizer >/dev/null 2>&1 && command -v wasm-opt >/dev/null 2>&1; then
     info ""
     info "Wizer detected — creating pre-initialized snapshot..."
-    bash "$SCRIPT_DIR/build-wizer.sh"
+    python3 "$SCRIPT_DIR/build-wizer.py"
 else
     info ""
     info "Tip: install wizer (cargo install wizer --all-features) for ~5x faster cold starts"
