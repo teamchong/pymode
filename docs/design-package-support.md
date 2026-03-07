@@ -13,7 +13,7 @@ runs on Cloudflare Workers with project mode (`on_fetch` handler pattern).
 - Host imports via Asyncify for KV, R2, D1, TCP, HTTP (no VFS trampoline)
 - Wizer deploy-time snapshots for ~5ms cold starts
 - Threading via child DOs (ThreadDO) for real parallelism
-- stdlib: ~60 pure Python modules + pymode runtime embedded via `generate-stdlib-fs.sh`
+- stdlib: ~60 pure Python modules + pymode runtime embedded via `generate-stdlib-fs.py`
 - C extensions: `_pymode` built-in module for host imports; others still disabled
 - Third-party packages: pure Python via `site-packages.zip` (zipimport)
 - Pyodide ships 280+ packages (154 pure Python, ~140 with C/Rust/Fortran extensions, 40 system libs)
@@ -23,7 +23,7 @@ runs on Cloudflare Workers with project mode (`on_fetch` handler pattern).
 Pure Python packages can be bundled into `site-packages.zip` using `scripts/bundle-packages.py`.
 The zip is loaded via Python's built-in `zipimport`. The worker adds it to PYTHONPATH automatically.
 
-For project mode, dependencies listed in `pyproject.toml` are detected by `scripts/bundle-project.sh`
+For project mode, dependencies listed in `pyproject.toml` are detected by `scripts/bundle-project.py`
 but not yet auto-resolved. Manual bundling via `bundle-packages.py` is required.
 
 ## Architecture Difference: Pyodide vs PyMode
@@ -75,7 +75,7 @@ These are C modules that are part of CPython itself. Currently disabled in our b
 | `_lzma` | Compression | Needs liblzma source |
 | `_sqlite3` | Database | Needs sqlite3 source |
 
-**Action**: Remove `py_cv_module_*=n/a` lines from build-phase2.sh for modules
+**Action**: Remove `py_cv_module_*=n/a` lines from build-phase2.py for modules
 that compile cleanly with `zig cc`. This alone unblocks most of the 154 pure Python
 packages and many C extensions that only need CPython's own C modules.
 
@@ -85,7 +85,7 @@ These need **no compilation** — just `.py` files in the filesystem. Examples:
 `click`, `requests`, `six`, `packaging`, `attrs`, `jinja2`, `pydantic`,
 `beautifulsoup4`, `flask`, `fastapi`, `httpx`, `rich`, `tqdm`, etc.
 
-**Action**: Extend `generate-stdlib-fs.sh` to also bundle third-party pure Python
+**Action**: Extend `generate-stdlib-fs.py` to also bundle third-party pure Python
 packages. Or better: use a zip-based import loader (Python's `zipimport` is built-in).
 
 **Delivery mechanism** (two options):
@@ -818,7 +818,7 @@ pymode/
     build-sysroot.sh            # Build all system libraries
     build-extensions.sh         # Build all C extensions
     build-profile.sh            # Build a python.wasm profile
-    build-phase2.sh             # (existing) CPython build
+    build-phase2.py             # (existing) CPython build
   profiles/
     minimal.txt                 # Just CPython built-ins
     web.txt                     # requests, flask, fastapi, jinja2, etc.
@@ -1168,7 +1168,7 @@ crash at runtime without these bridges.
 
 **Goal**: Go from 0 C extensions to all CPython built-ins working.
 
-1. Remove `py_cv_module_*=n/a` flags from `build-phase2.sh` for:
+1. Remove `py_cv_module_*=n/a` flags from `build-phase2.py` for:
    - `binascii`, `_struct`, `_json`, `_sre`, `_sha256`, `_sha512`, `_md5`,
      `_hashlib`, `_csv`, `_decimal`, `_datetime`, `_pickle`, `_collections`,
      `_functools`, `_operator`, `math`, `cmath`, `_random`, `_bisect`,

@@ -92,7 +92,7 @@ These modules exist in CPython's stdlib but aren't bundled in `stdlib-fs.ts` to 
 | `email` | Large package, not yet added |
 | `argparse` | Not useful in Workers context |
 
-> **Requesting a module:** If you need a stdlib module that's not bundled, [open an issue](https://github.com/teamchong/pymode/issues) or add it to `BOOT_FILES` in `scripts/generate-stdlib-fs.sh`.
+> **Requesting a module:** If you need a stdlib module that's not bundled, [open an issue](https://github.com/teamchong/pymode/issues) or add it to `BOOT_FILES` in `scripts/generate-stdlib-fs.py`.
 
 ## Python Language Support
 
@@ -111,7 +111,7 @@ Full CPython 3.13 language support including:
 
 **Works:** Pure-Python packages from PyPI (`requests`, `jinja2`, `pydantic`, etc.)
 
-**Experimental:** C extension packages compiled to `.wasm` side modules via `scripts/build-extension.sh`. Currently supported: `markupsafe`, `simplejson`, `msgpack`.
+**Experimental:** C extension packages compiled to `.wasm` side modules via `scripts/build-extension.py`. Currently supported: `markupsafe`, `simplejson`, `msgpack`.
 
 **Doesn't work:** Packages requiring OS features (network sockets, file I/O, subprocess), packages with complex C dependencies (numpy, pandas, scipy).
 

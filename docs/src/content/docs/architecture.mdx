@@ -76,7 +76,7 @@ This means Python code looks synchronous while the host performs async I/O.
 
 ### Phase 4: Stdlib Bundle
 
-`generate-stdlib-fs.sh` packages the CPython stdlib and PyMode runtime into a TypeScript map that's embedded in the worker:
+`generate-stdlib-fs.py` packages the CPython stdlib and PyMode runtime into a TypeScript map that's embedded in the worker:
 
 ```typescript
 export const stdlibFS: Record<string, string> = {

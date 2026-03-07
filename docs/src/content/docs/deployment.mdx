@@ -25,7 +25,7 @@ Total bundle size is typically 2-3MB gzipped, well within Cloudflare's 10MB limi
 
 ## Wizer Snapshots (Experimental)
 
-Wizer pre-initializes the Python runtime at deploy time, reducing cold start from ~28ms to ~5ms. The build script exists (`scripts/build-wizer.sh`) but this feature requires additional testing.
+Wizer pre-initializes the Python runtime at deploy time, reducing cold start from ~28ms to ~5ms. The build script exists (`scripts/build-wizer.py`) but this feature requires additional testing.
 
 ```bash
 pymode deploy --wizer
