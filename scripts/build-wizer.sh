@@ -1,166 +1,150 @@
 #!/usr/bin/env bash
-# Build Wizer snapshot of CPython for fast cold starts.
+# Build a Wizer-pre-initialized python.wasm.
 #
-# Requires: python.wasm (from build-phase2.sh), wizer, wasm-opt
+# Replaces Programs/python.o with pymode_wizer.o so the binary exports
+# wizer.initialize (CPython init + pre-imports) and a _start that
+# skips init when the snapshot flag is set.
 #
-# What this does:
-#   1. Compiles pymode_wizer.c (the split entry point) and links it
-#      into python.wasm, replacing the default main()
-#   2. Runs wizer to execute __wizer_initialize at build time
-#   3. Snapshots the linear memory (interpreter warm, stdlib imported)
-#   4. At request time: ~5ms cold start instead of ~28ms
+# Produces: build/zig-wasi/python-wizer.wasm + worker/src/python-wizer.wasm
 #
-# Usage: ./scripts/build-wizer.sh
+# Prerequisites:
+#   - build-phase2.sh completed (all .o files exist)
+#   - wizer installed (cargo install wizer --all-features)
+#   - wasm-opt installed (brew install binaryen)
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
-CPYTHON_DIR="$ROOT_DIR/cpython"
+CPYTHON="$ROOT_DIR/cpython"
 BUILD_DIR="$ROOT_DIR/build/zig-wasi"
-ZIG_WRAPPER_DIR="$ROOT_DIR/build/zig-wrappers"
+ZIG_CC="$ROOT_DIR/build/zig-wrappers/zig-cc"
 WIZER_DIR="$ROOT_DIR/lib/wizer"
-
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
-
-info() { echo -e "${GREEN}[INFO]${NC} $*"; }
-warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
-error() { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
+IMPORTS_DIR="$ROOT_DIR/lib/pymode-imports"
+OUTPUT="$BUILD_DIR/python-wizer.wasm"
 
 # Check prerequisites
-[ -f "$BUILD_DIR/python.wasm" ] || error "python.wasm not found. Run build-phase2.sh first."
-command -v wizer >/dev/null 2>&1 || error "wizer not found. Install: cargo install wizer --all-features"
-command -v wasm-opt >/dev/null 2>&1 || error "wasm-opt not found. Install: brew install binaryen"
+[ -f "$BUILD_DIR/python.wasm" ] || { echo "Error: python.wasm not found. Run build-phase2.sh first."; exit 1; }
+[ -x "$ZIG_CC" ] || { echo "Error: zig-cc wrapper not found. Run build-phase2.sh first."; exit 1; }
+command -v wizer &>/dev/null || { echo "Error: wizer not found. Install: cargo install wizer --all-features"; exit 1; }
 
-# Check for zig-cc wrapper
-[ -x "$ZIG_WRAPPER_DIR/zig-cc" ] || error "zig-cc wrapper not found. Run build-phase2.sh first."
+echo "=== Building Wizer-pre-initialized python.wasm ==="
+echo ""
 
-# Step 1: Compile the Wizer entry point
-info "Compiling pymode_wizer.c..."
-WIZER_OBJ_DIR="$BUILD_DIR/wizer"
-mkdir -p "$WIZER_OBJ_DIR"
-
-"$ZIG_WRAPPER_DIR/zig-cc" -c -Os \
-    -I"$CPYTHON_DIR/Include" \
-    -I"$CPYTHON_DIR/Include/internal" \
+# Step 1: Compile pymode_wizer.c (replaces Programs/python.o)
+echo "  [1/6] Compiling pymode_wizer.c..."
+bash "$ZIG_CC" -c -Os \
+    -DPy_BUILD_CORE \
+    -I"$IMPORTS_DIR" \
+    -I"$CPYTHON/Include" \
+    -I"$CPYTHON/Include/internal" \
     -I"$BUILD_DIR" \
     "$WIZER_DIR/pymode_wizer.c" \
-    -o "$WIZER_OBJ_DIR/pymode_wizer.o"
+    -o "$BUILD_DIR/Programs/pymode_wizer.o"
 
-info "  Built pymode_wizer.o"
+# Step 2: Compile clean config.o (without variant module entries like numpy)
+echo "  [2/6] Compiling clean config.o..."
+if [ -f "$BUILD_DIR/Modules/config.c.base" ]; then
+    cp "$BUILD_DIR/Modules/config.c.base" "$BUILD_DIR/Modules/config_wizer.c"
+    bash "$ZIG_CC" -c -Os -DPy_BUILD_CORE \
+        -I"$CPYTHON/Include" -I"$CPYTHON/Include/internal" -I"$BUILD_DIR" \
+        -o "$BUILD_DIR/Modules/config_wizer.o" "$BUILD_DIR/Modules/config_wizer.c"
+    rm -f "$BUILD_DIR/Modules/config_wizer.c"
+else
+    cp "$BUILD_DIR/Modules/config.o" "$BUILD_DIR/Modules/config_wizer.o"
+fi
 
-# Step 2: Re-link python.wasm with the Wizer entry point
-# We need to replace the default main() from Programs/python.o with our version.
-# The simplest approach: link our pymode_wizer.o which provides main() and
-# __wizer_initialize, using --allow-multiple-definition to override the original.
-info "Re-linking python.wasm with Wizer entry point..."
+# Step 3: Collect all .o files, swapping python.o for pymode_wizer.o
+echo "  [3/6] Collecting link objects..."
+LINK_OBJS=()
+while IFS= read -r obj; do
+    base=$(basename "$obj")
+    [[ "$base" == "python.o" ]] && continue
+    [[ "$base" == "config.o" ]] && continue
+    [[ "$base" == "config_variant.o" ]] && continue
+    [[ "$base" == "config_wizer.o" ]] && continue
+    [[ "$base" == "dynload_shlib.o" ]] && continue
+    LINK_OBJS+=("$obj")
+done < <(find "$BUILD_DIR" -name "*.o" -not -path "*/recipes/*" -not -path "*/Modules/numpy/*" -not -name "pymode_wizer.o")
 
-# Find all the object files and libraries that make up python.wasm
-# We use the build log to reconstruct the link command, or re-run make
-# with our extra object file
+LINK_OBJS+=("$BUILD_DIR/Programs/pymode_wizer.o")
+LINK_OBJS+=("$BUILD_DIR/Modules/config_wizer.o")
 
-# First, create a library from our wizer entry point
-"$ZIG_WRAPPER_DIR/zig-ar" rcs "$WIZER_OBJ_DIR/libpymode_wizer.a" "$WIZER_OBJ_DIR/pymode_wizer.o"
+echo "    ${#LINK_OBJS[@]} objects"
 
-# Copy the original python.wasm before modification
-cp "$BUILD_DIR/python.wasm" "$BUILD_DIR/python-no-wizer.wasm"
+# Step 4: Link
+echo "  [4/6] Linking..."
+WIZER_RAW="$BUILD_DIR/python-wizer-raw.wasm"
+bash "$ZIG_CC" -s \
+    -o "$WIZER_RAW" \
+    "${LINK_OBJS[@]}" \
+    -ldl -lwasi-emulated-signal -lwasi-emulated-getpid -lwasi-emulated-process-clocks -lm
 
-# Re-link: add our wizer entry point with --allow-multiple-definition
-# so our main() overrides the default one from Programs/python.o
-SHIMS_OBJ_DIR="$BUILD_DIR/shims"
-PYMODE_OBJ_DIR="$BUILD_DIR/pymode-imports"
+RAW_SIZE=$(wc -c < "$WIZER_RAW" | tr -d ' ')
+echo "    Raw: $(echo "scale=1; $RAW_SIZE / 1048576" | bc)MB"
 
-cd "$BUILD_DIR"
-# Use make to rebuild with our extra object
-LDFLAGS="-s -L$SHIMS_OBJ_DIR -lwasi_shims -L$PYMODE_OBJ_DIR -lpymode_imports -L$WIZER_OBJ_DIR -lpymode_wizer -Wl,--allow-undefined -Wl,--allow-multiple-definition" \
-    make -j1 python.wasm 2>&1 | tail -5 || true
-
-# Check if rebuild worked
-if [ ! -f "$BUILD_DIR/python.wasm" ]; then
-    # Fallback: python executable without .wasm extension
-    if [ -f "$BUILD_DIR/python" ] && file "$BUILD_DIR/python" | grep -q "WebAssembly"; then
-        mv "$BUILD_DIR/python" "$BUILD_DIR/python.wasm"
+# Verify wizer.initialize is exported
+if command -v wasm-objdump &>/dev/null; then
+    if wasm-objdump -x "$WIZER_RAW" 2>/dev/null | grep -q "wizer.initialize"; then
+        echo "    wizer.initialize export: OK"
     else
-        warn "Re-link may have failed — checking if __wizer_initialize is exported..."
+        echo "    ERROR: wizer.initialize not found in exports!"
+        exit 1
     fi
 fi
 
-# Verify __wizer_initialize is exported
-if command -v wasm-objdump >/dev/null 2>&1; then
-    if wasm-objdump -x "$BUILD_DIR/python.wasm" 2>/dev/null | grep -q "__wizer_initialize"; then
-        info "  __wizer_initialize export found"
-    else
-        warn "  __wizer_initialize not found in exports — Wizer snapshot may fail"
-    fi
+# Step 5: Asyncify with wasm-opt
+if command -v wasm-opt &>/dev/null; then
+    echo "  [5/6] Asyncify + optimize..."
+    ASYNC_IMPORTS="pymode.tcp_recv,pymode.http_fetch,pymode.kv_get,pymode.kv_put,pymode.kv_delete,pymode.r2_get,pymode.r2_put,pymode.d1_exec,pymode.thread_spawn,pymode.thread_join,pymode.dl_open"
+    wasm-opt -O2 --asyncify \
+        --enable-simd \
+        --enable-nontrapping-float-to-int \
+        --enable-bulk-memory \
+        --enable-sign-ext \
+        --enable-mutable-globals \
+        --pass-arg="asyncify-imports@${ASYNC_IMPORTS}" \
+        --pass-arg=asyncify-ignore-indirect \
+        "$WIZER_RAW" -o "${WIZER_RAW}.opt"
+    mv "${WIZER_RAW}.opt" "$WIZER_RAW"
+    OPT_SIZE=$(wc -c < "$WIZER_RAW" | tr -d ' ')
+    echo "    Asyncified: $(echo "scale=1; $OPT_SIZE / 1048576" | bc)MB"
+else
+    echo "  [5/6] SKIP: wasm-opt not found"
 fi
 
-# Step 3: Asyncify the binary (if not already done)
-ASYNC_IMPORTS="pymode.tcp_recv,pymode.http_fetch,pymode.kv_get,pymode.kv_put,pymode.kv_delete,pymode.r2_get,pymode.r2_put,pymode.d1_exec,pymode.thread_spawn,pymode.thread_join"
+# Step 6: Run Wizer to snapshot CPython init
+echo "  [6/6] Wizer snapshot (booting CPython + pre-importing stdlib)..."
 
-info "Running wasm-opt --asyncify..."
-BEFORE_SIZE=$(stat -f%z "$BUILD_DIR/python.wasm" 2>/dev/null || stat -c%s "$BUILD_DIR/python.wasm")
-wasm-opt -O2 --asyncify \
-    --pass-arg="asyncify-imports@${ASYNC_IMPORTS}" \
-    --pass-arg=asyncify-ignore-indirect \
-    "$BUILD_DIR/python.wasm" -o "$BUILD_DIR/python-asyncified.wasm"
-mv "$BUILD_DIR/python-asyncified.wasm" "$BUILD_DIR/python.wasm"
-AFTER_SIZE=$(stat -f%z "$BUILD_DIR/python.wasm" 2>/dev/null || stat -c%s "$BUILD_DIR/python.wasm")
-info "  asyncify: ${BEFORE_SIZE} -> ${AFTER_SIZE} bytes"
+# Map the full CPython Lib so Py_InitializeFromConfig can find stdlib
+STDLIB_DIR="$CPYTHON/Lib"
 
-# Step 4: Build the stdlib filesystem for Wizer to access
-info "Preparing stdlib for Wizer..."
-STDLIB_DIR="$BUILD_DIR/stdlib-for-wizer"
-mkdir -p "$STDLIB_DIR"
-
-# Copy the stdlib that Wizer needs to access during __wizer_initialize
-if [ -d "$CPYTHON_DIR/Lib" ]; then
-    # Copy Python stdlib
-    rsync -a --include='*.py' --include='*/' --exclude='*' \
-        "$CPYTHON_DIR/Lib/" "$STDLIB_DIR/" 2>/dev/null || \
-    cp -r "$CPYTHON_DIR/Lib/"*.py "$STDLIB_DIR/" 2>/dev/null || true
-fi
-
-# Copy pymode shims
-if [ -d "$ROOT_DIR/lib/pymode" ]; then
-    mkdir -p "$STDLIB_DIR/pymode"
-    cp "$ROOT_DIR/lib/pymode/"*.py "$STDLIB_DIR/pymode/"
-fi
-
-# Step 5: Run Wizer to create the snapshot
-info "Running Wizer (executing __wizer_initialize at build time)..."
-BEFORE_WIZER=$(stat -f%z "$BUILD_DIR/python.wasm" 2>/dev/null || stat -c%s "$BUILD_DIR/python.wasm")
-
-wizer "$BUILD_DIR/python.wasm" \
-    -o "$BUILD_DIR/python-snapshot.wasm" \
+if wizer "$WIZER_RAW" \
+    -o "$OUTPUT" \
     --allow-wasi \
     --wasm-bulk-memory true \
-    --init-func __wizer_initialize \
-    --mapdir "/stdlib::$STDLIB_DIR" \
-    2>&1 || {
-        warn "Wizer failed. The snapshot could not be created."
-        warn "python.wasm without snapshot is still usable (slower cold start)."
-        exit 0
-    }
+    --wasm-simd true \
+    --mapdir /stdlib::"$STDLIB_DIR" 2>&1; then
 
-AFTER_WIZER=$(stat -f%z "$BUILD_DIR/python-snapshot.wasm" 2>/dev/null || stat -c%s "$BUILD_DIR/python-snapshot.wasm")
-info "  Wizer snapshot: ${BEFORE_WIZER} -> ${AFTER_WIZER} bytes"
-
-# Step 6: Copy snapshot to the worker directory for deployment
-if [ -f "$BUILD_DIR/python-snapshot.wasm" ]; then
-    cp "$BUILD_DIR/python-snapshot.wasm" "$ROOT_DIR/worker/src/python.wasm"
-    info "  Copied snapshot to worker/src/python.wasm"
+    FINAL_SIZE=$(wc -c < "$OUTPUT" | tr -d ' ')
+    echo "    Snapshot: $(echo "scale=1; $FINAL_SIZE / 1048576" | bc)MB"
+else
+    echo ""
+    echo "    Wizer snapshot failed."
+    echo "    The binary still works without wizer (falls back to full init)."
+    rm -f "$WIZER_RAW"
+    exit 1
 fi
 
-# Report
+# Cleanup intermediate
+rm -f "$WIZER_RAW"
+
+# Copy to worker/src
+cp "$OUTPUT" "$ROOT_DIR/worker/src/python-wizer.wasm"
+
 echo ""
-info "Wizer snapshot complete."
-info "  Original:  $(du -h "$BUILD_DIR/python-no-wizer.wasm" | cut -f1)"
-info "  Asyncified: $(du -h "$BUILD_DIR/python.wasm" | cut -f1)"
-info "  Snapshot:  $(du -h "$BUILD_DIR/python-snapshot.wasm" | cut -f1)"
+echo "Done! python-wizer.wasm"
+echo "  Size: $(wc -c < "$OUTPUT" | tr -d ' ' | awk '{printf "%.1fMB", $1/1048576}')"
+echo "  Location: worker/src/python-wizer.wasm"
 echo ""
-info "Cold start improvement:"
-info "  Without snapshot: ~28ms (Py_Initialize + import stdlib)"
-info "  With snapshot:    ~5ms  (memory restore only)"
+echo "Cold start: ~5ms (vs ~28ms without snapshot)"

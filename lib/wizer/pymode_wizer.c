@@ -28,6 +28,7 @@
  */
 
 #include "Python.h"
+#include "pycore_initconfig.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -57,8 +58,8 @@ static void _preimport(const char *name) {
  * Phase 1: Initialize interpreter and pre-import modules.
  * Called by Wizer at build time. Memory is snapshotted after this returns.
  */
-__attribute__((export_name("__wizer_initialize")))
-void __wizer_initialize(void) {
+__attribute__((export_name("wizer.initialize")))
+void wizer_initialize(void) {
     PyConfig config;
     PyConfig_InitPythonConfig(&config);
 
@@ -138,8 +139,34 @@ int main(int argc, char **argv) {
     }
 
     /* Interpreter is warm from the snapshot.
-     * Find the code to execute from argv: python -c "code" or python script.py */
+     * Set up sys.path from PYTHONPATH env var (the WASI shim provides this). */
+    const char *pythonpath = getenv("PYTHONPATH");
+    if (pythonpath) {
+        PyObject *sys_mod = PyImport_ImportModule("sys");
+        if (sys_mod) {
+            PyObject *path_list = PyObject_GetAttrString(sys_mod, "path");
+            if (path_list && PyList_Check(path_list)) {
+                /* Clear and repopulate sys.path from PYTHONPATH */
+                PyList_SetSlice(path_list, 0, PyList_Size(path_list), NULL);
+                /* Parse colon-separated PYTHONPATH */
+                const char *start = pythonpath;
+                while (*start) {
+                    const char *end = strchr(start, ':');
+                    if (!end) end = start + strlen(start);
+                    PyObject *entry = PyUnicode_FromStringAndSize(start, end - start);
+                    if (entry) {
+                        PyList_Append(path_list, entry);
+                        Py_DECREF(entry);
+                    }
+                    start = (*end) ? end + 1 : end;
+                }
+                Py_DECREF(path_list);
+            }
+            Py_DECREF(sys_mod);
+        }
+    }
 
+    /* Find the code to execute from argv: python -c "code" or python script.py */
     const char *code = NULL;
     const char *script = NULL;
 
