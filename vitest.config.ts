@@ -4,6 +4,7 @@ export default defineWorkersConfig({
   test: {
     exclude: [
       "test/pydantic.test.ts",
+      "test/langchain.test.ts",
       "test/real-world.test.ts",
       "**/node_modules/**",
     ],

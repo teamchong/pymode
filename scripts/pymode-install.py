@@ -200,16 +200,22 @@ def analyze_wheel(wheel_data: bytes, filename: str) -> tuple[list[str], list[str
 
 
 def extract_python_files(wheel_data: bytes) -> list[tuple[str, bytes]]:
-    """Extract .py and data files from a wheel (skip native extensions)."""
+    """Extract .py, data files, and dist-info METADATA from a wheel."""
     files = []
     with zipfile.ZipFile(io.BytesIO(wheel_data)) as whl:
         for name in whl.namelist():
-            if ".dist-info/" in name:
-                continue
             if "__pycache__/" in name:
                 continue
             if name.endswith("/"):
                 continue
+
+            # Include METADATA and RECORD from dist-info (needed by importlib.metadata)
+            if ".dist-info/" in name:
+                basename = name.rsplit("/", 1)[-1]
+                if basename in ("METADATA", "RECORD"):
+                    files.append((name, whl.read(name)))
+                continue
+
             if any(name.endswith(s) for s in NATIVE_SUFFIXES):
                 continue
             if name.endswith((".py", ".pyi", ".typed", ".txt", ".cfg",

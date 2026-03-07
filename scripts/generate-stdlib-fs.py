@@ -273,6 +273,19 @@ BOOT_FILES = [
     "asyncio/unix_events.py",
     "asyncio/windows_events.py",
     "asyncio/windows_utils.py",
+    # xml (needed by langchain, defusedxml, etc.)
+    "xml/__init__.py",
+    "xml/sax/__init__.py",
+    "xml/sax/_exceptions.py",
+    "xml/sax/expatreader.py",
+    "xml/sax/handler.py",
+    "xml/sax/saxutils.py",
+    "xml/sax/xmlreader.py",
+    "xml/parsers/__init__.py",
+    "xml/parsers/expat.py",
+    "xml/etree/__init__.py",
+    "xml/etree/ElementTree.py",
+    "xml/etree/ElementPath.py",
     # misc
     "keyword.py",
     "reprlib.py",
@@ -324,6 +337,7 @@ POLYFILL_FILES = [
     "_pymode.py",
     "zlib.py",
     "_wasi_compat.py",
+    "multiprocessing/__init__.py",
 ]
 
 

@@ -345,3 +345,9 @@ TIMEOUT_MAX = 2**31
 # _shutdown is called during interpreter finalization
 def _shutdown():
     pass
+
+# atexit callbacks registered by concurrent.futures
+_atexit_callbacks = []
+
+def _register_atexit(func):
+    _atexit_callbacks.append(func)
