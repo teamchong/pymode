@@ -173,7 +173,7 @@ PKG_CONFIG=false \
     CPP="$ZIG_WRAPPER_DIR/zig-cpp" \
     AR="$ZIG_WRAPPER_DIR/zig-ar" \
     RANLIB="$ZIG_WRAPPER_DIR/zig-ranlib" \
-    CFLAGS="-Os -DNDEBUG -fno-strict-aliasing" \
+    CFLAGS="-Os -DNDEBUG -fno-strict-aliasing -msimd128" \
     LDFLAGS="-s" \
     --disable-ipv6 \
     --disable-shared \
@@ -301,6 +301,7 @@ if command -v wasm-opt >/dev/null 2>&1; then
 
     info "Running wasm-opt --asyncify (async imports: tcp_recv, http_fetch, kv_*, r2_*, d1_exec)..."
     wasm-opt -O2 --asyncify \
+        --enable-simd \
         --enable-nontrapping-float-to-int \
         --enable-bulk-memory \
         --enable-sign-ext \
