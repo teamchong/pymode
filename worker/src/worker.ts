@@ -5,6 +5,14 @@ import { connect } from "cloudflare:sockets";
 import { ProcExit, createWasi } from "./wasi";
 import type { WasiResult } from "./wasi";
 
+// Pre-encode stdlib files once at module load (persists across requests in the isolate).
+// Avoids re-encoding 242 files / 4.5MB of strings on every request.
+const _encoder = new TextEncoder();
+const stdlibBin: Record<string, Uint8Array> = {};
+for (const [path, content] of Object.entries(stdlibFS)) {
+  stdlibBin[path] = _encoder.encode(content);
+}
+
 // Re-export DOs so wrangler can find them
 export { PythonDO } from "./python-do";
 export { ThreadDO } from "./thread-do";
@@ -640,11 +648,8 @@ export default {
     const encoder = new TextEncoder();
     const decoder = new TextDecoder();
 
-    // Build VFS: stdlib + pymode runtime
-    const files: Record<string, Uint8Array> = {};
-    for (const [path, content] of Object.entries(stdlibFS)) {
-      files[path] = encoder.encode(content);
-    }
+    // Build VFS: stdlib + pymode runtime (pre-encoded at module load)
+    const files: Record<string, Uint8Array> = { ...stdlibBin };
 
     // Mount user project files at /app/ in VFS
     if (userFilesModule) {

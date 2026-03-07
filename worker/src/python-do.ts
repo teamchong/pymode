@@ -17,6 +17,13 @@ import pythonWasm from "./python.wasm";
 import { stdlibFS } from "./stdlib-fs";
 import { ProcExit, createWasi } from "./wasi";
 
+// Pre-encode stdlib files once at module load (persists across requests in the DO isolate).
+const _encoder = new TextEncoder();
+const stdlibBin: Record<string, Uint8Array> = {};
+for (const [path, content] of Object.entries(stdlibFS)) {
+  stdlibBin[path] = _encoder.encode(content);
+}
+
 // Optional: extension site-packages (e.g. numpy Python layer)
 let extensionPackagesData: ArrayBuffer | undefined;
 try {
@@ -429,11 +436,8 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
     const decoder = new TextDecoder();
     const asyncify = new AsyncifyRuntime();
 
-    // Build VFS from stdlib + pymode runtime
-    const files: Record<string, Uint8Array> = {};
-    for (const [path, content] of Object.entries(stdlibFS)) {
-      files[path] = encoder.encode(content);
-    }
+    // Build VFS from stdlib + pymode runtime (pre-encoded at module load)
+    const files: Record<string, Uint8Array> = { ...stdlibBin };
 
     // Mount user project files
     if (userFiles) {
