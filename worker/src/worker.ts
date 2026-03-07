@@ -471,8 +471,8 @@ async function runPythonWithFetch(
   pythonPath: string = "/stdlib",
   tcpPool?: DurableObjectNamespace
 ): Promise<{ stdout: Uint8Array; stderr: Uint8Array; exitCode: number }> {
-  const encoder = new TextEncoder();
-  const decoder = new TextDecoder();
+  const encoder = _encoder;
+  const decoder = _decoder;
   const files = { ...baseFiles };
 
   // Load persistent /data from KV before first run
@@ -648,10 +648,12 @@ function deserializeResponse(stdout: string, stderr: string): Response {
   }
 }
 
+const _decoder = new TextDecoder();
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    const encoder = new TextEncoder();
-    const decoder = new TextDecoder();
+    const encoder = _encoder;
+    const decoder = _decoder;
 
     // Build VFS: stdlib + pymode runtime (pre-encoded at module load)
     const files: Record<string, Uint8Array> = { ...stdlibBin };

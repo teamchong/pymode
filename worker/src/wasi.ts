@@ -54,6 +54,9 @@ export function buildDirIndex(files: Record<string, Uint8Array>): Map<string, st
   return dirChildren;
 }
 
+const _encoder = new TextEncoder();
+const _decoder = new TextDecoder();
+
 export function createWasi(
   args: string[],
   env: Record<string, string>,
@@ -62,8 +65,8 @@ export function createWasi(
   stdinData?: Uint8Array,
   baseDirIndex?: Map<string, string[]>
 ) {
-  const encoder = new TextEncoder();
-  const decoder = new TextDecoder();
+  const encoder = _encoder;
+  const decoder = _decoder;
 
   const FD_STDIN = 0;
   const FD_STDOUT = 1;
