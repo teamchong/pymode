@@ -29,9 +29,11 @@ const stdlibDirIndex = buildDirIndex(stdlibBin);
 
 // Optional: extension site-packages (e.g. numpy Python layer)
 let extensionPackagesData: ArrayBuffer | undefined;
+let extensionPackagesBin: Uint8Array | undefined;
 try {
   // @ts-ignore — conditional import, only present for extension variants
   extensionPackagesData = require("./extension-site-packages.zip");
+  extensionPackagesBin = new Uint8Array(extensionPackagesData);
 } catch {
   // No extension packages
 }
@@ -455,8 +457,8 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
     }
 
     // Mount extension site-packages (numpy, etc.)
-    if (extensionPackagesData) {
-      files["extension-site-packages.zip"] = new Uint8Array(extensionPackagesData);
+    if (extensionPackagesBin) {
+      files["extension-site-packages.zip"] = extensionPackagesBin;
       // Append to PYTHONPATH if not already there
       if (wasmEnv.PYTHONPATH && !wasmEnv.PYTHONPATH.includes("extension-site-packages.zip")) {
         wasmEnv = { ...wasmEnv, PYTHONPATH: wasmEnv.PYTHONPATH + ":/stdlib/extension-site-packages.zip" };
