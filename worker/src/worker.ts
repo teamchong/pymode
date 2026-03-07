@@ -7,6 +7,7 @@ import type { WasiResult } from "./wasi";
 
 // Pre-encode stdlib files once at module load (persists across requests in the isolate).
 const _encoder = new TextEncoder();
+const _decoder = new TextDecoder();
 const stdlibBin: Record<string, Uint8Array> = {};
 for (const [path, content] of Object.entries(stdlibFS)) {
   stdlibBin[path] = _encoder.encode(content);
@@ -645,8 +646,6 @@ function deserializeResponse(stdout: string, stderr: string): Response {
     });
   }
 }
-
-const _decoder = new TextDecoder();
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
