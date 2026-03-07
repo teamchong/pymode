@@ -436,8 +436,6 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
     stderr: string;
     exitCode: number;
   }> {
-    const encoder = new TextEncoder();
-    const decoder = new TextDecoder();
     const asyncify = new AsyncifyRuntime();
 
     // Build VFS from stdlib + pymode runtime (pre-encoded at module load)
@@ -446,7 +444,7 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
     // Mount user project files
     if (userFiles) {
       for (const [path, content] of Object.entries(userFiles)) {
-        files[path] = encoder.encode(content);
+        files[path] = _encoder.encode(content);
       }
     }
 
@@ -492,15 +490,15 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
       // Single call — asyncify handles all async suspensions internally
       await asyncify.callExport("_start");
       return {
-        stdout: decoder.decode(wasi.getStdout()),
-        stderr: decoder.decode(wasi.getStderr()),
+        stdout: _decoder.decode(wasi.getStdout()),
+        stderr: _decoder.decode(wasi.getStderr()),
         exitCode: 0,
       };
     } catch (e: unknown) {
       if (e instanceof ProcExit) {
         return {
-          stdout: decoder.decode(wasi.getStdout()),
-          stderr: decoder.decode(wasi.getStderr()),
+          stdout: _decoder.decode(wasi.getStdout()),
+          stderr: _decoder.decode(wasi.getStderr()),
           exitCode: e.code,
         };
       }
@@ -542,12 +540,11 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
     stderr: string;
     exitCode: number;
   }> {
-    const encoder = new TextEncoder();
     return this.run(
       ["python", "-S", "-m", "pymode._handler", entryModule],
       { PYTHONPATH: pythonPath, PYTHONDONTWRITEBYTECODE: "1", PYTHONNOUSERSITE: "1" },
       userFiles,
-      encoder.encode(requestJson),
+      _encoder.encode(requestJson),
       sitePackagesData,
     );
   }

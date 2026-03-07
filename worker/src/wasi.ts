@@ -329,7 +329,7 @@ export function createWasi(
     },
 
     fd_close(fd: number): number {
-      if (fd <= FD_DATA_PREOPEN) return ESUCCESS;
+      if (fd <= FD_TMP_PREOPEN) return ESUCCESS;
       openFiles.delete(fd);
       return ESUCCESS;
     },
@@ -366,7 +366,7 @@ export function createWasi(
 
     fd_fdstat_get(fd: number, retPtr: number): number {
       const v = view();
-      const m = new Uint8Array(getMemory().buffer);
+      const m = mem();
       // Zero out the struct (24 bytes)
       m.fill(0, retPtr, retPtr + 24);
       if (fd <= FD_STDERR) {
@@ -454,7 +454,7 @@ export function createWasi(
       if (!data && !isDirPath) return ENOENT;
 
       const v = view();
-      const m = new Uint8Array(getMemory().buffer);
+      const m = mem();
       m.fill(0, retPtr, retPtr + 64);
       v.setUint8(retPtr + 16, isDirPath && !data ? 3 : 4);
       v.setBigUint64(retPtr + 24, BigInt(1), true);
@@ -463,7 +463,7 @@ export function createWasi(
     },
 
     fd_filestat_get(fd: number, retPtr: number): number {
-      const m = new Uint8Array(getMemory().buffer);
+      const m = mem();
       const v = view();
       m.fill(0, retPtr, retPtr + 64);
       if (fd <= FD_STDERR) {
@@ -489,8 +489,8 @@ export function createWasi(
       cookie: bigint, retPtr: number
     ): number {
       const file = openFiles.get(fd);
-      if (!file && fd !== FD_PREOPEN && fd !== FD_DATA_PREOPEN) return EBADF;
-      const dirPath = fd === FD_PREOPEN ? "" : fd === FD_DATA_PREOPEN ? "data" : file!.path;
+      if (!file && fd !== FD_PREOPEN && fd !== FD_DATA_PREOPEN && fd !== FD_TMP_PREOPEN) return EBADF;
+      const dirPath = fd === FD_PREOPEN ? "" : fd === FD_DATA_PREOPEN ? "data" : fd === FD_TMP_PREOPEN ? "tmp" : file!.path;
       const entries = dirChildren.get(dirPath) || [];
       const v = view();
       const m = mem();
