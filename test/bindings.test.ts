@@ -554,3 +554,161 @@ print(f"db_host={data['db_host']}")
     expect(text).toContain("db_host=localhost");
   });
 });
+
+// --- Workers API (Request/Response/Headers/Env) ---
+
+describe("Workers API", () => {
+  it("Request parses URL path and query", async () => {
+    const { text, status } = await run(`
+from pymode.workers import Request
+req = Request(method="GET", url="https://example.com/api/users?page=2&sort=name")
+print(f"path={req.path}")
+print(f"query={req.query}")
+print(f"method={req.method}")
+`);
+    expect(status).toBe(200);
+    expect(text).toContain("path=/api/users");
+    expect(text).toContain("page");
+    expect(text).toContain("2");
+    expect(text).toContain("method=GET");
+  });
+
+  it("Request body methods work", async () => {
+    const { text, status } = await run(`
+from pymode.workers import Request
+import json
+
+# String body
+req = Request(body='{"key": "value"}')
+print(f"text={req.text()}")
+print(f"json={req.json()}")
+print(f"bytes_type={type(req.bytes()).__name__}")
+
+# Bytes body
+req2 = Request(body=b'binary data')
+print(f"text2={req2.text()}")
+print(f"bytes2={req2.bytes()}")
+`);
+    expect(status).toBe(200);
+    expect(text).toContain('text={"key": "value"}');
+    expect(text).toContain("json={'key': 'value'}");
+    expect(text).toContain("bytes_type=bytes");
+    expect(text).toContain("text2=binary data");
+  });
+
+  it("Response auto-detects content type", async () => {
+    const { text, status } = await run(`
+from pymode.workers import Response
+import json
+
+# Dict body -> JSON
+r1 = Response({"key": "value"})
+print(f"dict_ct={r1.headers.get('Content-Type')}")
+print(f"dict_body={r1.body}")
+
+# String body -> text/plain
+r2 = Response("hello")
+print(f"str_ct={r2.headers.get('Content-Type')}")
+
+# Bytes body -> octet-stream
+r3 = Response(b"binary")
+print(f"bytes_ct={r3.headers.get('Content-Type')}")
+`);
+    expect(status).toBe(200);
+    expect(text).toContain("dict_ct=application/json");
+    expect(text).toContain("str_ct=text/plain");
+    expect(text).toContain("bytes_ct=application/octet-stream");
+  });
+
+  it("Response.json() and Response.redirect() class methods", async () => {
+    const { text, status } = await run(`
+from pymode.workers import Response
+
+r1 = Response.json({"users": [1, 2, 3]}, status=201)
+print(f"json_status={r1.status}")
+print(f"json_ct={r1.headers.get('Content-Type')}")
+
+r2 = Response.redirect("https://example.com/new")
+print(f"redirect_status={r2.status}")
+print(f"redirect_location={r2.headers.get('Location')}")
+`);
+    expect(status).toBe(200);
+    expect(text).toContain("json_status=201");
+    expect(text).toContain("json_ct=application/json");
+    expect(text).toContain("redirect_status=302");
+    expect(text).toContain("redirect_location=https://example.com/new");
+  });
+
+  it("Headers are case-insensitive", async () => {
+    const { text, status } = await run(`
+from pymode.workers import Headers
+
+h = Headers({"Content-Type": "text/html", "X-Custom": "value"})
+print(f"ct={h.get('content-type')}")
+print(f"CT={h.get('CONTENT-TYPE')}")
+print(f"custom={h.get('x-custom')}")
+print(f"missing={h.get('x-missing', 'default')}")
+print(f"contains={'content-type' in h}")
+print(f"keys={sorted(h.keys())}")
+`);
+    expect(status).toBe(200);
+    expect(text).toContain("ct=text/html");
+    expect(text).toContain("CT=text/html");
+    expect(text).toContain("custom=value");
+    expect(text).toContain("missing=default");
+    expect(text).toContain("contains=True");
+  });
+
+  it("Response._serialize() for WASM boundary", async () => {
+    const { text, status } = await run(`
+from pymode.workers import Response
+import json
+
+# String response
+r1 = Response("hello", status=200, headers={"X-Test": "1"})
+s1 = r1._serialize()
+print(f"status={s1['status']}")
+print(f"body={s1['body']}")
+print(f"binary={s1['bodyIsBinary']}")
+
+# Binary response
+r2 = Response(b"\\x00\\x01\\x02")
+s2 = r2._serialize()
+print(f"bin_binary={s2['bodyIsBinary']}")
+print(f"bin_body_type={type(s2['body']).__name__}")
+`);
+    expect(status).toBe(200);
+    expect(text).toContain("status=200");
+    expect(text).toContain("body=hello");
+    expect(text).toContain("binary=False");
+    expect(text).toContain("bin_binary=True");
+    expect(text).toContain("bin_body_type=str");
+  });
+
+  it("Env auto-detects binding types", async () => {
+    const { text, status } = await run(`
+from pymode.workers import Env, KVBinding, R2Binding, D1Binding
+
+env = Env()
+print(f"kv={type(env.MY_KV).__name__}")
+print(f"r2={type(env.BUCKET_R2).__name__}")
+print(f"d1={type(env.DB_D1).__name__}")
+print(f"db={type(env.MY_DB).__name__}")
+print(f"kv2={type(env.KV).__name__}")
+
+# Missing binding raises AttributeError
+try:
+    env.NONEXISTENT
+    print("no error")
+except AttributeError as e:
+    print(f"error={e}")
+`);
+    expect(status).toBe(200);
+    expect(text).toContain("kv=KVBinding");
+    expect(text).toContain("r2=R2Binding");
+    expect(text).toContain("d1=D1Binding");
+    expect(text).toContain("db=D1Binding");
+    expect(text).toContain("kv2=KVBinding");
+    expect(text).toContain("error=No binding or env var: NONEXISTENT");
+  });
+});

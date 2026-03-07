@@ -344,6 +344,90 @@ print('OK')
 });
 
 // ============================================================
+// Filesystem operations (WASI VFS)
+// ============================================================
+describe("Filesystem operations", () => {
+  it("should create and remove directories", async () => {
+    const { text } = await runPython(`
+import os
+os.makedirs('/tmp/a/b/c', exist_ok=True)
+print(os.path.isdir('/tmp/a/b/c'))
+os.rmdir('/tmp/a/b/c')
+print(os.path.isdir('/tmp/a/b/c'))
+os.rmdir('/tmp/a/b')
+os.rmdir('/tmp/a')
+print('OK')
+    `);
+    expect(text).toContain("True");
+    expect(text).toContain("False");
+    expect(text).toContain("OK");
+  });
+
+  it("should rename files", async () => {
+    const { text } = await runPython(`
+import os
+with open('/tmp/old.txt', 'w') as f:
+    f.write('rename test')
+os.rename('/tmp/old.txt', '/tmp/new.txt')
+print(os.path.exists('/tmp/old.txt'))
+with open('/tmp/new.txt') as f:
+    print(f.read())
+os.unlink('/tmp/new.txt')
+print('OK')
+    `);
+    expect(text).toContain("False");
+    expect(text).toContain("rename test");
+    expect(text).toContain("OK");
+  });
+
+  it("should truncate on open with 'w' mode", async () => {
+    const { text } = await runPython(`
+with open('/tmp/trunc.txt', 'w') as f:
+    f.write('first content that is long')
+with open('/tmp/trunc.txt', 'w') as f:
+    f.write('short')
+with open('/tmp/trunc.txt') as f:
+    data = f.read()
+print(repr(data))
+import os
+os.unlink('/tmp/trunc.txt')
+    `);
+    expect(text).toContain("'short'");
+  });
+
+  it("should seek to different positions", async () => {
+    const { text } = await runPython(`
+import os
+with open('/tmp/seek.txt', 'w') as f:
+    f.write('abcdefghij')
+fd = os.open('/tmp/seek.txt', os.O_RDONLY)
+os.lseek(fd, 3, os.SEEK_SET)
+print(os.read(fd, 3).decode())
+os.lseek(fd, -4, os.SEEK_END)
+print(os.read(fd, 4).decode())
+os.close(fd)
+os.unlink('/tmp/seek.txt')
+    `);
+    expect(text).toContain("def");
+    expect(text).toContain("ghij");
+  });
+
+  it("should stat files and directories", async () => {
+    const { text } = await runPython(`
+import os
+with open('/tmp/stat.txt', 'w') as f:
+    f.write('hello')
+st = os.stat('/tmp/stat.txt')
+print(st.st_size)
+print(st.st_nlink)
+os.unlink('/tmp/stat.txt')
+    `);
+    expect(text).toContain("5");
+    expect(text).toContain("1");
+  });
+});
+
+// ============================================================
 // Error handling
 // ============================================================
 describe("Error handling", () => {
