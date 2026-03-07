@@ -313,6 +313,34 @@ print(len(string.digits))
     expect(text).toContain("abcdefghijklmnopqrstuvwxyz");
     expect(text).toContain("10");
   });
+
+  it("should write and list files in /tmp", async () => {
+    const { text } = await runPython(`
+import tempfile
+import os
+
+# Write a temp file
+fd, path = tempfile.mkstemp(suffix='.txt', dir='/tmp')
+os.write(fd, b'hello tmp')
+os.close(fd)
+
+# List /tmp — verifies fd_readdir handles FD_TMP_PREOPEN
+entries = os.listdir('/tmp')
+basename = os.path.basename(path)
+print(basename in entries)
+
+# Read it back
+with open(path) as f:
+    print(f.read())
+
+# Cleanup
+os.unlink(path)
+print('OK')
+    `);
+    expect(text).toContain("True");
+    expect(text).toContain("hello tmp");
+    expect(text).toContain("OK");
+  });
 });
 
 // ============================================================

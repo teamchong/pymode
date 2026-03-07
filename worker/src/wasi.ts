@@ -157,7 +157,7 @@ export function createWasi(
   const ENOTEMPTY = 55;
 
   function normalizePath(p: string): string {
-    let r = p.replace(/^\.\//, "").replace(/\/\.\//g, "/").replace(/\/+/g, "/").replace(/\/$/, "");
+    let r = p.replace(/^\.\//, "").replace(/\/\.\//g, "/").replace(/\/\.$/, "").replace(/\/+/g, "/").replace(/\/$/, "");
     if (r === ".") r = "";
     return r;
   }
