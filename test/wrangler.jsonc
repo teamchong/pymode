@@ -12,7 +12,7 @@
     },
     {
       "type": "Data",
-      "globs": ["**/*.zip"],
+      "globs": ["**/*.zip", "**/*.dat"],
       "fallthrough": false
     }
   ],

@@ -11,7 +11,7 @@ globs = ["**/*.wasm"]
 
 [[rules]]
 type = "Data"
-globs = ["**/*.zip"]
+globs = ["**/*.zip", "**/*.dat"]
 
 # Persistent /data directory backed by KV
 # Create with: wrangler kv namespace create PYMODE_DATA
