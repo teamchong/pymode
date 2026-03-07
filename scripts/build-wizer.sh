@@ -146,12 +146,12 @@ fi
 # Cleanup intermediate
 rm -f "$WIZER_RAW"
 
-# Copy to worker/src
-cp "$OUTPUT" "$ROOT_DIR/worker/src/python-wizer.wasm"
+# Replace python.wasm — the wizer binary IS the default now.
+# pymode_wizer.c main() falls back to Py_BytesMain if not pre-initialized.
+cp "$OUTPUT" "$ROOT_DIR/worker/src/python.wasm"
 
 echo ""
-echo "Done! python-wizer.wasm"
+echo "Done! python.wasm (wizer snapshot)"
 echo "  Size: $(wc -c < "$OUTPUT" | tr -d ' ' | awk '{printf "%.1fMB", $1/1048576}')"
-echo "  Location: worker/src/python-wizer.wasm"
 echo ""
 echo "Cold start: ~5ms (vs ~28ms without snapshot)"

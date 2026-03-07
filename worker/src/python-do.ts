@@ -15,7 +15,7 @@ import { connect } from "cloudflare:sockets";
 import { AsyncifyRuntime } from "./asyncify";
 import pythonWasm from "./python.wasm";
 import { stdlibFS } from "./stdlib-fs";
-import { ProcExit, createWasi } from "./wasi";
+import { ProcExit, createWasi, buildDirIndex } from "./wasi";
 
 // Pre-encode stdlib files once at module load (persists across requests in the DO isolate).
 const _encoder = new TextEncoder();
@@ -23,6 +23,9 @@ const stdlibBin: Record<string, Uint8Array> = {};
 for (const [path, content] of Object.entries(stdlibFS)) {
   stdlibBin[path] = _encoder.encode(content);
 }
+
+// Pre-build directory index from stdlib paths.
+const stdlibDirIndex = buildDirIndex(stdlibBin);
 
 // Optional: extension site-packages (e.g. numpy Python layer)
 let extensionPackagesData: ArrayBuffer | undefined;
@@ -460,7 +463,7 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
       }
     }
 
-    const wasi = createWasi(args, wasmEnv, files, () => this.wasmMemory!, stdinData);
+    const wasi = createWasi(args, wasmEnv, files, () => this.wasmMemory!, stdinData, stdlibDirIndex);
     const pymodeImports = this.buildImports();
 
     // Wrap imports with Asyncify — async pymode imports will trigger

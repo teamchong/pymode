@@ -17,12 +17,50 @@ export interface WasiResult {
   writtenFiles: Map<string, Uint8Array>;
 }
 
+// Pre-build directory index from file paths. Reusable across requests
+// when the base file set doesn't change (e.g., stdlib).
+export function buildDirIndex(files: Record<string, Uint8Array>): Map<string, string[]> {
+  const dirChildren = new Map<string, string[]>();
+  dirChildren.set("", []);
+  for (const path of Object.keys(files)) {
+    const parts = path.split("/");
+    for (let i = 0; i < parts.length - 1; i++) {
+      const parent = parts.slice(0, i).join("/");
+      const child = parts[i];
+      if (!dirChildren.has(parent)) dirChildren.set(parent, []);
+      const list = dirChildren.get(parent)!;
+      if (!list.includes(child)) list.push(child);
+      const full = parts.slice(0, i + 1).join("/");
+      if (!dirChildren.has(full)) dirChildren.set(full, []);
+    }
+    const dir = parts.slice(0, -1).join("/");
+    const name = parts[parts.length - 1];
+    if (!dirChildren.has(dir)) dirChildren.set(dir, []);
+    const list = dirChildren.get(dir)!;
+    if (!list.includes(name)) list.push(name);
+  }
+
+  if (!dirChildren.has("tmp")) {
+    dirChildren.set("tmp", []);
+    const root = dirChildren.get("")!;
+    if (!root.includes("tmp")) root.push("tmp");
+  }
+  if (!dirChildren.has("data")) {
+    dirChildren.set("data", []);
+    const root = dirChildren.get("")!;
+    if (!root.includes("data")) root.push("data");
+  }
+
+  return dirChildren;
+}
+
 export function createWasi(
   args: string[],
   env: Record<string, string>,
   files: Record<string, Uint8Array>,
   getMemory: () => WebAssembly.Memory,
-  stdinData?: Uint8Array
+  stdinData?: Uint8Array,
+  baseDirIndex?: Map<string, string[]>
 ) {
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
@@ -55,52 +93,24 @@ export function createWasi(
 
   // Writable files layer — sits on top of the read-only files map
   const writtenFiles = new Map<string, Uint8Array>();
+  const deletedFiles = new Set<string>();
 
-  // Build directory index from file paths
-  const dirChildren = new Map<string, string[]>();
-  dirChildren.set("", []);
-  for (const path of Object.keys(files)) {
-    const parts = path.split("/");
-    for (let i = 0; i < parts.length - 1; i++) {
-      const parent = parts.slice(0, i).join("/");
-      const child = parts[i];
-      if (!dirChildren.has(parent)) dirChildren.set(parent, []);
-      const list = dirChildren.get(parent)!;
-      if (!list.includes(child)) list.push(child);
-      const full = parts.slice(0, i + 1).join("/");
-      if (!dirChildren.has(full)) dirChildren.set(full, []);
-    }
-    const dir = parts.slice(0, -1).join("/");
-    const name = parts[parts.length - 1];
-    if (!dirChildren.has(dir)) dirChildren.set(dir, []);
-    const list = dirChildren.get(dir)!;
-    if (!list.includes(name)) list.push(name);
-  }
-
-  // Ensure /tmp directory exists for trampoline files
-  if (!dirChildren.has("tmp")) {
-    dirChildren.set("tmp", []);
-    const root = dirChildren.get("")!;
-    if (!root.includes("tmp")) root.push("tmp");
-  }
-
-  // Ensure /data directory exists for persistent storage
-  if (!dirChildren.has("data")) {
-    dirChildren.set("data", []);
-    const root = dirChildren.get("")!;
-    if (!root.includes("data")) root.push("data");
-  }
+  // Clone the pre-built directory index or build one fresh.
+  // Cloning a Map is cheaper than rebuilding from 242+ file paths.
+  const dirChildren: Map<string, string[]> = baseDirIndex
+    ? new Map([...baseDirIndex].map(([k, v]) => [k, [...v]]))
+    : buildDirIndex(files);
 
   function isDir(path: string): boolean {
     return dirChildren.has(path);
   }
 
   function fileExists(path: string): boolean {
-    return writtenFiles.has(path) || path in files;
+    return writtenFiles.has(path) || (!deletedFiles.has(path) && path in files);
   }
 
   function fileData(path: string): Uint8Array | undefined {
-    return writtenFiles.get(path) || files[path];
+    return writtenFiles.get(path) || (deletedFiles.has(path) ? undefined : files[path]);
   }
 
   // Register a directory in the VFS (creates parent chain)
@@ -573,7 +583,7 @@ export function createWasi(
       writtenFiles.set(newPath, data);
       registerFile(newPath);
       writtenFiles.delete(oldPath);
-      delete files[oldPath];
+      deletedFiles.add(oldPath);
       // Remove from old parent dir listing
       const oldParts = oldPath.split("/");
       const oldName = oldParts.pop()!;
@@ -594,7 +604,7 @@ export function createWasi(
       if (fullPath === null) return EBADF;
       if (!fileExists(fullPath)) return ENOENT;
       writtenFiles.delete(fullPath);
-      delete files[fullPath];
+      deletedFiles.add(fullPath);
       // Remove from parent dir listing
       const parts = fullPath.split("/");
       const name = parts.pop()!;

@@ -2,16 +2,18 @@ import pythonWasm from "./python.wasm";
 import { stdlibFS } from "./stdlib-fs.js";
 import { DurableObject } from "cloudflare:workers";
 import { connect } from "cloudflare:sockets";
-import { ProcExit, createWasi } from "./wasi";
+import { ProcExit, createWasi, buildDirIndex } from "./wasi";
 import type { WasiResult } from "./wasi";
 
 // Pre-encode stdlib files once at module load (persists across requests in the isolate).
-// Avoids re-encoding 242 files / 4.5MB of strings on every request.
 const _encoder = new TextEncoder();
 const stdlibBin: Record<string, Uint8Array> = {};
 for (const [path, content] of Object.entries(stdlibFS)) {
   stdlibBin[path] = _encoder.encode(content);
 }
+
+// Pre-build directory index from stdlib paths (avoids rebuilding per request).
+const stdlibDirIndex = buildDirIndex(stdlibBin);
 
 // Re-export DOs so wrangler can find them
 export { PythonDO } from "./python-do";
@@ -162,7 +164,7 @@ async function runWasm(
   files: Record<string, Uint8Array>
 ): Promise<WasiResult> {
   let memory: WebAssembly.Memory | undefined;
-  const wasi = createWasi(args, env, files, () => memory!);
+  const wasi = createWasi(args, env, files, () => memory!, undefined, stdlibDirIndex);
 
   try {
     const { instance } = await WebAssembly.instantiate(pythonWasm, {
@@ -201,7 +203,7 @@ async function runWasmWithStdin(
   stdinData: Uint8Array
 ): Promise<WasiResult> {
   let memory: WebAssembly.Memory | undefined;
-  const wasi = createWasi(args, env, files, () => memory!, stdinData);
+  const wasi = createWasi(args, env, files, () => memory!, stdinData, stdlibDirIndex);
 
   try {
     const { instance } = await WebAssembly.instantiate(pythonWasm, {
