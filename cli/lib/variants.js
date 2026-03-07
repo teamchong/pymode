@@ -113,7 +113,7 @@ export function applyVariant(repoRoot, variantKey) {
   if (!existsSync(sourceWasm)) {
     throw new Error(
       `Variant binary not found: ${sourceWasm}\n` +
-      `Build it with: ./scripts/build-numpy-wasm.sh` // TODO: generalize
+      `Build it with: python3 scripts/build-variant.py ${variantKey}`
     );
   }
 

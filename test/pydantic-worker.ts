@@ -10,15 +10,17 @@ import { ProcExit, createWasi } from "../worker/src/wasi";
 // @ts-ignore — conditional import
 import sitePackagesData from "../worker/src/site-packages.zip";
 
+// Pre-encode stdlib files once at module load.
+const _encoder = new TextEncoder();
+const _decoder = new TextDecoder();
+const stdlibBin: Record<string, Uint8Array> = {};
+for (const [path, content] of Object.entries(stdlibFS)) {
+  stdlibBin[path] = _encoder.encode(content);
+}
+
 export default {
   async fetch(request: Request): Promise<Response> {
-    const encoder = new TextEncoder();
-    const decoder = new TextDecoder();
-
-    const files: Record<string, Uint8Array> = {};
-    for (const [path, content] of Object.entries(stdlibFS)) {
-      files[path] = encoder.encode(content);
-    }
+    const files: Record<string, Uint8Array> = { ...stdlibBin };
 
     let code: string;
     if (request.method === "POST") {
@@ -44,8 +46,8 @@ export default {
         files
       );
 
-      const stdout = decoder.decode(result.stdout);
-      const stderr = decoder.decode(result.stderr);
+      const stdout = _decoder.decode(result.stdout);
+      const stderr = _decoder.decode(result.stderr);
 
       if (result.exitCode === 0) {
         return new Response(stdout || "(empty output)\n", {

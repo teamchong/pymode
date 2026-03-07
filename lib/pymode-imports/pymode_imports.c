@@ -109,7 +109,12 @@ static PyObject* py_http_response_read(PyObject* self, PyObject* args) {
     if (!buf)
         return PyErr_NoMemory();
     int32_t n = pymode_http_response_read(resp_id, buf, bufsize);
-    PyObject* result = PyBytes_FromStringAndSize((const char*)buf, n < 0 ? 0 : n);
+    if (n < 0) {
+        PyMem_Free(buf);
+        PyErr_SetString(PyExc_OSError, "http_response_read failed");
+        return NULL;
+    }
+    PyObject* result = PyBytes_FromStringAndSize((const char*)buf, n);
     PyMem_Free(buf);
     return result;
 }
