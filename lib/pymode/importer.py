@@ -12,7 +12,6 @@ Usage:
 """
 
 import importlib.abc
-import importlib.machinery
 import importlib.util
 import json
 import os

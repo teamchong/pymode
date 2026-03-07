@@ -167,23 +167,6 @@ def _fetch_legacy(url, method, headers, body):
     sys.exit(254)
 
 
-class _TrampolineHTTPHandler:
-    """urllib.request handler that routes all HTTP/HTTPS through the trampoline."""
-
-    def http_open(self, req):
-        return self._open(req)
-
-    def https_open(self, req):
-        return self._open(req)
-
-    def _open(self, req):
-        url = req.full_url
-        method = req.get_method()
-        headers = dict(req.header_items())
-        body = req.data
-        return fetch(url, method=method, headers=headers, body=body)
-
-
 def get(url, headers=None):
     """HTTP GET request."""
     return fetch(url, method="GET", headers=headers)

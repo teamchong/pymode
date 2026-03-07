@@ -19,6 +19,7 @@ import { ProcExit, createWasi, buildDirIndex } from "./wasi";
 
 // Pre-encode stdlib files once at module load (persists across requests in the DO isolate).
 const _encoder = new TextEncoder();
+const _decoder = new TextDecoder();
 const stdlibBin: Record<string, Uint8Array> = {};
 for (const [path, content] of Object.entries(stdlibFS)) {
   stdlibBin[path] = _encoder.encode(content);
@@ -28,12 +29,10 @@ for (const [path, content] of Object.entries(stdlibFS)) {
 const stdlibDirIndex = buildDirIndex(stdlibBin);
 
 // Optional: extension site-packages (e.g. numpy Python layer)
-let extensionPackagesData: ArrayBuffer | undefined;
 let extensionPackagesBin: Uint8Array | undefined;
 try {
   // @ts-ignore — conditional import, only present for extension variants
-  extensionPackagesData = require("./extension-site-packages.zip");
-  extensionPackagesBin = new Uint8Array(extensionPackagesData);
+  extensionPackagesBin = new Uint8Array(require("./extension-site-packages.zip"));
 } catch {
   // No extension packages
 }
@@ -47,7 +46,7 @@ interface PythonDOEnv {
 }
 
 // The set of pymode.* imports that are async (return Promises).
-// These must match the --pass-arg=asyncify-imports@ list in build-phase2.sh.
+// These must match the --pass-arg=asyncify-imports@ list in build-phase2.py.
 const ASYNC_IMPORTS = new Set([
   "pymode.tcp_recv",
   "pymode.http_fetch",
@@ -106,7 +105,7 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
   }
 
   private readString(ptr: number, len: number): string {
-    return new TextDecoder().decode(this.getMemBytes().subarray(ptr, ptr + len));
+    return _decoder.decode(this.getMemBytes().subarray(ptr, ptr + len));
   }
 
   private writeBytes(ptr: number, data: Uint8Array, maxLen: number): number {
@@ -212,7 +211,7 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
         const name = self.readString(namePtr, nameLen);
         const value = resp.headers.get(name);
         if (!value) return -1;
-        const encoded = new TextEncoder().encode(value);
+        const encoded = _encoder.encode(value);
         return self.writeBytes(bufPtr, encoded, bufLen);
       },
 
@@ -265,7 +264,7 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
         const params = JSON.parse(self.readString(paramsPtr, paramsLen));
         const stmt = self.env.D1.prepare(sql).bind(...params);
         const { results } = await stmt.all();
-        const encoded = new TextEncoder().encode(JSON.stringify(results));
+        const encoded = _encoder.encode(JSON.stringify(results));
         return self.writeBytes(resultPtr, encoded, resultLen);
       },
 
@@ -274,7 +273,7 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
         const key = self.readString(keyPtr, keyLen);
         const value = self.env[key];
         if (value === undefined || value === null) return -1;
-        const encoded = new TextEncoder().encode(String(value));
+        const encoded = _encoder.encode(String(value));
         return self.writeBytes(bufPtr, encoded, bufLen);
       },
 
@@ -403,7 +402,7 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
 
       dl_error: (bufPtr: number, bufLen: number): number => {
         if (!self.dlLastError) return 0;
-        const encoded = new TextEncoder().encode(self.dlLastError);
+        const encoded = _encoder.encode(self.dlLastError);
         const n = self.writeBytes(bufPtr, encoded, bufLen);
         self.dlLastError = null;
         return n;

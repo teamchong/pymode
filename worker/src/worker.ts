@@ -42,12 +42,10 @@ try {
 }
 
 // Optional: extension site-packages (e.g. numpy Python layer).
-let extensionPackagesData: ArrayBuffer | undefined;
 let extensionPackagesBin: Uint8Array | undefined;
 try {
   // @ts-ignore — conditional import, only present for extension variants
-  extensionPackagesData = require("./extension-site-packages.zip");
-  extensionPackagesBin = new Uint8Array(extensionPackagesData);
+  extensionPackagesBin = new Uint8Array(require("./extension-site-packages.zip"));
 } catch {
   // No extension packages bundled
 }
