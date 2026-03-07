@@ -283,7 +283,7 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
         codePtr: number, codeLen: number,
         inputPtr: number, inputLen: number
       ): Promise<number> => {
-        if (!self.env.THREAD_DO || !self.wasmModule || !self.createWasiFn) return -1;
+        if (!self.env.THREAD_DO) return -1;
         const code = self.readString(codePtr, codeLen);
         const input = self.getMemBytes().slice(inputPtr, inputPtr + inputLen);
         const threadId = self.nextThreadId++;
@@ -292,12 +292,12 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
         const doId = self.env.THREAD_DO.newUniqueId();
         const threadDO = self.env.THREAD_DO.get(doId) as any;
 
-        // Fire off the child DO — it runs in parallel
-        const resultPromise = threadDO.execute(
-          self.wasmModule, self.createWasiFn, code, input
-        ).then((r: { stdout: Uint8Array; stderr: Uint8Array; exitCode: number }) => {
-          return r.stdout;
-        });
+        // Fire off the child DO — it runs in parallel.
+        // ThreadDO imports python.wasm directly (can't send Module via RPC).
+        const resultPromise = threadDO.execute(code, input)
+          .then((r: { stdout: Uint8Array; stderr: Uint8Array; exitCode: number }) => {
+            return r.stdout;
+          });
 
         self.threadResults.set(threadId, resultPromise);
         return threadId;

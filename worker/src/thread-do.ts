@@ -5,6 +5,9 @@
  * Each ThreadDO runs a separate python.wasm instance with its own
  * 30s CPU budget and 128MB memory.
  *
+ * Imports python.wasm and stdlib directly — WebAssembly.Module and
+ * closures can't be sent via DO RPC, so each ThreadDO is self-contained.
+ *
  * Communication:
  *   - Receives: Python code (string) + serialized input (Uint8Array)
  *   - The code reads input from stdin, processes it, writes output to stdout
@@ -12,6 +15,19 @@
  */
 
 import { DurableObject } from "cloudflare:workers";
+import pythonWasm from "./python.wasm";
+import { stdlibFS } from "./stdlib-fs";
+import { ProcExit, createWasi, buildDirIndex } from "./wasi";
+
+const _encoder = new TextEncoder();
+const _decoder = new TextDecoder();
+
+// Pre-encode stdlib once at module load (shared across all ThreadDO instances).
+const stdlibBin: Record<string, Uint8Array> = {};
+for (const [path, content] of Object.entries(stdlibFS)) {
+  stdlibBin[path] = _encoder.encode(content);
+}
+const stdlibDirIndex = buildDirIndex(stdlibBin);
 
 interface ThreadDOEnv {
   [key: string]: unknown;
@@ -22,33 +38,28 @@ export class ThreadDO extends DurableObject<ThreadDOEnv> {
    * Execute Python code with input data.
    * The code should read from stdin and write results to stdout.
    *
-   * @param wasmModule - The compiled python.wasm module
-   * @param createWasi - Factory for WASI imports (same as PythonDO uses)
    * @param code - Python source code to execute
    * @param input - Serialized input data (piped as stdin)
-   * @returns stdout bytes (the serialized result)
+   * @returns stdout/stderr bytes and exit code
    */
   async execute(
-    wasmModule: WebAssembly.Module,
-    createWasi: (
-      getMemory: () => WebAssembly.Memory,
-      stdinData?: Uint8Array
-    ) => {
-      imports: Record<string, Function>;
-      getStdout: () => Uint8Array;
-      getStderr: () => Uint8Array;
-    },
     code: string,
     input: Uint8Array
   ): Promise<{ stdout: Uint8Array; stderr: Uint8Array; exitCode: number }> {
     let memory: WebAssembly.Memory | undefined;
 
-    // Create WASI with input piped as stdin
-    const wasi = createWasi(() => memory!, input);
+    const args = ["python", "-S", "-c", code];
+    const env = {
+      PYTHONPATH: "/stdlib",
+      PYTHONDONTWRITEBYTECODE: "1",
+      PYTHONNOUSERSITE: "1",
+    };
+
+    const files: Record<string, Uint8Array> = { ...stdlibBin };
+    const wasi = createWasi(args, env, files, () => memory!, input, stdlibDirIndex);
 
     // ThreadDO runs without pymode host imports — child threads don't get
     // their own TCP/KV/R2 access (they'd need to go through the parent).
-    // For Phase 3, we provide minimal pymode imports that log to console.
     const minimalPymode: Record<string, Function> = {
       tcp_connect: () => -1,
       tcp_send: () => -1,
@@ -67,15 +78,19 @@ export class ThreadDO extends DurableObject<ThreadDOEnv> {
       env_get: () => -1,
       thread_spawn: () => -1,
       thread_join: () => -1,
+      dl_open: () => -1,
+      dl_sym: () => -1,
+      dl_close: () => {},
+      dl_error: () => 0,
       console_log: (msgPtr: number, msgLen: number) => {
         if (memory) {
           const bytes = new Uint8Array(memory.buffer, msgPtr, msgLen);
-          console.log(new TextDecoder().decode(bytes));
+          console.log(_decoder.decode(bytes));
         }
       },
     };
 
-    // Also need asyncify control imports if the binary was asyncified
+    // Asyncify noop — ThreadDO uses sync instantiation (no async imports)
     const asyncifyNoop: Record<string, Function> = {
       start_unwind: () => {},
       stop_unwind: () => {},
@@ -84,7 +99,7 @@ export class ThreadDO extends DurableObject<ThreadDOEnv> {
     };
 
     try {
-      const instance = new WebAssembly.Instance(wasmModule, {
+      const instance = new WebAssembly.Instance(pythonWasm, {
         wasi_snapshot_preview1: wasi.imports,
         pymode: minimalPymode,
         asyncify: asyncifyNoop,
@@ -100,7 +115,7 @@ export class ThreadDO extends DurableObject<ThreadDOEnv> {
         exitCode: 0,
       };
     } catch (e: any) {
-      if (e && typeof e.code === "number") {
+      if (e instanceof ProcExit) {
         return {
           stdout: wasi.getStdout(),
           stderr: wasi.getStderr(),
