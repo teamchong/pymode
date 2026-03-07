@@ -122,8 +122,8 @@ def on_fetch(request, env):
 
 ```bash
 # Build using a recipe (recipes/*.json)
-./scripts/build-variant.sh numpy
-./scripts/build-extension.sh markupsafe
+python3 scripts/build-variant.py numpy
+python3 scripts/build-extension.py markupsafe
 ```
 
 At runtime, CPython's import machinery calls `dlopen`/`dlsym` as usual —
@@ -262,7 +262,7 @@ wizer = true
 
 **Runtime flow:** Python `import` → CPython calls `_PyImport_FindSharedFuncptr()` in `dynload_pymode.o` → WASM host imports `pymode.dl_open` / `pymode.dl_sym` → PythonDO (JS) loads pre-compiled `.wasm` side module with shared memory → resolves `PyInit_*` via indirect function table → returns function pointer to CPython.
 
-**Build flow:** `config.site-wasi` sets `DYNLOADFILE=dynload_pymode.o` → `build-phase2.sh` compiles the shim with CPython headers + adds `dl_open` to Asyncify imports → `build-extension.sh` compiles C extensions to `.wasm` side modules with `--import-memory --export-dynamic`.
+**Build flow:** `config.site-wasi` sets `DYNLOADFILE=dynload_pymode.o` → `build-phase2.py` compiles the shim with CPython headers + adds `dl_open` to Asyncify imports → `build-extension.py` compiles C extensions to `.wasm` side modules with `--import-memory --export-dynamic`.
 
 ## CLI
 

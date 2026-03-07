@@ -8,7 +8,7 @@
     "build:phase2": "./scripts/build-phase2.sh",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:legacy": "./scripts/test.sh",
+    "test:legacy": "python3 scripts/test.py",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit"

@@ -25,7 +25,7 @@ Each JSON file defines how to compile a C extension package for wasm32-wasi.
 
 ```bash
 # Build a specific recipe
-./scripts/build-recipe.sh numpy
+python3 scripts/build-recipe.py numpy
 
 # Build all recipes needed by a project
 pymode build
