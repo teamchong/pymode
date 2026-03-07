@@ -7,6 +7,8 @@
     "build:phase1": "./scripts/build-phase1.sh",
     "build:phase2": "./scripts/build-phase2.sh",
     "test": "vitest run",
+    "test:pydantic": "vitest run --config vitest-pydantic.config.ts",
+    "test:all": "vitest run && vitest run --config vitest-pydantic.config.ts",
     "test:watch": "vitest",
     "test:legacy": "python3 scripts/test.py",
     "dev": "wrangler dev",
