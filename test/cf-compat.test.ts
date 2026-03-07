@@ -7,7 +7,7 @@
 // C extensions: tested via numpy.test.ts (statically linked into python-numpy.wasm)
 // CPython built-in modules: hashlib, decimal, etc.
 //
-// Packages needing Rust C extensions (pydantic_core) have skip markers.
+// Rust extensions: tested via pydantic.test.ts (pydantic_core linked into python-pydantic-core.wasm)
 // zlib is provided by a pure-Python polyfill (lib/polyfills/zlib.py).
 
 import { describe, it, expect } from "vitest";
@@ -601,31 +601,8 @@ print(f"scheme={url.scheme}")
 });
 
 // ─── Packages needing C extensions (Rust-based) ────────────────────
-// pydantic needs pydantic_core (Rust), fastapi needs pydantic.
-
-describe("pydantic (needs pydantic_core)", () => {
-  it.skip("model validation — blocked on pydantic_core Rust extension", async () => {
-    const { text, status } = await run(`
-from pydantic import BaseModel
-class User(BaseModel):
-    name: str
-    age: int
-print("ok")
-`);
-    expect(status).toBe(200);
-  });
-});
-
-describe("fastapi (needs pydantic)", () => {
-  it.skip("creates typed API — blocked on pydantic_core Rust extension", async () => {
-    const { text, status } = await run(`
-from fastapi import FastAPI
-app = FastAPI()
-print("ok")
-`);
-    expect(status).toBe(200);
-  });
-});
+// pydantic & fastapi tests live in test/pydantic.test.ts
+// (uses python-pydantic-core.wasm variant with Rust extension linked in)
 
 // ─── Integration Patterns ───────────────────────────────────────────
 

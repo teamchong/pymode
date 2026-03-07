@@ -46,6 +46,18 @@ class SSLCertVerificationError(SSLError):
 class SSLZeroReturnError(SSLError):
     pass
 
+class SSLWantReadError(SSLError):
+    pass
+
+class SSLWantWriteError(SSLError):
+    pass
+
+class SSLSyscallError(SSLError):
+    pass
+
+class SSLEOFError(SSLError):
+    pass
+
 class CertificateError(SSLError):
     pass
 

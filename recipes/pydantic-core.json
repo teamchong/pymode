@@ -1,0 +1,15 @@
+{
+  "name": "pydantic-core",
+  "version": "2.33.2",
+  "pypi": "pydantic-core",
+  "type": "rust",
+  "build_script": "scripts/build-pydantic-core-wasm.sh",
+  "cargo_features": ["extension-module"],
+  "cargo_target": "wasm32-wasip1",
+  "modules": {
+    "pydantic_core._pydantic_core": "PyInit__pydantic_core"
+  },
+  "python_packages": ["python/pydantic_core/"],
+  "depends": ["pydantic>=2.11"],
+  "notes": "Rust+PyO3 extension. Requires: rustup target add wasm32-wasip1, PyO3 cross-compilation setup."
+}

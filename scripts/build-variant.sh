@@ -68,6 +68,22 @@ for recipe_name in "${RECIPE_NAMES[@]}"; do
             echo "    No pre-built objects. Run build-recipe.sh $recipe_name first."
             exit 1
         fi
+    elif [ "$TYPE" = "rust" ]; then
+        # Rust recipe — produces .a archive
+        OBJ_DIR="$ROOT_DIR/build/recipes/$recipe_name/obj"
+        if [ ! -d "$OBJ_DIR" ]; then
+            echo "  [$recipe_name] Building Rust extension..."
+            BUILD_SCRIPT=$(python3 -c "import json; r=json.load(open('$RECIPE')); print(r['build_script'])")
+            bash "$ROOT_DIR/$BUILD_SCRIPT"
+        fi
+        # .a archives link directly (wasm-ld handles them)
+        for archive in "$OBJ_DIR"/*.a; do
+            ALL_OBJS+=("$archive")
+        done
+        for obj in "$OBJ_DIR"/*.o; do
+            [ -f "$obj" ] && ALL_OBJS+=("$obj")
+        done
+        echo "  [$recipe_name] Rust archive: $(ls -lh "$OBJ_DIR"/*.a 2>/dev/null | awk '{print $5}')"
     else
         # Standard recipe — build objects
         OBJ_DIR="$ROOT_DIR/build/recipes/$recipe_name/obj"
