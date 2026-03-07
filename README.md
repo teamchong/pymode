@@ -315,10 +315,10 @@ Users can use the pre-built binary from npm/releases.
 ./scripts/build-phase2.sh
 
 # Generate stdlib bundle
-./scripts/generate-stdlib-fs.sh
+python3 scripts/generate-stdlib-fs.py
 
 # (Optional) Build Wizer snapshot for fast cold starts
-./scripts/build-wizer.sh
+python3 scripts/build-wizer.py
 ```
 
 ## Project Structure
@@ -339,11 +339,11 @@ Users can use the pre-built binary from npm/releases.
 | `lib/pymode/workflows.py` | Durable multi-step workflows |
 | `lib/pymode-imports/` | C extension wrapping WASM host imports |
 | `lib/wizer/` | Wizer entry point for deploy-time snapshots |
-| `scripts/bundle-project.sh` | Bundle .py project into worker |
-| `scripts/build-phase2.sh` | Build CPython WASM with zig cc |
-| `scripts/build-wizer.sh` | Build Wizer snapshot |
-| `scripts/generate-stdlib-fs.sh` | Bundle stdlib + pymode into worker |
-| `scripts/build-extension.sh` | Build C extension packages to .wasm side modules |
+| `scripts/bundle-project.py` | Bundle .py project into worker |
+| `scripts/build-phase2.py` | Build CPython WASM with zig cc |
+| `scripts/build-wizer.py` | Build Wizer snapshot |
+| `scripts/generate-stdlib-fs.py` | Bundle stdlib + pymode into worker |
+| `scripts/build-extension.py` | Build C extension packages to .wasm side modules |
 | `lib/wasi-shims/dynload_pymode.c` | Dynamic loading polyfill (dlopen/dlsym → WASM host imports) |
 | `examples/hello-worker/` | Simple handler example |
 | `examples/api-worker/` | Multi-file project with KV |

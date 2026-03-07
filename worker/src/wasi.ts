@@ -154,6 +154,7 @@ export function createWasi(
   const ENOENT = 44;
   const ENOSYS = 52;
   const ENOTDIR = 54;
+  const ENOTEMPTY = 55;
 
   function normalizePath(p: string): string {
     let r = p.replace(/^\.\//, "").replace(/\/\.\//g, "/").replace(/\/+/g, "/").replace(/\/$/, "");
@@ -554,7 +555,7 @@ export function createWasi(
       if (fullPath === null) return EBADF;
       if (!dirChildren.has(fullPath)) return ENOENT;
       const children = dirChildren.get(fullPath)!;
-      if (children.length > 0) return ENOENT; // ENOTEMPTY mapped to ENOENT
+      if (children.length > 0) return ENOTEMPTY;
       dirChildren.delete(fullPath);
       // Remove from parent
       const parts = fullPath.split("/");

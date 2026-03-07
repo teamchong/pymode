@@ -68,7 +68,7 @@ jobs:
           path: |
             build/zig-wasi/
             build/zig-wrappers/
-          key: wasm-build-${{ hashFiles('scripts/build-phase2.sh', 'scripts/config.site-wasi', 'lib/wasi-shims/**', 'lib/pymode-imports/**') }}
+          key: wasm-build-${{ hashFiles('scripts/build-phase2.sh', 'scripts/build-phase2.py', 'scripts/config.site-wasi', 'lib/wasi-shims/**', 'lib/pymode-imports/**') }}
 
       - name: Build python.wasm
         run: |
@@ -99,10 +99,10 @@ jobs:
           fi
 
       - name: Link python-numpy.wasm
-        run: bash scripts/build-variant.sh numpy
+        run: python3 scripts/build-variant.py numpy
 
       - name: Generate stdlib-fs.ts
-        run: ./scripts/generate-stdlib-fs.sh
+        run: python3 scripts/generate-stdlib-fs.py
 
       - name: Install npm dependencies
         run: npm install
