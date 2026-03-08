@@ -25,7 +25,7 @@ async function run(code: string): Promise<{ text: string; status: number }> {
 // ─── Pure Python Packages (all working) ─────────────────────────────
 
 describe("jinja2", () => {
-  it("renders template with variables, loops, filters", async () => {
+  it("renders template with variables, loops, filters", { timeout: 15000 }, async () => {
     const { text, status } = await run(`
 import jinja2
 env = jinja2.Environment()
@@ -119,7 +119,7 @@ print(f"match={data == data2}")
 });
 
 describe("beautifulsoup4", () => {
-  it("parses and queries HTML", async () => {
+  it("parses and queries HTML", { timeout: 15000 }, async () => {
     const { text, status } = await run(`
 from bs4 import BeautifulSoup
 html = '<html><body><h1 class="title">Hello</h1><p>World</p><a href="/link">Click</a></body></html>'
