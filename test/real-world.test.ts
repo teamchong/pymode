@@ -4,9 +4,9 @@
 // through the full workerd stack (same as wrangler dev).
 
 import { describe, it, expect } from "vitest";
-import pythonWasm from "../worker/src/python.wasm";
+import pythonWasm from "../worker/src/python-numpy.wasm";
 import { stdlibFS } from "../worker/src/stdlib-fs";
-import { ProcExit, createWasi } from "../worker/src/wasi";
+import { ProcExit, createWasi, buildDirIndex } from "../worker/src/wasi";
 // @ts-ignore
 import extensionPackagesData from "../worker/src/extension-site-packages.zip";
 

@@ -7,7 +7,6 @@ export default defineWorkersConfig({
       "test/langchain.test.ts",
       "test/langgraph.test.ts",
       "test/ai-libs.test.ts",
-      "test/real-world.test.ts",
       "**/node_modules/**",
     ],
     poolOptions: {

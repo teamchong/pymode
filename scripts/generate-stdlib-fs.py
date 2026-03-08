@@ -109,6 +109,7 @@ BOOT_FILES = [
     "numbers.py",
     "fractions.py",
     "decimal.py",
+    "statistics.py",
     # datetime
     "datetime.py",
     "calendar.py",
