@@ -46,7 +46,7 @@ def sedi(filepath: str, pattern: str, replacement: str):
     """In-place sed replacement."""
     with open(filepath) as f:
         content = f.read()
-    content = re.sub(pattern, replacement, content)
+    content = re.sub(pattern, replacement, content, flags=re.MULTILINE)
     with open(filepath, "w") as f:
         f.write(content)
 
@@ -354,7 +354,7 @@ def main():
         if os.path.isfile(config_c):
             with open(config_c) as f:
                 content = f.read()
-            init_func = f"PyInit{mod['name']}"
+            init_func = f"PyInit_{mod['name']}"
             if init_func not in content:
                 content = content.replace(
                     "/* -- ADDMODULE MARKER 1 -- */",
@@ -418,6 +418,7 @@ def main():
         )
 
         info("Running wasm-opt --asyncify (async imports: tcp_recv, http_fetch, kv_*, r2_*, d1_exec)...")
+        shutil.copy2(python_wasm, python_wasm + ".pre-asyncify")
         asyncified = python_wasm + ".asyncified"
         subprocess.run(
             ["wasm-opt", "-O2", "--asyncify",

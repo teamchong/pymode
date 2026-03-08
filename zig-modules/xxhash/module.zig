@@ -18,14 +18,13 @@ fn py_none() ?*py.PyObject {
     return none;
 }
 
-fn alloc_obj() ?*XXHashObject {
-    const obj_mem = allocator.alignedAlloc(u8, .fromByteUnits(@alignOf(XXHashObject)), @sizeOf(XXHashObject)) catch return null;
-    return @ptrCast(@alignCast(obj_mem.ptr));
+fn alloc_obj(type_ptr: *py.PyTypeObject) ?*XXHashObject {
+    const obj = py.PyType_GenericNew(type_ptr, null, null) orelse return null;
+    return @ptrCast(@alignCast(obj));
 }
 
 fn free_obj(obj: *XXHashObject) void {
-    const ptr: [*]align(@alignOf(XXHashObject)) u8 = @ptrCast(obj);
-    allocator.free(ptr[0..@sizeOf(XXHashObject)]);
+    py.PyObject_Free(@ptrCast(obj));
 }
 
 // ============================================================================
@@ -62,15 +61,13 @@ extern fn XXH3_64bits_digest(state: *const XXH3_state_t) u64;
 extern fn XXH3_128bits_digest(state: *const XXH3_state_t) XXH128_hash_t;
 extern fn XXH3_copyState(dst: *XXH3_state_t, src: *const XXH3_state_t) void;
 
-const allocator = std.heap.c_allocator;
-
 // ============================================================================
 // HASH OBJECT — stores opaque pointers to C-allocated state
 // ============================================================================
 
 const HashVariant = enum(u8) { xxh32, xxh64, xxh3_64, xxh3_128 };
 
-const XXHashObject = struct {
+const XXHashObject = extern struct {
     ob_base: py.PyObject,
     variant: HashVariant,
     seed: u64,
@@ -93,32 +90,24 @@ fn extract_buffer(obj: ?*py.PyObject) ?struct { ptr: [*]const u8, len: usize, bu
 // FORWARD DECLARATIONS for type objects
 // ============================================================================
 
-var xxh32_type: py.PyTypeObject = undefined;
-var xxh64_type: py.PyTypeObject = undefined;
-var xxh3_64_type: py.PyTypeObject = undefined;
-var xxh3_128_type: py.PyTypeObject = undefined;
+// Heap-allocated type objects created via PyType_FromSpec.
+var xxh32_type: ?*py.PyTypeObject = null;
+var xxh64_type: ?*py.PyTypeObject = null;
+var xxh3_64_type: ?*py.PyTypeObject = null;
+var xxh3_128_type: ?*py.PyTypeObject = null;
 
 // ============================================================================
 // OBJECT CREATION
 // ============================================================================
 
-fn xxhash_create(variant: HashVariant, args: ?*py.PyObject) ?*py.PyObject {
-    var data_obj: ?*py.PyObject = null;
-    var seed: c_ulonglong = 0;
-
-    if (py.PyArg_ParseTuple(args, "|OK", &data_obj, &seed) == 0) return null;
-
-    const obj = alloc_obj() orelse return null;
-
-    obj.ob_base = .{
-        .unnamed_0 = .{ .ob_refcnt = 1 },
-        .ob_type = switch (variant) {
-            .xxh32 => &xxh32_type,
-            .xxh64 => &xxh64_type,
-            .xxh3_64 => &xxh3_64_type,
-            .xxh3_128 => &xxh3_128_type,
-        },
+fn xxhash_create(variant: HashVariant, data_obj: ?*py.PyObject, seed: c_ulonglong) ?*py.PyObject {
+    const type_ptr = switch (variant) {
+        .xxh32 => xxh32_type orelse return null,
+        .xxh64 => xxh64_type orelse return null,
+        .xxh3_64 => xxh3_64_type orelse return null,
+        .xxh3_128 => xxh3_128_type orelse return null,
     };
+    const obj = alloc_obj(type_ptr) orelse return null;
     obj.variant = variant;
     obj.seed = seed;
     obj.s32 = null;
@@ -305,10 +294,8 @@ fn xxhash_hexdigest(self_raw: ?*py.PyObject, _: ?*py.PyObject) callconv(.c) ?*py
 fn xxhash_copy(self_raw: ?*py.PyObject, _: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     const self: *XXHashObject = @ptrCast(@alignCast(self_raw));
 
-    const copy = alloc_obj() orelse return null;
-
-    copy.ob_base = self.ob_base;
-    copy.ob_base.unnamed_0.ob_refcnt = 1;
+    const self_type = @as(?*py.PyTypeObject, @ptrCast(self.ob_base.ob_type)) orelse return null;
+    const copy = alloc_obj(self_type) orelse return null;
     copy.variant = self.variant;
     copy.seed = self.seed;
     copy.s32 = null;
@@ -392,7 +379,11 @@ fn xxhash_get_name(self_raw: ?*py.PyObject, _: ?*anyopaque) callconv(.c) ?*py.Py
 fn xxhash_dealloc(self_raw: ?*py.PyObject) callconv(.c) void {
     const self: *XXHashObject = @ptrCast(@alignCast(self_raw));
     xxhash_free_state(self);
-    free_obj(self);
+    // For heap types (created via PyType_FromSpec), we must decref the type
+    // before freeing the object, since _PyObject_Init increfs heap types.
+    const tp = py.Py_TYPE(self_raw);
+    py.PyObject_Free(@ptrCast(self));
+    py.Py_DECREF(@ptrCast(tp));
 }
 
 // ============================================================================
@@ -421,16 +412,39 @@ var xxhash_getset = [_]py.PyGetSetDef{
 // TYPE OBJECTS
 // ============================================================================
 
-fn init_type(name: [*:0]const u8) py.PyTypeObject {
-    var t: py.PyTypeObject = std.mem.zeroes(py.PyTypeObject);
-    t.tp_name = name;
-    t.tp_basicsize = @sizeOf(XXHashObject);
-    t.tp_flags = py.Py_TPFLAGS_DEFAULT;
-    t.tp_methods = @constCast(&xxhash_methods);
-    t.tp_getset = @constCast(&xxhash_getset);
-    t.tp_dealloc = @ptrCast(&xxhash_dealloc);
-    return t;
+// PyType_Slot entry constants (from CPython typeslots.h via @cImport)
+const Py_tp_dealloc = py.Py_tp_dealloc;
+const Py_tp_methods = py.Py_tp_methods;
+const Py_tp_getset = py.Py_tp_getset;
+
+fn make_slots() [4]py.PyType_Slot {
+    return .{
+        .{ .slot = Py_tp_dealloc, .pfunc = @ptrCast(@constCast(&xxhash_dealloc)) },
+        .{ .slot = Py_tp_methods, .pfunc = @ptrCast(@constCast(&xxhash_methods)) },
+        .{ .slot = Py_tp_getset, .pfunc = @ptrCast(@constCast(&xxhash_getset)) },
+        .{ .slot = 0, .pfunc = null }, // sentinel
+    };
 }
+
+var xxh32_slots: [4]py.PyType_Slot = make_slots();
+var xxh64_slots: [4]py.PyType_Slot = make_slots();
+var xxh3_64_slots: [4]py.PyType_Slot = make_slots();
+var xxh3_128_slots: [4]py.PyType_Slot = make_slots();
+
+fn make_spec(name: [*:0]const u8, slots: [*]py.PyType_Slot) py.PyType_Spec {
+    return .{
+        .name = name,
+        .basicsize = @intCast(@sizeOf(XXHashObject)),
+        .itemsize = 0,
+        .flags = @bitCast(@as(u32, py.Py_TPFLAGS_DEFAULT)),
+        .slots = slots,
+    };
+}
+
+var xxh32_spec: py.PyType_Spec = make_spec("_xxhash.xxh32", &xxh32_slots);
+var xxh64_spec: py.PyType_Spec = make_spec("_xxhash.xxh64", &xxh64_slots);
+var xxh3_64_spec: py.PyType_Spec = make_spec("_xxhash.xxh3_64", &xxh3_64_slots);
+var xxh3_128_spec: py.PyType_Spec = make_spec("_xxhash.xxh3_128", &xxh3_128_slots);
 
 // ============================================================================
 // ONE-SHOT CONVENIENCE FUNCTIONS
@@ -488,10 +502,50 @@ fn one_shot(comptime variant: HashVariant, comptime output: enum { digest, hexdi
 }
 
 // ============================================================================
+// FACTORY FUNCTIONS — create hash objects via module-level functions
+// ============================================================================
+
+var kwlist = [_:null]?[*:0]const u8{ "input", "seed", null };
+
+fn factory_xxh32(_: ?*py.PyObject, args: ?*py.PyObject, kwargs: ?*py.PyObject) callconv(.c) ?*py.PyObject {
+    var data_obj: ?*py.PyObject = null;
+    var seed: c_ulonglong = 0;
+    if (py.PyArg_ParseTupleAndKeywords(args, kwargs, "|OK", @ptrCast(&kwlist), &data_obj, &seed) == 0) return null;
+    return xxhash_create(.xxh32, data_obj, seed);
+}
+
+fn factory_xxh64(_: ?*py.PyObject, args: ?*py.PyObject, kwargs: ?*py.PyObject) callconv(.c) ?*py.PyObject {
+    var data_obj: ?*py.PyObject = null;
+    var seed: c_ulonglong = 0;
+    if (py.PyArg_ParseTupleAndKeywords(args, kwargs, "|OK", @ptrCast(&kwlist), &data_obj, &seed) == 0) return null;
+    return xxhash_create(.xxh64, data_obj, seed);
+}
+
+fn factory_xxh3_64(_: ?*py.PyObject, args: ?*py.PyObject, kwargs: ?*py.PyObject) callconv(.c) ?*py.PyObject {
+    var data_obj: ?*py.PyObject = null;
+    var seed: c_ulonglong = 0;
+    if (py.PyArg_ParseTupleAndKeywords(args, kwargs, "|OK", @ptrCast(&kwlist), &data_obj, &seed) == 0) return null;
+    return xxhash_create(.xxh3_64, data_obj, seed);
+}
+
+fn factory_xxh3_128(_: ?*py.PyObject, args: ?*py.PyObject, kwargs: ?*py.PyObject) callconv(.c) ?*py.PyObject {
+    var data_obj: ?*py.PyObject = null;
+    var seed: c_ulonglong = 0;
+    if (py.PyArg_ParseTupleAndKeywords(args, kwargs, "|OK", @ptrCast(&kwlist), &data_obj, &seed) == 0) return null;
+    return xxhash_create(.xxh3_128, data_obj, seed);
+}
+
+// ============================================================================
 // MODULE DEFINITION
 // ============================================================================
 
 var module_methods = [_]py.PyMethodDef{
+    // Factory functions for creating hash objects
+    .{ .ml_name = "xxh32", .ml_meth = @ptrCast(&factory_xxh32), .ml_flags = py.METH_VARARGS | py.METH_KEYWORDS, .ml_doc = "Create XXH32 hash object." },
+    .{ .ml_name = "xxh64", .ml_meth = @ptrCast(&factory_xxh64), .ml_flags = py.METH_VARARGS | py.METH_KEYWORDS, .ml_doc = "Create XXH64 hash object." },
+    .{ .ml_name = "xxh3_64", .ml_meth = @ptrCast(&factory_xxh3_64), .ml_flags = py.METH_VARARGS | py.METH_KEYWORDS, .ml_doc = "Create XXH3_64 hash object." },
+    .{ .ml_name = "xxh3_128", .ml_meth = @ptrCast(&factory_xxh3_128), .ml_flags = py.METH_VARARGS | py.METH_KEYWORDS, .ml_doc = "Create XXH3_128 hash object." },
+    .{ .ml_name = "xxh128", .ml_meth = @ptrCast(&factory_xxh3_128), .ml_flags = py.METH_VARARGS | py.METH_KEYWORDS, .ml_doc = "Create XXH128 hash object (alias for xxh3_128)." },
     .{ .ml_name = "xxh32_digest", .ml_meth = @ptrCast(&one_shot(.xxh32, .digest)), .ml_flags = py.METH_VARARGS, .ml_doc = null },
     .{ .ml_name = "xxh32_hexdigest", .ml_meth = @ptrCast(&one_shot(.xxh32, .hexdigest)), .ml_flags = py.METH_VARARGS, .ml_doc = null },
     .{ .ml_name = "xxh32_intdigest", .ml_meth = @ptrCast(&one_shot(.xxh32, .intdigest)), .ml_flags = py.METH_VARARGS, .ml_doc = null },
@@ -522,53 +576,15 @@ var module_def = py.PyModuleDef{
     .m_free = null,
 };
 
-fn xxh32_new(_: ?*py.PyObject, args: ?*py.PyObject, _: ?*py.PyObject) callconv(.c) ?*py.PyObject {
-    return xxhash_create(.xxh32, args);
-}
-fn xxh64_new(_: ?*py.PyObject, args: ?*py.PyObject, _: ?*py.PyObject) callconv(.c) ?*py.PyObject {
-    return xxhash_create(.xxh64, args);
-}
-fn xxh3_64_new(_: ?*py.PyObject, args: ?*py.PyObject, _: ?*py.PyObject) callconv(.c) ?*py.PyObject {
-    return xxhash_create(.xxh3_64, args);
-}
-fn xxh3_128_new(_: ?*py.PyObject, args: ?*py.PyObject, _: ?*py.PyObject) callconv(.c) ?*py.PyObject {
-    return xxhash_create(.xxh3_128, args);
-}
-
 export fn PyInit__xxhash() ?*py.PyObject {
-    xxh32_type = init_type("_xxhash.xxh32");
-    xxh64_type = init_type("_xxhash.xxh64");
-    xxh3_64_type = init_type("_xxhash.xxh3_64");
-    xxh3_128_type = init_type("_xxhash.xxh3_128");
-
-    xxh32_type.tp_new = @ptrCast(&xxh32_new);
-    xxh64_type.tp_new = @ptrCast(&xxh64_new);
-    xxh3_64_type.tp_new = @ptrCast(&xxh3_64_new);
-    xxh3_128_type.tp_new = @ptrCast(&xxh3_128_new);
-
-    if (py.PyType_Ready(&xxh32_type) < 0) return null;
-    if (py.PyType_Ready(&xxh64_type) < 0) return null;
-    if (py.PyType_Ready(&xxh3_64_type) < 0) return null;
-    if (py.PyType_Ready(&xxh3_128_type) < 0) return null;
+    // Create heap-allocated types via PyType_FromSpec.
+    xxh32_type = @ptrCast(py.PyType_FromSpec(&xxh32_spec) orelse return null);
+    xxh64_type = @ptrCast(py.PyType_FromSpec(&xxh64_spec) orelse return null);
+    xxh3_64_type = @ptrCast(py.PyType_FromSpec(&xxh3_64_spec) orelse return null);
+    xxh3_128_type = @ptrCast(py.PyType_FromSpec(&xxh3_128_spec) orelse return null);
 
     const module = py.PyModule_Create(&module_def);
     if (module == null) return null;
-
-    py.Py_INCREF(@ptrCast(&xxh32_type));
-    _ = py.PyModule_AddObject(module, "xxh32", @ptrCast(&xxh32_type));
-
-    py.Py_INCREF(@ptrCast(&xxh64_type));
-    _ = py.PyModule_AddObject(module, "xxh64", @ptrCast(&xxh64_type));
-
-    py.Py_INCREF(@ptrCast(&xxh3_64_type));
-    _ = py.PyModule_AddObject(module, "xxh3_64", @ptrCast(&xxh3_64_type));
-
-    py.Py_INCREF(@ptrCast(&xxh3_128_type));
-    _ = py.PyModule_AddObject(module, "xxh3_128", @ptrCast(&xxh3_128_type));
-
-    // xxh128 is an alias for xxh3_128
-    py.Py_INCREF(@ptrCast(&xxh3_128_type));
-    _ = py.PyModule_AddObject(module, "xxh128", @ptrCast(&xxh3_128_type));
 
     _ = py.PyModule_AddStringConstant(module, "XXHASH_VERSION", "0.8.2");
 
