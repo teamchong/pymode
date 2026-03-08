@@ -550,6 +550,64 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
   }
 
   /**
+   * RPC entry point — call a Python function by module path and get JSON result.
+   *
+   * Usage from another worker/DO:
+   *   const pythonDO = env.PYTHON_DO.get(doId);
+   *   const result = await pythonDO.callFunction("mymodule", "process", { data: [1, 2, 3] });
+   *   // result.returnValue is the JSON-serialized return value
+   */
+  async callFunction(
+    modulePath: string,
+    functionName: string,
+    args?: Record<string, unknown>,
+    options?: {
+      pythonPath?: string;
+      sitePackagesData?: ArrayBuffer;
+      userFiles?: Record<string, string>;
+    },
+  ): Promise<{
+    returnValue: unknown;
+    stdout: string;
+    stderr: string;
+    exitCode: number;
+  }> {
+    const argsJson = JSON.stringify(args || {});
+    const code = [
+      "import _wasi_compat",
+      "import json, sys, importlib",
+      `_mod = importlib.import_module(${JSON.stringify(modulePath)})`,
+      `_fn = getattr(_mod, ${JSON.stringify(functionName)})`,
+      `_args = json.loads(${JSON.stringify(argsJson)})`,
+      "_result = _fn(**_args)",
+      'print(json.dumps({"__pymode_return__": _result}))',
+    ].join("\n");
+
+    const pythonPath = options?.pythonPath || "/stdlib";
+    const result = await this.run(
+      ["python", "-S", "-c", code],
+      { PYTHONPATH: pythonPath, PYTHONDONTWRITEBYTECODE: "1", PYTHONNOUSERSITE: "1" },
+      options?.userFiles,
+      undefined,
+      options?.sitePackagesData,
+    );
+
+    let returnValue: unknown = null;
+    if (result.exitCode === 0 && result.stdout.trim()) {
+      try {
+        const parsed = JSON.parse(result.stdout.trim());
+        if (parsed && "__pymode_return__" in parsed) {
+          returnValue = parsed.__pymode_return__;
+        }
+      } catch {
+        // stdout wasn't valid JSON — leave returnValue as null
+      }
+    }
+
+    return { returnValue, ...result };
+  }
+
+  /**
    * Clean up TCP connections when DO is evicted.
    */
   async alarm(): Promise<void> {

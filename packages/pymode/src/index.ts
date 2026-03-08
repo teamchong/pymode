@@ -30,6 +30,50 @@ export { AsyncifyRuntime } from "./asyncify";
 // PythonDO — full Durable Object with CF binding host imports
 export { PythonDO } from "./python-do";
 
+/**
+ * Typed RPC interface for calling PythonDO methods from other workers/DOs.
+ *
+ * Usage:
+ *   import type { PythonDORpc } from "pymode";
+ *
+ *   const doId = env.PYTHON_DO.idFromName("default");
+ *   const pythonDO = env.PYTHON_DO.get(doId) as unknown as PythonDORpc;
+ *   const result = await pythonDO.callFunction("mymodule", "process", { data: [1, 2, 3] });
+ */
+export interface PythonDORpc {
+  executeCode(code: string): Promise<{
+    stdout: string;
+    stderr: string;
+    exitCode: number;
+  }>;
+  handleRequest(
+    entryModule: string,
+    userFiles: Record<string, string>,
+    pythonPath: string,
+    requestJson: string,
+    sitePackagesData?: ArrayBuffer,
+  ): Promise<{
+    stdout: string;
+    stderr: string;
+    exitCode: number;
+  }>;
+  callFunction(
+    modulePath: string,
+    functionName: string,
+    args?: Record<string, unknown>,
+    options?: {
+      pythonPath?: string;
+      sitePackagesData?: ArrayBuffer;
+      userFiles?: Record<string, string>;
+    },
+  ): Promise<{
+    returnValue: unknown;
+    stdout: string;
+    stderr: string;
+    exitCode: number;
+  }>;
+}
+
 // Stdlib filesystem bundle
 export { stdlibFS } from "./stdlib-fs";
 
