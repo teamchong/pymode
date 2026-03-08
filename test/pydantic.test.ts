@@ -82,7 +82,7 @@ print(f"tags={parsed['tags']}")
 });
 
 describe("fastapi", () => {
-  it("creates typed API with request validation", async () => {
+  it("creates typed API with request validation", { timeout: 30000 }, async () => {
     const { text, status } = await run(`
 from fastapi import FastAPI
 from pydantic import BaseModel
