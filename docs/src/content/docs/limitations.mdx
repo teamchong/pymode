@@ -55,8 +55,11 @@ These are C extension modules linked directly into the WASM binary:
 |--------|---------------|-------|
 | `binascii` | Pure Python (`lib/polyfills/binascii.py`) | Replaces the C extension. Covers hex, base64, crc32, uu encoding. |
 | `socket` | Pure Python (`lib/polyfills/socket.py`) | Routes through `pymode.tcp` host imports. Provides constants, `getaddrinfo`, `create_connection`. |
-| `threading` | Pure Python (`lib/polyfills/threading.py`) | No-op locks for single-threaded WASM. `Thread.start()` raises — use `pymode.parallel` instead. |
+| `threading` | Pure Python (`lib/polyfills/threading.py`) | No-op locks within a DO. `Thread.start()` spawns child DOs via `pymode.parallel` for real parallelism. |
 | `logging` | Pure Python (`lib/polyfills/logging/`) | Threading-free logging that writes to stderr. Full API: `getLogger`, `basicConfig`, handlers. |
+| `multiprocessing` | Pure Python (`lib/polyfills/multiprocessing/`) | `cpu_count()` returns 1, exception classes. Use `pymode.parallel` for real parallelism. |
+| `ssl` | Pure Python (`lib/polyfills/ssl.py`) | TLS termination handled by CF's edge — Python code doesn't need raw TLS. |
+| `zlib` | Pure Python (`lib/polyfills/zlib.py`) | Minimal compression polyfill for packages that import zlib at module level. |
 
 ### Not Available
 
@@ -65,32 +68,42 @@ These stdlib modules require OS features that WASI doesn't provide:
 | Module | Reason |
 |--------|--------|
 | `socket` | Polyfilled — routes through `pymode.tcp` host imports. |
-| `ssl` | No TLS in WASI. HTTPS handled by CF's edge. |
+| `ssl` | Polyfilled — TLS termination handled by CF's edge. |
 | `subprocess` | No process spawning in WASI. |
-| `multiprocessing` | No fork/spawn. Use `pymode.parallel`. |
-| `threading` | Polyfilled — no-op locks, `Thread.start()` raises. Use `pymode.parallel` for real parallelism. |
-| `sqlite3` | C extension not compiled for WASM. |
+| `multiprocessing` | Polyfilled — `cpu_count()` returns 1. Use `pymode.parallel` for real parallelism via child DOs. |
+| `threading` | Polyfilled — no-op locks within a DO. `Thread.start()` spawns child DOs via `pymode.parallel`. |
+| `sqlite3` | C extension not compiled for WASM. Use D1 binding instead. |
 | `ctypes` | No dynamic linking for arbitrary shared libraries. |
 | `tkinter` | No GUI in Workers. |
 | `curses` | No terminal in Workers. |
 | `readline` | No interactive terminal. |
 | `mmap` | Not available in WASI. |
 | `fcntl`, `termios`, `grp`, `pwd` | Unix-specific, not in WASI. |
-| `select`, `selectors` | No I/O multiplexing in WASI. |
+| `select`, `selectors` | Polyfilled — `selectors` bundled in stdlib. |
 | `signal` | Emulated only, limited functionality. |
 | `resource` | No resource limits API in WASI. |
 
-### Not Bundled (but could work)
+### Now Bundled (previously missing)
 
-These modules exist in CPython's stdlib but aren't bundled in `stdlib-fs.ts` to save space. They could be added if needed:
+These modules have been added to the stdlib bundle since initial release:
 
-| Module | Why not bundled |
-|--------|-----------------|
-| `statistics` | Not yet added to BOOT_FILES |
-| `locale` | Needed for `calendar` formatting |
-| `html`, `html.parser` | Not yet added |
-| `email` | Large package, not yet added |
-| `argparse` | Not useful in Workers context |
+| Module | Added for |
+|--------|-----------|
+| `html`, `html.parser`, `html.entities` | beautifulsoup4, web scraping |
+| `email` (full package) | requests, urllib3, http.client |
+| `http`, `http.client`, `http.cookiejar` | requests, httpx, urllib3 |
+| `xml`, `xml.sax`, `xml.etree`, `xml.parsers` | langchain, defusedxml |
+| `asyncio` (full package) | pydantic, typing_extensions |
+| `argparse` | numpy, click |
+| `locale` | httpx, distro |
+| `tempfile`, `shutil` | many packages |
+| `importlib.metadata`, `importlib.resources` | package metadata discovery |
+| `concurrent.futures` | tenacity, langsmith |
+| `zoneinfo` | pydantic datetime |
+| `tomllib` | pydantic, project configs |
+| `configparser` | various packages |
+| `sysconfig` | pydantic, setuptools |
+| `unittest` | pyparsing |
 
 > **Requesting a module:** If you need a stdlib module that's not bundled, [open an issue](https://github.com/teamchong/pymode/issues) or add it to `BOOT_FILES` in `scripts/generate-stdlib-fs.py`.
 
@@ -109,10 +122,67 @@ Full CPython 3.13 language support including:
 
 ## Package Support
 
-**Works:** Pure-Python packages from PyPI (`requests`, `jinja2`, `pydantic`, etc.)
+### Tested & Working
 
-**Experimental:** C extension packages compiled to `.wasm` side modules via `scripts/build-extension.py`. Currently supported: `markupsafe`, `simplejson`, `msgpack`.
+These packages have conformance tests running in the actual workerd runtime:
 
-**Doesn't work:** Packages requiring OS features (network sockets, file I/O, subprocess), packages with complex C dependencies (numpy, pandas, scipy).
+| Package | Type | Tests | Notes |
+|---------|------|-------|-------|
+| **pydantic** | Rust ext (compiled to WASM) | 4 passing | `python-pydantic-core.wasm` variant |
+| **fastapi** | Pure Python (ASGI) | 1 passing | Request validation, typed APIs |
+| **langchain-core** | Pure Python | 5 passing | Messages, documents, utils, serialization |
+| **langgraph** | Pure Python | 5 passing | StateGraph, compile, invoke, conditional edges |
+| **instructor** | Pure Python | 1 passing | Structured LLM output via pydantic |
+| **openai SDK** | Pure Python | 1 passing | Client types importable |
+| **numpy** | C ext (compiled to WASM) | 8 passing | `python-numpy.wasm` variant, arrays, FFT, random |
+| **jinja2** | Pure Python | 3 passing | Templates, loops, filters, inheritance |
+| **requests** | Pure Python | 1 passing | Session building, request construction |
+| **httpx** | Pure Python | 1 passing | Request building, URL parsing |
+| **beautifulsoup4** | Pure Python | 2 passing | HTML parsing, CSS selectors |
+| **pyyaml** | Pure Python fallback | 2 passing | YAML parse/dump |
+| **click** | Pure Python | 1 passing | CLI command creation |
+| **attrs** | Pure Python | 1 passing | Validators, asdict |
+| **starlette** | Pure Python | 1 passing | ASGI routing |
 
-**Heavy packages via child DOs:** Heavy packages (numpy, pandas) have their C extensions compiled to `.wasm` via `zig cc` and loaded via `dl_open`. They can run in child DOs via `pymode.parallel.spawn()`, each with its own 128MB memory and 30s CPU. See [Architecture: Multi-Worker RPC](/pymode/architecture/#multi-worker-rpc-architecture).
+Total: **261 tests** across all test suites.
+
+### Polyfilled C/Rust Extensions
+
+These packages have native extensions replaced with pure-Python polyfills:
+
+| Package | Original | Polyfill |
+|---------|----------|----------|
+| `uuid_utils` | Rust (`_uuid_utils`) | `stdlib uuid` + `time` + `os.urandom` |
+| `xxhash` | C (`_xxhash`) | `hashlib.sha256` as stand-in |
+| `ormsgpack` | Rust (`ormsgpack`) | Wraps pure-Python `msgpack` |
+| `jiter` | Rust (`jiter.jiter`) | `stdlib json` |
+| `markupsafe` | C (`_speedups`) | Pure Python fallback (built-in) |
+| `multiprocessing` | C (process model) | Polyfill: `cpu_count()=1`, exception classes |
+
+### Architecture: Each Package Gets Its Own DO
+
+Memory constraints (128MB Worker / 256MB DO) apply **per DO**, not globally. Heavy packages run in dedicated DOs communicating via Worker RPC:
+
+```
+Orchestrator DO          Package DOs (each 256MB)
+┌────────────┐          ┌─────────────┐
+│  Your app  │───RPC───▶│  numpy DO   │
+│  routing   │          └─────────────┘
+│  logic     │───RPC───▶│  pandas DO  │
+│            │          └─────────────┘
+└────────────┘───RPC───▶│  langchain  │
+                        │  DO         │
+                        └─────────────┘
+```
+
+This means even pandas (~100MB) can work — it just needs its own DO. The `threading.Thread` polyfill already spawns child DOs via `pymode.parallel`.
+
+### Won't Work in WASM (any DO)
+
+| Package | Reason |
+|---------|--------|
+| **tensorflow** | Needs GPU, ~500MB, C++/CUDA runtime |
+| **torch** | Needs GPU, ~2GB, C++/CUDA runtime |
+| **scipy** | Needs BLAS/LAPACK (Fortran), complex C |
+
+For ML inference, use **Workers AI** (`env.AI.run()`) instead.

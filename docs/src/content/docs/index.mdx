@@ -58,8 +58,8 @@ Each request gets its own sandboxed Python runtime inside a Durable Object. The 
   <Card title="Parallel Execution" icon="random">
     `spawn()` launches child Durable Objects with separate 30s CPU budgets and 128MB memory.
   </Card>
-  <Card title="C Extensions" icon="setting">
-    Pure-Python packages work out of the box. C extensions (markupsafe, simplejson) compile to `.wasm` side modules.
+  <Card title="Package Ecosystem" icon="setting">
+    Pure-Python packages work out of the box. C/Rust extensions (numpy, pydantic_core) compile to WASM variants. AI frameworks (langchain, langgraph, instructor) tested and working.
   </Card>
   <Card title="Multi-File Projects" icon="document">
     Standard Python imports work. Organize your project with packages, modules, and `pyproject.toml`.

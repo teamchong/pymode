@@ -193,10 +193,11 @@ def on_fetch(request, env):
 
 | Scenario | Approach |
 |----------|----------|
-| Pure Python packages (jinja2, pyyaml) | Bundle in main worker |
-| Small C extensions (markupsafe) | WASM side modules in main worker |
-| Large C packages (numpy, scipy) | C extensions compiled to .wasm via zig cc, loaded via dl_open in child DO |
-| Heavy compute (ML inference, image processing) | Separate worker with dedicated WASM |
+| Pure Python packages (jinja2, pyyaml, langchain-core) | Bundle in `site-packages.zip` |
+| Small C extensions (markupsafe) | Pure Python fallback or WASM side module |
+| Rust extensions (pydantic_core) | Compiled to WASM variant (`python-pydantic-core.wasm`) |
+| C extensions (numpy) | Compiled to WASM variant (`python-numpy.wasm`) |
+| Heavy compute (ML inference) | Use Workers AI (`env.AI.run()`) |
 
 ## Comparison with Pyodide
 

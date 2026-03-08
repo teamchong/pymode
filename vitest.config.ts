@@ -6,6 +6,7 @@ export default defineWorkersConfig({
       "test/pydantic.test.ts",
       "test/langchain.test.ts",
       "test/langgraph.test.ts",
+      "test/ai-libs.test.ts",
       "test/real-world.test.ts",
       "**/node_modules/**",
     ],
