@@ -200,7 +200,8 @@ def main():
                             filepath = os.path.join(root, f)
                             arcname = os.path.relpath(filepath, pkg_src)
                             zf.write(filepath, arcname)
-        count = len(zipfile.ZipFile(site_pkg_zip).namelist())
+        with zipfile.ZipFile(site_pkg_zip) as zf_read:
+            count = len(zf_read.namelist())
         size_kb = os.path.getsize(site_pkg_zip) // 1024
         print(f"  {count} Python files -> {size_kb}KB")
 

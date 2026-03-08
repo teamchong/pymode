@@ -92,16 +92,14 @@ def _run():
     try:
         result = handler(request, env)
 
-        # Handle async handlers (coroutines)
-        # In WASM CPython, we don't have a real event loop, so we drive
-        # the coroutine manually for simple await patterns
+        # Handle async handlers (coroutines).
+        # In WASM CPython we don't have a real event loop, so we drive
+        # the coroutine manually. Only single-await coroutines are supported.
         if hasattr(result, "send"):
             try:
                 result.send(None)
             except StopIteration as stop:
                 result = stop.value
-            except Exception:
-                raise
 
         # Normalize result to Response
         if isinstance(result, Response):

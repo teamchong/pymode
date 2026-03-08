@@ -79,6 +79,13 @@ export function createWasi(
   const dataPreopenPath = "/data";
   const tmpPreopenPath = "/tmp";
 
+  // Pre-encode preopen paths (called repeatedly during WASI init)
+  const preopenPaths: Record<number, { str: string; bytes: Uint8Array }> = {
+    [FD_PREOPEN]: { str: preopenPath, bytes: encoder.encode(preopenPath) },
+    [FD_DATA_PREOPEN]: { str: dataPreopenPath, bytes: encoder.encode(dataPreopenPath) },
+    [FD_TMP_PREOPEN]: { str: tmpPreopenPath, bytes: encoder.encode(tmpPreopenPath) },
+  };
+
   interface OpenFile {
     path: string;
     data: Uint8Array;
@@ -335,30 +342,20 @@ export function createWasi(
     },
 
     fd_prestat_get(fd: number, retPtr: number): number {
-      const preopens: Record<number, string> = {
-        [FD_PREOPEN]: preopenPath,
-        [FD_DATA_PREOPEN]: dataPreopenPath,
-        [FD_TMP_PREOPEN]: tmpPreopenPath,
-      };
-      const path = preopens[fd];
-      if (path !== undefined) {
+      const preopen = preopenPaths[fd];
+      if (preopen) {
         const v = view();
         v.setUint8(retPtr, 0); // PREOPENTYPE_DIR
-        v.setUint32(retPtr + 4, encoder.encode(path).length, true);
+        v.setUint32(retPtr + 4, preopen.bytes.length, true);
         return ESUCCESS;
       }
       return EBADF;
     },
 
     fd_prestat_dir_name(fd: number, pathPtr: number, pathLen: number): number {
-      const preopens: Record<number, string> = {
-        [FD_PREOPEN]: preopenPath,
-        [FD_DATA_PREOPEN]: dataPreopenPath,
-        [FD_TMP_PREOPEN]: tmpPreopenPath,
-      };
-      const path = preopens[fd];
-      if (path !== undefined) {
-        mem().set(encoder.encode(path).subarray(0, pathLen), pathPtr);
+      const preopen = preopenPaths[fd];
+      if (preopen) {
+        mem().set(preopen.bytes.subarray(0, pathLen), pathPtr);
         return ESUCCESS;
       }
       return EBADF;
@@ -490,7 +487,11 @@ export function createWasi(
     ): number {
       const file = openFiles.get(fd);
       if (!file && fd !== FD_PREOPEN && fd !== FD_DATA_PREOPEN && fd !== FD_TMP_PREOPEN) return EBADF;
-      const dirPath = fd === FD_PREOPEN ? "" : fd === FD_DATA_PREOPEN ? "data" : fd === FD_TMP_PREOPEN ? "tmp" : file!.path;
+      let dirPath: string;
+      if (fd === FD_PREOPEN) dirPath = "";
+      else if (fd === FD_DATA_PREOPEN) dirPath = "data";
+      else if (fd === FD_TMP_PREOPEN) dirPath = "tmp";
+      else dirPath = file!.path;
       const entries = dirChildren.get(dirPath) || [];
       const v = view();
       const m = mem();

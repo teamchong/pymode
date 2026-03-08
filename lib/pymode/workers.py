@@ -65,14 +65,20 @@ class Request:
         self._body = body or ""
 
     @property
+    def _parsed_url(self):
+        if not hasattr(self, '_parsed'):
+            from urllib.parse import urlparse
+            self._parsed = urlparse(self.url)
+        return self._parsed
+
+    @property
     def path(self):
-        from urllib.parse import urlparse
-        return urlparse(self.url).path
+        return self._parsed_url.path
 
     @property
     def query(self):
-        from urllib.parse import urlparse, parse_qs
-        return parse_qs(urlparse(self.url).query)
+        from urllib.parse import parse_qs
+        return parse_qs(self._parsed_url.query)
 
     def text(self):
         if isinstance(self._body, bytes):
@@ -100,7 +106,7 @@ class Response:
     """
 
     def __init__(self, body="", status=200, headers=None):
-        if isinstance(body, dict) or isinstance(body, list):
+        if isinstance(body, (dict, list)):
             self.body = json.dumps(body)
             self._headers = Headers(headers or {"Content-Type": "application/json"})
         elif isinstance(body, bytes):

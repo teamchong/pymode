@@ -163,46 +163,8 @@ interface Env {
 async function runWasm(
   args: string[],
   env: Record<string, string>,
-  files: Record<string, Uint8Array>
-): Promise<WasiResult> {
-  let memory: WebAssembly.Memory | undefined;
-  const wasi = createWasi(args, env, files, () => memory!, undefined, stdlibDirIndex);
-
-  try {
-    const { instance } = await WebAssembly.instantiate(pythonWasm, {
-      wasi_snapshot_preview1: wasi.imports,
-    });
-    memory = instance.exports.memory as WebAssembly.Memory;
-    const start = instance.exports._start as () => void;
-    start();
-    return {
-      exitCode: 0,
-      stdout: wasi.getStdout(),
-      stderr: wasi.getStderr(),
-      files,
-      writtenFiles: wasi.getWrittenFiles(),
-    };
-  } catch (e: unknown) {
-    if (e instanceof ProcExit) {
-      return {
-        exitCode: e.code,
-        stdout: wasi.getStdout(),
-        stderr: wasi.getStderr(),
-        files,
-        writtenFiles: wasi.getWrittenFiles(),
-      };
-    }
-    throw e;
-  }
-}
-
-// Run Python WASM with stdin data — used for project mode handler invocation.
-// Pipes stdinData as stdin so the Python handler can read the serialized request.
-async function runWasmWithStdin(
-  args: string[],
-  env: Record<string, string>,
   files: Record<string, Uint8Array>,
-  stdinData: Uint8Array
+  stdinData?: Uint8Array
 ): Promise<WasiResult> {
   let memory: WebAssembly.Memory | undefined;
   const wasi = createWasi(args, env, files, () => memory!, stdinData, stdlibDirIndex);
@@ -697,7 +659,7 @@ export default {
 
         // Fallback: run without host imports (no KV/R2/D1/TCP, but works)
         const stdinData = encoder.encode(requestJson);
-        const result = await runWasmWithStdin(
+        const result = await runWasm(
           ["python", "-S", "-m", "pymode._handler", userFilesModule.entryModule],
           { PYTHONPATH: pythonPath, PYTHONDONTWRITEBYTECODE: "1", PYTHONNOUSERSITE: "1" },
           files,

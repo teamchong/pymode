@@ -95,7 +95,7 @@ def main():
         error(f"Entry point not found: {entry_file}")
 
     # Convert entry point path to Python module name
-    entry_module = entry_point.replace(".py", "").replace("/", ".")
+    entry_module = entry_point.removesuffix(".py").replace("/", ".")
 
     info(f"Project:     {project_dir}")
     info(f"Entry point: {entry_point}")

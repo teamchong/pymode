@@ -76,18 +76,18 @@ export class AsyncifyRuntime {
     this.exports = instance.exports;
     this.memory = instance.exports.memory as WebAssembly.Memory;
 
-    // Allocate asyncify data buffer at the end of initial memory
-    // The buffer stores: [stack_start_ptr, stack_end_ptr, ...stack_data]
-    const memSize = this.memory.buffer.byteLength;
-    this.dataAddr = memSize - ASYNCIFY_DATA_SIZE;
-
-    // Grow memory if needed to fit the asyncify buffer
+    // Grow memory first, then place asyncify buffer in the newly allocated region.
+    // This ensures the buffer doesn't overlap with CPython's heap allocator.
     const pages = Math.ceil(ASYNCIFY_DATA_SIZE / 65536);
     try {
       this.memory.grow(pages);
     } catch {
       // Already have enough memory
     }
+
+    // Place buffer at end of (possibly grown) memory
+    const memSize = this.memory.buffer.byteLength;
+    this.dataAddr = memSize - ASYNCIFY_DATA_SIZE;
 
     // Initialize the data region: first 8 bytes are the stack pointer range
     const view = new DataView(this.memory.buffer);

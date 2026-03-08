@@ -198,6 +198,7 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
         const n = Math.min(remaining, bufLen);
         self.getMemBytes().set(resp.body.subarray(resp.offset, resp.offset + n), bufPtr);
         resp.offset += n;
+        if (n === 0) self.httpResponses.delete(responseId);
         return n;
       },
 
@@ -617,5 +618,8 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
       try { conn.socket.close(); } catch {}
     }
     this.tcpConns.clear();
+    this.httpResponses.clear();
+    this.dlModules.clear();
+    this.threadResults.clear();
   }
 }

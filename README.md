@@ -105,7 +105,7 @@ pymode add jinja2 click beautifulsoup4
 pymode install            # reinstall from pyproject.toml
 ```
 
-32 packages work out of the box including jinja2, click, beautifulsoup4, pyyaml, starlette, attrs, packaging, pyparsing, six, idna, anyio, certifi, and more.
+40+ packages work out of the box including jinja2, click, beautifulsoup4, pyyaml, starlette, attrs, packaging, pyparsing, six, idna, anyio, certifi, requests, httpx, urllib3, msgpack, xxhash, regex, and more.
 
 ```python
 from jinja2 import Environment
@@ -142,6 +142,17 @@ print(arr.mean())  # 2.0
 Recipes define how to compile each C extension (`recipes/*.json`). Currently
 supported: numpy, markupsafe, pyyaml, regex, multidict, yarl, frozenlist,
 propcache, zstandard. Extensions must compile with `zig cc -target wasm32-wasi`.
+
+**Native built-in extensions** — compiled directly into the WASM binary for zero-overhead access:
+
+| Extension | Package | What it provides |
+|-----------|---------|------------------|
+| `_xxhash` | xxhash | Native XXH3/XXH64/XXH128 hashing |
+| `_regex` | regex | Full Unicode properties, fuzzy matching |
+| `_cmsgpack` | msgpack | C-speed MessagePack serialization |
+| `_markupsafe_speedups` | markupsafe/jinja2 | Fast HTML escaping |
+
+These are registered as CPython built-in modules and loaded via bridge files in site-packages. Variant builds (e.g. `python-pydantic-core.wasm`) that don't include a native extension automatically fall back to pure-Python implementations.
 
 ### Multi-File Projects
 
@@ -225,6 +236,24 @@ def confirm(ctx):
 curl -X POST http://localhost:8787/workflow/run \
   -d '{"input": {"item": "widget", "quantity": 3}}'
 ```
+
+### Service Bindings (TS → Python)
+
+Call Python functions from TypeScript workers via Durable Object RPC — no HTTP serialization:
+
+```typescript
+const doId = env.PYTHON_DO.idFromName("default");
+const pythonDO = env.PYTHON_DO.get(doId);
+
+const result = await pythonDO.callFunction(
+  "src.analytics",       // Python module
+  "summarize",           // Function name
+  { values: [1, 2, 3] } // kwargs (JSON-serializable)
+);
+// result.returnValue → { count: 3, mean: 2.0, ... }
+```
+
+See [`examples/ts-python-service/`](examples/ts-python-service/) for a complete example.
 
 ### Deploy-Time Snapshots (Wizer)
 
@@ -311,14 +340,20 @@ Users can use the pre-built binary from npm/releases.
 ```bash
 # Prerequisites: python3, wasmtime, zig 0.15+, wasm-opt
 
-# Build CPython WASM
-./scripts/build-phase2.sh
+# Build CPython WASM (zig cc + asyncify)
+python3 scripts/build-phase2.py
 
-# Generate stdlib bundle
+# Generate stdlib + pymode bundle for worker
 python3 scripts/generate-stdlib-fs.py
 
 # (Optional) Build Wizer snapshot for fast cold starts
 python3 scripts/build-wizer.py
+
+# Run tests (312 tests across 15 files)
+npm test
+
+# Run pydantic variant tests (9 additional tests)
+npm run test:pydantic
 ```
 
 ## Project Structure
@@ -348,6 +383,7 @@ python3 scripts/build-wizer.py
 | `examples/hello-worker/` | Simple handler example |
 | `examples/api-worker/` | Multi-file project with KV |
 | `examples/workflow-worker/` | Durable workflow with retries |
+| `examples/ts-python-service/` | TypeScript calling Python via DO RPC |
 
 ## Comparison: PyMode vs CF Python Workers
 
