@@ -114,6 +114,14 @@ BOOT_FILES=(
     "xml/etree/ElementPath.py"
     "xml/etree/ElementInclude.py"
     "xml/etree/cElementTree.py"
+    "xml/sax/__init__.py"
+    "xml/sax/_exceptions.py"
+    "xml/sax/expatreader.py"
+    "xml/sax/handler.py"
+    "xml/sax/saxutils.py"
+    "xml/sax/xmlreader.py"
+    "xml/parsers/__init__.py"
+    "xml/parsers/expat.py"
     # uuid
     "uuid.py"
     # csv

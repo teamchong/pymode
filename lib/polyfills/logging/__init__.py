@@ -208,8 +208,15 @@ class Logger:
         if filter in self.filters:
             self.filters.remove(filter)
 
+    def makeRecord(self, name, level, fn, lno, msg, args, exc_info, func=None, extra=None, sinfo=None):
+        record = LogRecord(name, level, fn, lno, msg, args, exc_info, func, sinfo)
+        if extra:
+            for key, value in extra.items():
+                setattr(record, key, value)
+        return record
+
     def _log(self, level, msg, args, exc_info=None, extra=None, stack_info=False, stacklevel=1):
-        record = LogRecord(self.name, level, "", 0, msg, args, exc_info)
+        record = self.makeRecord(self.name, level, "", 0, msg, args, exc_info, extra=extra)
         self.handle(record)
 
     def handle(self, record):

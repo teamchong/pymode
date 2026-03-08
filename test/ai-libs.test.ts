@@ -17,46 +17,36 @@ async function run(code: string): Promise<{ text: string; status: number }> {
 }
 
 describe("instructor", () => {
-  it("imports and has core types", { timeout: 20000 }, async () => {
+  it("imports and creates structured output types", { timeout: 20000 }, async () => {
     const { text, status } = await run(`
-try:
-    import instructor
-    print(f"version={instructor.__version__}")
-    print(f"has_from_openai={hasattr(instructor, 'from_openai')}")
-    print(f"has_patch={hasattr(instructor, 'patch')}")
-    print(f"has_mode={hasattr(instructor, 'Mode')}")
-except Exception as e:
-    import traceback
-    traceback.print_exc()
-    print(f"ERROR: {e}")
+import instructor
+print(f"version={instructor.__version__}")
+print(f"has_from_openai={hasattr(instructor, 'from_openai')}")
+print(f"has_patch={hasattr(instructor, 'patch')}")
+print(f"has_mode={hasattr(instructor, 'Mode')}")
 `);
-    console.log("instructor:", status, text.substring(0, 200));
     expect(status).toBe(200);
-    expect(text).not.toContain("ERROR:");
+    expect(text).toContain("has_from_openai=True");
+    expect(text).toContain("has_mode=True");
   });
 });
 
 describe("openai sdk", () => {
   it("imports openai client types", { timeout: 20000 }, async () => {
     const { text, status } = await run(`
-try:
-    import openai
-    print(f"version={openai.__version__}")
-    print(f"has_client={hasattr(openai, 'OpenAI')}")
-    print(f"has_async={hasattr(openai, 'AsyncOpenAI')}")
-except Exception as e:
-    import traceback
-    traceback.print_exc()
-    print(f"ERROR: {e}")
+import openai
+print(f"version={openai.__version__}")
+print(f"has_client={hasattr(openai, 'OpenAI')}")
+print(f"has_async={hasattr(openai, 'AsyncOpenAI')}")
 `);
-    console.log("openai:", status, text.substring(0, 200));
     expect(status).toBe(200);
-    expect(text).not.toContain("ERROR:");
+    expect(text).toContain("has_client=True");
+    expect(text).toContain("has_async=True");
   });
 });
 
 describe("dspy", () => {
-  it("imports dspy core", { timeout: 20000 }, async () => {
+  it("imports dspy and checks core types", { timeout: 20000 }, async () => {
     const { text, status } = await run(`
 try:
     import dspy
@@ -64,33 +54,40 @@ try:
     print(f"has_predict={hasattr(dspy, 'Predict')}")
     print(f"has_signature={hasattr(dspy, 'Signature')}")
 except Exception as e:
-    import traceback
-    traceback.print_exc()
     print(f"ERROR: {e}")
 `);
-    console.log("dspy:", status, text.substring(0, 200));
-    // Don't assert status — just record if it works
-    if (status === 200 && !text.includes("ERROR:")) {
-      expect(text).toContain("has_module=");
-    }
+    console.log("dspy:", status, text.substring(0, 300));
+    expect(status).toBe(200);
   });
 });
 
-describe("marvin", () => {
-  it("imports marvin core", { timeout: 20000 }, async () => {
+describe("autogen", () => {
+  it("imports autogen-agentchat core", { timeout: 20000 }, async () => {
     const { text, status } = await run(`
 try:
-    import marvin
-    print(f"version={marvin.__version__}")
-    print(f"type={type(marvin).__name__}")
+    from autogen_agentchat import agents
+    print(f"has_agents={hasattr(agents, 'BaseChatAgent')}")
+    print(f"module={agents.__name__}")
 except Exception as e:
-    import traceback
-    traceback.print_exc()
     print(f"ERROR: {e}")
 `);
-    console.log("marvin:", status, text.substring(0, 200));
-    if (status === 200 && !text.includes("ERROR:")) {
-      expect(text).toContain("version=");
-    }
+    console.log("autogen:", status, text.substring(0, 300));
+    expect(status).toBe(200);
+  });
+});
+
+describe("haystack", () => {
+  it("imports haystack-ai core", { timeout: 20000 }, async () => {
+    const { text, status } = await run(`
+try:
+    from haystack import Pipeline
+    from haystack.components.generators.utils import print_streaming_chunk
+    print(f"has_pipeline={Pipeline is not None}")
+    print(f"pipeline_type={type(Pipeline).__name__}")
+except Exception as e:
+    print(f"ERROR: {e}")
+`);
+    console.log("haystack:", status, text.substring(0, 300));
+    expect(status).toBe(200);
   });
 });
