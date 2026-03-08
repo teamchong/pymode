@@ -1,0 +1,10 @@
+name = "ts-python-service"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+
+# Service binding to the Python worker's Durable Object.
+# The Python worker must export PythonDO and be deployed first.
+[durable_objects]
+bindings = [
+  { name = "PYTHON_DO", class_name = "PythonDO", script_name = "python-analytics-service" }
+]

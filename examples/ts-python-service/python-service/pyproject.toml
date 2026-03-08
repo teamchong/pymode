@@ -1,0 +1,8 @@
+[project]
+name = "python-analytics-service"
+version = "0.1.0"
+description = "Python analytics service — called via DO RPC from TypeScript workers"
+dependencies = ["jinja2", "regex"]
+
+[tool.pymode]
+main = "src/analytics.py"
