@@ -105,12 +105,20 @@ void wizer_initialize(void) {
     _preimport("decimal");
     _preimport("enum");
     _preimport("abc");
+    _preimport("importlib");
+    _preimport("traceback");
+    _preimport("string");
+    _preimport("textwrap");
+    _preimport("copy");
+    _preimport("operator");
+    _preimport("contextlib");
 
     /* Pre-import pymode shims */
     _preimport("pymode");
     _preimport("pymode.tcp");
     _preimport("pymode.http");
     _preimport("pymode.env");
+    _preimport("_wasi_compat");
 
     /* Create the execution namespace.
      * __main__.__dict__ serves as both globals and locals. */
