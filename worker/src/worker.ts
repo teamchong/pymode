@@ -63,10 +63,7 @@ export class TcpPoolDO extends DurableObject {
   async tcpSend(connId: string, dataBase64: string): Promise<void> {
     const conn = this.connections.get(connId);
     if (!conn) throw new Error(`send on unknown connection: ${connId}`);
-    const binary = atob(dataBase64);
-    const data = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) data[i] = binary.charCodeAt(i);
-    await conn.writer.write(data);
+    await conn.writer.write(base64Decode(dataBase64));
   }
 
   async tcpRecv(connId: string, bufsize: number): Promise<string> {
@@ -215,7 +212,6 @@ const TCP_RESPONSES_DIR = "tmp/_pymode_tcp_responses";
 async function replayTcpOps(
   ops: TcpOp[],
   files: Record<string, Uint8Array>,
-  encoder: TextEncoder
 ): Promise<void> {
   const connections = new Map<string, { socket: any; writer: WritableStreamDefaultWriter; reader: ReadableStreamDefaultReader }>();
 
@@ -252,13 +248,11 @@ async function replayTcpOps(
           setTimeout(() => resolve({ value: undefined, done: true }), 10000)
         );
 
-        // Read at least one chunk — database protocols send discrete messages
-        while (totalLen < bufsize) {
-          const result = await Promise.race([conn.reader.read(), timeoutPromise]);
-          if (result.done || !result.value) break;
+        // Read one chunk — database protocols send discrete messages
+        const result = await Promise.race([conn.reader.read(), timeoutPromise]);
+        if (!result.done && result.value) {
           chunks.push(result.value);
           totalLen += result.value.length;
-          break;
         }
 
         // Only write to VFS if not already cached
@@ -267,7 +261,7 @@ async function replayTcpOps(
           let off = 0;
           for (const c of chunks) { recvData.set(c, off); off += c.length; }
           const meta = JSON.stringify({ dataBase64: base64Encode(recvData) });
-          files[respPath] = encoder.encode(meta);
+          files[respPath] = _encoder.encode(meta);
         }
         break;
       }
@@ -337,7 +331,6 @@ async function flushDataToKV(
 async function replayTcpOpsViaDO(
   ops: TcpOp[],
   files: Record<string, Uint8Array>,
-  encoder: TextEncoder,
   tcpPool: DurableObjectNamespace
 ): Promise<void> {
   // Build connId → host:port mapping from connect ops
@@ -386,7 +379,7 @@ async function replayTcpOpsViaDO(
           const respPath = `${TCP_RESPONSES_DIR}/${recvId}`;
           if (!files[respPath]) {
             const meta = JSON.stringify({ dataBase64 });
-            files[respPath] = encoder.encode(meta);
+            files[respPath] = _encoder.encode(meta);
           }
         }
       } catch (tcpErr) {
@@ -396,7 +389,7 @@ async function replayTcpOpsViaDO(
             error: tcpErr instanceof Error ? tcpErr.message : String(tcpErr),
             dataBase64: "",
           });
-          files[`${TCP_RESPONSES_DIR}/${lastRecv.recvId}`] = encoder.encode(meta);
+          files[`${TCP_RESPONSES_DIR}/${lastRecv.recvId}`] = _encoder.encode(meta);
         }
       }
     })());
@@ -412,8 +405,6 @@ async function runPythonWithFetch(
   pythonPath: string = "/stdlib",
   tcpPool?: DurableObjectNamespace
 ): Promise<{ stdout: Uint8Array; stderr: Uint8Array; exitCode: number }> {
-  const encoder = _encoder;
-  const decoder = _decoder;
   const files = { ...baseFiles };
 
   // Load persistent /data from KV before first run
@@ -458,7 +449,7 @@ async function runPythonWithFetch(
       const pending: Array<{
         url: string; method: string; headers?: Record<string, string>;
         body?: string; bodyIsBase64?: boolean;
-      }> = JSON.parse(decoder.decode(pendingFetchRaw));
+      }> = JSON.parse(__decoder.decode(pendingFetchRaw));
 
       if (pending.length > 0) {
         const responses = await Promise.all(
@@ -485,7 +476,7 @@ async function runPythonWithFetch(
             headers: Object.fromEntries([...responses[i].headers.entries()]),
             bodyBase64: base64Encode(body),
           });
-          files[`${FETCH_RESPONSES_DIR}/${key}`] = encoder.encode(meta);
+          files[`${FETCH_RESPONSES_DIR}/${key}`] = _encoder.encode(meta);
         }
       }
       delete files[PENDING_FETCHES_PATH];
@@ -494,13 +485,13 @@ async function runPythonWithFetch(
     // Handle TCP operations — use TcpPoolDO for persistent connections when
     // available, fall back to raw socket replay when DO binding is not configured
     if (pendingTcpOpsRaw) {
-      const ops: TcpOp[] = JSON.parse(decoder.decode(pendingTcpOpsRaw));
+      const ops: TcpOp[] = JSON.parse(__decoder.decode(pendingTcpOpsRaw));
 
       if (tcpPool) {
-        await replayTcpOpsViaDO(ops, files, encoder, tcpPool);
+        await replayTcpOpsViaDO(ops, files, tcpPool);
       } else {
         try {
-          await replayTcpOps(ops, files, encoder);
+          await replayTcpOps(ops, files);
         } catch (tcpErr) {
           const lastRecv = [...ops].reverse().find(op => op.op === "recv");
           if (lastRecv && lastRecv.recvId !== undefined) {
@@ -508,7 +499,7 @@ async function runPythonWithFetch(
               error: tcpErr instanceof Error ? tcpErr.message : String(tcpErr),
               dataBase64: "",
             });
-            files[`${TCP_RESPONSES_DIR}/${lastRecv.recvId}`] = encoder.encode(meta);
+            files[`${TCP_RESPONSES_DIR}/${lastRecv.recvId}`] = _encoder.encode(meta);
           }
         }
       }
@@ -524,7 +515,6 @@ async function runPythonWithFetch(
  * Python reads this from stdin, constructs a Request object, calls on_fetch().
  */
 async function serializeRequest(request: Request, env: Env): Promise<string> {
-  const url = new URL(request.url);
   const headers: Record<string, string> = {};
   request.headers.forEach((value, key) => { headers[key] = value; });
 
@@ -568,10 +558,7 @@ function deserializeResponse(stdout: string, stderr: string): Response {
 
     // Handle binary responses (base64-encoded by Python)
     if (data.bodyIsBinary && data.body) {
-      const binary = atob(data.body);
-      const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-      body = bytes;
+      body = base64Decode(data.body);
     }
 
     const headers: Record<string, string> = data.headers || {};
@@ -591,16 +578,13 @@ function deserializeResponse(stdout: string, stderr: string): Response {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    const encoder = _encoder;
-    const decoder = _decoder;
-
     // Build VFS: stdlib + pymode runtime (pre-encoded at module load)
     const files: Record<string, Uint8Array> = { ...stdlibBin };
 
     // Mount user project files at /app/ in VFS
     if (userFilesModule) {
       for (const [path, content] of Object.entries(userFilesModule.userFiles)) {
-        files[path] = encoder.encode(content);
+        files[path] = _encoder.encode(content);
       }
     }
 
@@ -638,7 +622,7 @@ export default {
         }
 
         // Fallback: run without host imports (no KV/R2/D1/TCP, but works)
-        const stdinData = encoder.encode(requestJson);
+        const stdinData = _encoder.encode(requestJson);
         const result = await runWasm(
           ["python", "-S", "-m", "pymode._handler", userFilesModule.entryModule],
           { PYTHONPATH: pythonPath, PYTHONDONTWRITEBYTECODE: "1", PYTHONNOUSERSITE: "1" },
@@ -646,8 +630,8 @@ export default {
           stdinData
         );
 
-        const stdout = decoder.decode(result.stdout);
-        const stderr = decoder.decode(result.stderr);
+        const stdout = _decoder.decode(result.stdout);
+        const stderr = _decoder.decode(result.stderr);
         if (stderr) console.error("[PyMode stderr]", stderr);
 
         if (env.PYMODE_DATA) {
@@ -687,14 +671,14 @@ export default {
       const result = await runPythonWithFetch(code, files, env.PYMODE_DATA, pythonPath, env.TCP_POOL);
 
       if (result.exitCode === 0) {
-        const output = decoder.decode(result.stdout);
+        const output = _decoder.decode(result.stdout);
         return new Response(output || "(empty output)\n", {
           headers: { "Content-Type": "text/plain; charset=utf-8", "X-Powered-By": "PyMode" },
         });
       }
 
-      const output = decoder.decode(result.stdout);
-      const errors = decoder.decode(result.stderr);
+      const output = _decoder.decode(result.stdout);
+      const errors = _decoder.decode(result.stderr);
       return new Response(output + errors, {
         status: 500,
         headers: { "Content-Type": "text/plain; charset=utf-8", "X-Powered-By": "PyMode" },
