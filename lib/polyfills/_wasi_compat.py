@@ -7,6 +7,20 @@ Imported as the first line before user code by the Worker runtime.
 """
 
 import os
+import sys
+
+# In test mode, replace the built-in _pymode C extension with the pure-Python
+# polyfill. The polyfill reads seed data from the VFS and provides in-memory
+# KV/R2/D1/env stores, while the C extension calls WASM host imports that
+# require Asyncify + PythonDO infrastructure not present in the test runner.
+if os.path.exists("/stdlib/tmp/_pymode_seed.json"):
+    import importlib.util
+    _spec = importlib.util.spec_from_file_location("_pymode", "/stdlib/_pymode.py")
+    if _spec and _spec.loader:
+        _mod = importlib.util.module_from_spec(_spec)
+        sys.modules["_pymode"] = _mod
+        _spec.loader.exec_module(_mod)
+        del _mod, _spec
 
 # WASI has no process model — provide defaults for packages that check these.
 if not hasattr(os, "getpid"):
