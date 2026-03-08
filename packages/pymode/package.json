@@ -1,0 +1,24 @@
+{
+  "name": "pymode",
+  "version": "0.1.0",
+  "description": "Run CPython 3.13 on Cloudflare Workers — WASM runtime, WASI, Asyncify",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./wasi": "./src/wasi.ts",
+    "./asyncify": "./src/asyncify.ts",
+    "./python.wasm": "./python.wasm"
+  },
+  "files": [
+    "src/",
+    "python.wasm",
+    "stdlib-data.dat"
+  ],
+  "keywords": ["cloudflare", "workers", "python", "wasm", "wasi", "cpython"],
+  "license": "MIT",
+  "peerDependencies": {
+    "wrangler": ">=3.0.0"
+  }
+}
