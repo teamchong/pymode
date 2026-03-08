@@ -14,28 +14,8 @@ import { DurableObject } from "cloudflare:workers";
 import { connect } from "cloudflare:sockets";
 import { AsyncifyRuntime } from "./asyncify";
 import pythonWasm from "./python.wasm";
-import { stdlibFS } from "./stdlib-fs";
-import { ProcExit, createWasi, buildDirIndex } from "./wasi";
-
-// Pre-encode stdlib files once at module load (persists across requests in the DO isolate).
-const _encoder = new TextEncoder();
-const _decoder = new TextDecoder();
-const stdlibBin: Record<string, Uint8Array> = {};
-for (const [path, content] of Object.entries(stdlibFS)) {
-  stdlibBin[path] = _encoder.encode(content);
-}
-
-// Pre-build directory index from stdlib paths.
-const stdlibDirIndex = buildDirIndex(stdlibBin);
-
-// Optional: extension site-packages (e.g. numpy Python layer)
-let extensionPackagesBin: Uint8Array | undefined;
-try {
-  // @ts-ignore — conditional import, only present for extension variants
-  extensionPackagesBin = new Uint8Array(require("./extension-site-packages.zip"));
-} catch {
-  // No extension packages
-}
+import { ProcExit, createWasi } from "./wasi";
+import { encoder as _encoder, decoder as _decoder, stdlibBin, stdlibDirIndex, extensionPackagesBin } from "./stdlib-bin";
 
 interface PythonDOEnv {
   KV?: KVNamespace;
@@ -100,8 +80,16 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
   // Stored references for spawning child DOs and dynamic loading
   private wasmInstance: WebAssembly.Instance | null = null;
 
+  private _memView: Uint8Array | null = null;
+  private _memBuffer: ArrayBuffer | null = null;
+
   private getMemBytes(): Uint8Array {
-    return new Uint8Array(this.wasmMemory!.buffer);
+    const buf = this.wasmMemory!.buffer;
+    if (buf !== this._memBuffer) {
+      this._memBuffer = buf;
+      this._memView = new Uint8Array(buf);
+    }
+    return this._memView!;
   }
 
   private readString(ptr: number, len: number): string {
@@ -139,7 +127,7 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
         const conn = self.tcpConns.get(connId);
         if (!conn) return -1;
         const data = self.getMemBytes().slice(dataPtr, dataPtr + dataLen);
-        conn.writer.write(data);
+        conn.writer.write(data).catch(() => {});
         return dataLen;
       },
 

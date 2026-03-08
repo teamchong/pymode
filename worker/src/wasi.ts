@@ -107,9 +107,13 @@ export function createWasi(
 
   // Clone the pre-built directory index or build one fresh.
   // Cloning a Map is cheaper than rebuilding from 242+ file paths.
-  const dirChildren: Map<string, string[]> = baseDirIndex
-    ? new Map([...baseDirIndex].map(([k, v]) => [k, [...v]]))
-    : buildDirIndex(files);
+  let dirChildren: Map<string, string[]>;
+  if (baseDirIndex) {
+    dirChildren = new Map<string, string[]>();
+    for (const [k, v] of baseDirIndex) dirChildren.set(k, v.slice());
+  } else {
+    dirChildren = buildDirIndex(files);
+  }
 
   function isDir(path: string): boolean {
     return dirChildren.has(path);

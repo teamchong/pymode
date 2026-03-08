@@ -1,20 +1,9 @@
 import pythonWasm from "./python.wasm";
-import { stdlibFS } from "./stdlib-fs.js";
 import { DurableObject } from "cloudflare:workers";
 import { connect } from "cloudflare:sockets";
-import { ProcExit, createWasi, buildDirIndex } from "./wasi";
+import { ProcExit, createWasi } from "./wasi";
 import type { WasiResult } from "./wasi";
-
-// Pre-encode stdlib files once at module load (persists across requests in the isolate).
-const _encoder = new TextEncoder();
-const _decoder = new TextDecoder();
-const stdlibBin: Record<string, Uint8Array> = {};
-for (const [path, content] of Object.entries(stdlibFS)) {
-  stdlibBin[path] = _encoder.encode(content);
-}
-
-// Pre-build directory index from stdlib paths (avoids rebuilding per request).
-const stdlibDirIndex = buildDirIndex(stdlibBin);
+import { encoder as _encoder, decoder as _decoder, stdlibBin, stdlibDirIndex, extensionPackagesBin } from "./stdlib-bin";
 
 // Re-export DOs so wrangler can find them
 export { PythonDO } from "./python-do";
@@ -40,15 +29,6 @@ try {
   sitePackagesBin = new Uint8Array(sitePackagesData);
 } catch {
   // No site-packages bundled
-}
-
-// Optional: extension site-packages (e.g. numpy Python layer).
-let extensionPackagesBin: Uint8Array | undefined;
-try {
-  // @ts-ignore — conditional import, only present for extension variants
-  extensionPackagesBin = new Uint8Array(require("./extension-site-packages.zip"));
-} catch {
-  // No extension packages bundled
 }
 
 interface TcpOp {

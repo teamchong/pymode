@@ -16,18 +16,8 @@
 
 import { DurableObject } from "cloudflare:workers";
 import pythonWasm from "./python.wasm";
-import { stdlibFS } from "./stdlib-fs";
-import { ProcExit, createWasi, buildDirIndex } from "./wasi";
-
-const _encoder = new TextEncoder();
-const _decoder = new TextDecoder();
-
-// Pre-encode stdlib once at module load (shared across all ThreadDO instances).
-const stdlibBin: Record<string, Uint8Array> = {};
-for (const [path, content] of Object.entries(stdlibFS)) {
-  stdlibBin[path] = _encoder.encode(content);
-}
-const stdlibDirIndex = buildDirIndex(stdlibBin);
+import { ProcExit, createWasi } from "./wasi";
+import { encoder as _encoder, decoder as _decoder, stdlibBin, stdlibDirIndex } from "./stdlib-bin";
 
 interface ThreadDOEnv {
   [key: string]: unknown;
@@ -114,7 +104,7 @@ export class ThreadDO extends DurableObject<ThreadDOEnv> {
         stderr: wasi.getStderr(),
         exitCode: 0,
       };
-    } catch (e: any) {
+    } catch (e: unknown) {
       if (e instanceof ProcExit) {
         return {
           stdout: wasi.getStdout(),
