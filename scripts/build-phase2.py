@@ -300,9 +300,10 @@ def main():
         )
         info("  Built Modules/pymode_imports.o")
 
-    # Step 3e: Build Zig native extension modules
+    # Step 3e: Build native extension modules (Zig and/or C)
     zig_modules_dir = os.path.join(ROOT_DIR, "zig-modules")
-    zig_native_modules = [
+    c_modules_dir = os.path.join(ROOT_DIR, "c-modules")
+    native_modules = [
         {
             "name": "_xxhash",
             "zig_src": os.path.join(zig_modules_dir, "xxhash", "module.zig"),
@@ -310,18 +311,36 @@ def main():
             "c_flags": ["-DXXH_IMPLEMENTATION", "-DXXH_STATIC_LINKING_ONLY"],
             "extra_includes": [os.path.join(zig_modules_dir, "xxhash")],
         },
+        {
+            "name": "_regex",
+            "c_srcs": [
+                os.path.join(c_modules_dir, "regex", "_regex.c"),
+                os.path.join(c_modules_dir, "regex", "_regex_unicode.c"),
+            ],
+            "extra_includes": [os.path.join(c_modules_dir, "regex")],
+        },
     ]
-    for mod in zig_native_modules:
-        if not os.path.isfile(mod["zig_src"]):
-            warn(f"  Zig module {mod['name']} source not found, skipping")
+    built_modules = []
+    for mod in native_modules:
+        zig_src = mod.get("zig_src")
+        c_srcs = mod.get("c_srcs", [])
+        if zig_src and not os.path.isfile(zig_src):
+            warn(f"  Module {mod['name']} Zig source not found, skipping")
             continue
-        info(f"Compiling Zig module {mod['name']}...")
+        if not zig_src and not c_srcs:
+            warn(f"  Module {mod['name']} has no sources, skipping")
+            continue
+        if c_srcs and not os.path.isfile(c_srcs[0]):
+            warn(f"  Module {mod['name']} C source not found, skipping")
+            continue
+        info(f"Compiling native module {mod['name']}...")
+        built_modules.append(mod)
         mod_obj_dir = os.path.join(BUILD_DIR, "Modules")
         os.makedirs(mod_obj_dir, exist_ok=True)
 
-        # Compile C sources with zig cc (separate from Zig to preserve symbol visibility)
+        # Compile C sources with zig cc
         c_objs = []
-        for c_src in mod.get("c_srcs", []):
+        for c_src in c_srcs:
             c_obj_name = os.path.splitext(os.path.basename(c_src))[0] + f"_{mod['name']}.o"
             c_obj = os.path.join(mod_obj_dir, c_obj_name)
             c_cmd = [
@@ -336,19 +355,21 @@ def main():
             subprocess.run(c_cmd, check=True)
             c_objs.append(c_obj_name)
 
-        # Compile Zig source
-        zig_cmd = [
-            "zig", "build-obj",
-            "-target", "wasm32-wasi",
-            "-OReleaseFast",
-            "-lc",
-            f"-I{BUILD_DIR}", f"-I{CPYTHON_DIR}/Include", f"-I{CPYTHON_DIR}/Include/internal",
-        ]
-        for inc in mod.get("extra_includes", []):
-            zig_cmd.append(f"-I{inc}")
-        zig_cmd.extend([mod["zig_src"], "--name", mod["name"]])
-        subprocess.run(zig_cmd, check=True, cwd=mod_obj_dir)
-        info(f"  Built Modules/{mod['name']}.o + {len(c_objs)} C objects")
+        # Compile Zig source (if present)
+        if zig_src:
+            zig_cmd = [
+                "zig", "build-obj",
+                "-target", "wasm32-wasi",
+                "-OReleaseFast",
+                "-lc",
+                f"-I{BUILD_DIR}", f"-I{CPYTHON_DIR}/Include", f"-I{CPYTHON_DIR}/Include/internal",
+            ]
+            for inc in mod.get("extra_includes", []):
+                zig_cmd.append(f"-I{inc}")
+            zig_cmd.extend([zig_src, "--name", mod["name"]])
+            subprocess.run(zig_cmd, check=True, cwd=mod_obj_dir)
+
+        info(f"  Built {mod['name']}: {'Zig + ' if zig_src else ''}{len(c_objs)} C object(s)")
 
         # Register as built-in module
         if os.path.isfile(config_c):
@@ -374,16 +395,15 @@ def main():
     makefile = os.path.join(BUILD_DIR, "Makefile")
     with open(makefile, "a") as f:
         f.write("\nMODULE_OBJS += Modules/pymode_imports.o\n")
-        for mod in zig_native_modules:
-            if os.path.isfile(mod["zig_src"]):
+        for mod in built_modules:
+            if mod.get("zig_src"):
                 f.write(f"MODULE_OBJS += Modules/{mod['name']}.o\n")
-                for c_src in mod.get("c_srcs", []):
-                    c_obj_name = os.path.splitext(os.path.basename(c_src))[0] + f"_{mod['name']}.o"
-                    f.write(f"MODULE_OBJS += Modules/{c_obj_name}\n")
+            for c_src in mod.get("c_srcs", []):
+                c_obj_name = os.path.splitext(os.path.basename(c_src))[0] + f"_{mod['name']}.o"
+                f.write(f"MODULE_OBJS += Modules/{c_obj_name}\n")
     info("  Added Modules/pymode_imports.o to MODULE_OBJS")
-    for mod in zig_native_modules:
-        if os.path.isfile(mod["zig_src"]):
-            info(f"  Added Modules/{mod['name']}.o to MODULE_OBJS")
+    for mod in built_modules:
+        info(f"  Added {mod['name']} objects to MODULE_OBJS")
 
     build_log = os.path.join(BUILD_DIR, "build.log")
     with open(build_log, "w") as log:
