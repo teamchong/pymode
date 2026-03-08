@@ -319,6 +319,11 @@ def main():
             ],
             "extra_includes": [os.path.join(c_modules_dir, "regex")],
         },
+        {
+            "name": "_cmsgpack",
+            "c_srcs": [os.path.join(c_modules_dir, "msgpack", "_cmsgpack.c")],
+            "extra_includes": [os.path.join(c_modules_dir, "msgpack")],
+        },
     ]
     built_modules = []
     for mod in native_modules:
