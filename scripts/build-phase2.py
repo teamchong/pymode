@@ -324,6 +324,10 @@ def main():
             "c_srcs": [os.path.join(c_modules_dir, "msgpack", "_cmsgpack.c")],
             "extra_includes": [os.path.join(c_modules_dir, "msgpack")],
         },
+        {
+            "name": "_markupsafe_speedups",
+            "c_srcs": [os.path.join(c_modules_dir, "markupsafe", "_speedups.c")],
+        },
     ]
     built_modules = []
     for mod in native_modules:
