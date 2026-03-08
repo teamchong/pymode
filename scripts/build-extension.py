@@ -92,7 +92,11 @@ def compile_side_module(output_wasm: str, src_files: list[str]) -> bool:
              "-o", output_wasm],
             capture_output=True,
         )
-        return result.returncode == 0
+        if result.returncode != 0:
+            if result.stderr:
+                error(f"  Link error: {result.stderr.decode(errors='replace')}")
+            return False
+        return True
 
 
 def download_source(name: str, dest: str):

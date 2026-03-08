@@ -339,8 +339,9 @@ def main():
         if not zig_src and not c_srcs:
             warn(f"  Module {mod['name']} has no sources, skipping")
             continue
-        if c_srcs and not os.path.isfile(c_srcs[0]):
-            warn(f"  Module {mod['name']} C source not found, skipping")
+        missing = [s for s in c_srcs if not os.path.isfile(s)]
+        if missing:
+            warn(f"  Module {mod['name']} C source not found: {missing[0]}, skipping")
             continue
         info(f"Compiling native module {mod['name']}...")
         built_modules.append(mod)
