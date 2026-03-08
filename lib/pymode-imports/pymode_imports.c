@@ -178,7 +178,7 @@ static PyObject* py_kv_delete(PyObject* self, PyObject* args) {
 static PyObject* py_r2_get(PyObject* self, PyObject* args) {
     const char* key;
     Py_ssize_t key_len;
-    int bufsize = 10 * 1024 * 1024;
+    int bufsize = 1024 * 1024;
     if (!PyArg_ParseTuple(args, "s#|i", &key, &key_len, &bufsize))
         return NULL;
     uint8_t* buf = (uint8_t*)PyMem_Malloc(bufsize);
@@ -212,11 +212,12 @@ static PyObject* py_d1_exec(PyObject* self, PyObject* args) {
     Py_ssize_t sql_len, params_len;
     if (!PyArg_ParseTuple(args, "s#s#", &sql, &sql_len, &params_json, &params_len))
         return NULL;
-    char* buf = (char*)PyMem_Malloc(10 * 1024 * 1024);
+    int bufsize = 1024 * 1024;
+    char* buf = (char*)PyMem_Malloc(bufsize);
     if (!buf)
         return PyErr_NoMemory();
     int32_t n = pymode_d1_exec(sql, (int32_t)sql_len,
-        params_json, (int32_t)params_len, buf, 10 * 1024 * 1024);
+        params_json, (int32_t)params_len, buf, bufsize);
     if (n < 0) {
         PyMem_Free(buf);
         PyErr_SetString(PyExc_RuntimeError, "d1_exec failed");
@@ -260,7 +261,7 @@ static PyObject* py_thread_spawn(PyObject* self, PyObject* args) {
 
 static PyObject* py_thread_join(PyObject* self, PyObject* args) {
     int thread_id;
-    int bufsize = 10 * 1024 * 1024;
+    int bufsize = 1024 * 1024;
     if (!PyArg_ParseTuple(args, "i|i", &thread_id, &bufsize))
         return NULL;
     uint8_t* buf = (uint8_t*)PyMem_Malloc(bufsize);

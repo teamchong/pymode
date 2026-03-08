@@ -18,11 +18,18 @@ import { ProcExit, createWasi } from "./wasi";
 import { encoder as _encoder, decoder as _decoder, stdlibBin, stdlibDirIndex, extensionPackagesBin } from "./stdlib-bin";
 
 interface PythonDOEnv {
-  KV?: KVNamespace;
-  R2?: R2Bucket;
-  D1?: D1Database;
   THREAD_DO?: DurableObjectNamespace;
   [key: string]: unknown;
+}
+
+/**
+ * Parse a binding-qualified key: "BINDING_NAME\0actual_key" → [binding, key].
+ * If no separator, returns [fallbackBinding, fullKey] for backward compat.
+ */
+function parseBindingKey(raw: string, fallback: string): [string, string] {
+  const sep = raw.indexOf("\0");
+  if (sep === -1) return [fallback, raw];
+  return [raw.substring(0, sep), raw.substring(sep + 1)];
 }
 
 // The set of pymode.* imports that are async (return Promises).
@@ -49,6 +56,7 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
     socket: any;
     reader: ReadableStreamDefaultReader<Uint8Array>;
     writer: WritableStreamDefaultWriter<Uint8Array>;
+    timedOut?: boolean;
   }>();
   private nextConnId = 1;
 
@@ -140,10 +148,14 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
       tcp_recv: async (connId: number, bufPtr: number, bufLen: number): Promise<number> => {
         const conn = self.tcpConns.get(connId);
         if (!conn) return -1;
+        // After timeout, the reader has a pending read — can't start another
+        if (conn.timedOut) return 0;
+        let didTimeout = false;
         const timeoutPromise = new Promise<{ value: undefined; done: true }>((resolve) =>
-          setTimeout(() => resolve({ value: undefined, done: true }), 10000)
+          setTimeout(() => { didTimeout = true; resolve({ value: undefined, done: true }); }, 10000)
         );
         const result = await Promise.race([conn.reader.read(), timeoutPromise]);
+        if (didTimeout) conn.timedOut = true;
         if (result.done || !result.value) return 0;
         const n = Math.min(result.value.length, bufLen);
         self.getMemBytes().set(result.value.subarray(0, n), bufPtr);
@@ -217,9 +229,11 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
       // --- KV (async) ---
       kv_get: async (keyPtr: number, keyLen: number, bufPtr: number, bufLen: number): Promise<number> => {
         try {
-          if (!self.env.KV) return -1;
-          const key = self.readString(keyPtr, keyLen);
-          const val = await self.env.KV.get(key, "arrayBuffer");
+          const raw = self.readString(keyPtr, keyLen);
+          const [bindingName, key] = parseBindingKey(raw, "KV");
+          const kv = self.env[bindingName] as KVNamespace | undefined;
+          if (!kv) return -1;
+          const val = await kv.get(key, "arrayBuffer");
           if (val === null) return -1;
           return self.writeBytes(bufPtr, new Uint8Array(val), bufLen);
         } catch (e: unknown) {
@@ -230,10 +244,12 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
 
       kv_put: async (keyPtr: number, keyLen: number, valPtr: number, valLen: number): Promise<void> => {
         try {
-          if (!self.env.KV) return;
-          const key = self.readString(keyPtr, keyLen);
+          const raw = self.readString(keyPtr, keyLen);
+          const [bindingName, key] = parseBindingKey(raw, "KV");
+          const kv = self.env[bindingName] as KVNamespace | undefined;
+          if (!kv) return;
           const val = self.getMemBytes().slice(valPtr, valPtr + valLen);
-          await self.env.KV.put(key, val);
+          await kv.put(key, val);
         } catch (e: unknown) {
           console.error("kv_put error:", e);
         }
@@ -241,9 +257,11 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
 
       kv_delete: async (keyPtr: number, keyLen: number): Promise<void> => {
         try {
-          if (!self.env.KV) return;
-          const key = self.readString(keyPtr, keyLen);
-          await self.env.KV.delete(key);
+          const raw = self.readString(keyPtr, keyLen);
+          const [bindingName, key] = parseBindingKey(raw, "KV");
+          const kv = self.env[bindingName] as KVNamespace | undefined;
+          if (!kv) return;
+          await kv.delete(key);
         } catch (e: unknown) {
           console.error("kv_delete error:", e);
         }
@@ -252,9 +270,11 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
       // --- R2 (async) ---
       r2_get: async (keyPtr: number, keyLen: number, bufPtr: number, bufLen: number): Promise<number> => {
         try {
-          if (!self.env.R2) return -1;
-          const key = self.readString(keyPtr, keyLen);
-          const obj = await self.env.R2.get(key);
+          const raw = self.readString(keyPtr, keyLen);
+          const [bindingName, key] = parseBindingKey(raw, "R2");
+          const r2 = self.env[bindingName] as R2Bucket | undefined;
+          if (!r2) return -1;
+          const obj = await r2.get(key);
           if (!obj) return -1;
           return self.writeBytes(bufPtr, new Uint8Array(await obj.arrayBuffer()), bufLen);
         } catch (e: unknown) {
@@ -265,10 +285,12 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
 
       r2_put: async (keyPtr: number, keyLen: number, valPtr: number, valLen: number): Promise<void> => {
         try {
-          if (!self.env.R2) return;
-          const key = self.readString(keyPtr, keyLen);
+          const raw = self.readString(keyPtr, keyLen);
+          const [bindingName, key] = parseBindingKey(raw, "R2");
+          const r2 = self.env[bindingName] as R2Bucket | undefined;
+          if (!r2) return;
           const val = self.getMemBytes().slice(valPtr, valPtr + valLen);
-          await self.env.R2.put(key, val);
+          await r2.put(key, val);
         } catch (e: unknown) {
           console.error("r2_put error:", e);
         }
@@ -281,10 +303,12 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
         resultPtr: number, resultLen: number
       ): Promise<number> => {
         try {
-          if (!self.env.D1) return -1;
-          const sql = self.readString(sqlPtr, sqlLen);
+          const rawSql = self.readString(sqlPtr, sqlLen);
+          const [bindingName, sql] = parseBindingKey(rawSql, "D1");
+          const d1 = self.env[bindingName] as D1Database | undefined;
+          if (!d1) return -1;
           const params = JSON.parse(self.readString(paramsPtr, paramsLen));
-          const stmt = self.env.D1.prepare(sql).bind(...params);
+          const stmt = d1.prepare(sql).bind(...params);
           const { results } = await stmt.all();
           const encoded = _encoder.encode(JSON.stringify(results));
           return self.writeBytes(resultPtr, encoded, resultLen);

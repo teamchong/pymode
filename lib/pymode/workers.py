@@ -157,9 +157,16 @@ class KVBinding:
         await env.MY_KV.delete("key")
     """
 
+    def __init__(self, binding_name="KV"):
+        self._binding_name = binding_name
+
+    def _qualify(self, key):
+        """Prepend binding name so JS host routes to the right namespace."""
+        return f"{self._binding_name}\0{key}"
+
     def get(self, key, type="text"):
         from pymode.env import KV
-        data = KV.get(key)
+        data = KV.get(self._qualify(key))
         if data is None:
             return None
         if type == "text":
@@ -172,40 +179,53 @@ class KVBinding:
         from pymode.env import KV
         if isinstance(value, str):
             value = value.encode("utf-8")
-        KV.put(key, value)
+        KV.put(self._qualify(key), value)
 
     def delete(self, key):
         from pymode.env import KV
-        KV.delete(key)
+        KV.delete(self._qualify(key))
 
 
 class R2Binding:
     """R2 bucket binding."""
 
+    def __init__(self, binding_name="R2"):
+        self._binding_name = binding_name
+
+    def _qualify(self, key):
+        return f"{self._binding_name}\0{key}"
+
     def get(self, key):
         from pymode.env import R2
-        return R2.get(key)
+        return R2.get(self._qualify(key))
 
     def put(self, key, value):
         from pymode.env import R2
         if isinstance(value, str):
             value = value.encode("utf-8")
-        R2.put(key, value)
+        R2.put(self._qualify(key), value)
 
 
 class D1Binding:
     """D1 database binding."""
 
+    def __init__(self, binding_name="D1"):
+        self._binding_name = binding_name
+
     def prepare(self, sql):
-        return D1Statement(sql)
+        return D1Statement(sql, self._binding_name)
 
 
 class D1Statement:
     """D1 prepared statement."""
 
-    def __init__(self, sql):
+    def __init__(self, sql, binding_name="D1"):
         self._sql = sql
+        self._binding_name = binding_name
         self._params = []
+
+    def _qualified_sql(self):
+        return f"{self._binding_name}\0{self._sql}"
 
     def bind(self, *params):
         self._params = list(params)
@@ -213,7 +233,7 @@ class D1Statement:
 
     def all(self):
         from pymode.env import D1
-        return {"results": D1.execute(self._sql, self._params)}
+        return {"results": D1.execute(self._qualified_sql(), self._params)}
 
     def first(self, column=None):
         result = self.all()
@@ -226,7 +246,7 @@ class D1Statement:
 
     def run(self):
         from pymode.env import D1
-        D1.execute(self._sql, self._params)
+        D1.execute(self._qualified_sql(), self._params)
 
 
 # Binding type hints recognized by Env
@@ -286,12 +306,18 @@ class Env:
         raise AttributeError(f"No binding or env var: {name}")
 
     def _detect_binding(self, name):
-        """Auto-detect binding type from name patterns."""
+        """Auto-detect binding type from name patterns.
+
+        The binding name is passed through to the JS host via a \\0-delimited
+        key prefix, so multiple KV/R2/D1 bindings are supported:
+            env.MY_KV.get("key")  → JS resolves env.MY_KV
+            env.CACHE_KV.get("k") → JS resolves env.CACHE_KV
+        """
         upper = name.upper()
         if upper.endswith("_KV") or upper == "KV":
-            return KVBinding()
+            return KVBinding(name)
         if upper.endswith("_R2") or upper == "R2":
-            return R2Binding()
+            return R2Binding(name)
         if upper.endswith("_D1") or upper == "D1" or upper.endswith("_DB"):
-            return D1Binding()
+            return D1Binding(name)
         return None

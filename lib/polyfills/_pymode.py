@@ -45,7 +45,14 @@ if os.path.exists(_SEED_PATH):
     _env_vars.update(_seed.get("env", {}))
 
 
+def _strip_binding_prefix(key):
+    """Strip optional binding name prefix: 'BINDING\\0actual_key' → 'actual_key'."""
+    sep = key.find("\0")
+    return key[sep + 1:] if sep != -1 else key
+
+
 def kv_get(key):
+    key = _strip_binding_prefix(key)
     val = _kv_store.get(key)
     if val is None:
         return None
@@ -53,14 +60,17 @@ def kv_get(key):
 
 
 def kv_put(key, value):
+    key = _strip_binding_prefix(key)
     _kv_store[key] = value if isinstance(value, bytes) else value.encode()
 
 
 def kv_delete(key):
+    key = _strip_binding_prefix(key)
     _kv_store.pop(key, None)
 
 
 def r2_get(key):
+    key = _strip_binding_prefix(key)
     val = _r2_store.get(key)
     if val is None:
         return None
@@ -68,10 +78,12 @@ def r2_get(key):
 
 
 def r2_put(key, value):
+    key = _strip_binding_prefix(key)
     _r2_store[key] = value if isinstance(value, bytes) else value.encode()
 
 
 def d1_exec(sql, params_json):
+    sql = _strip_binding_prefix(sql)
     params = json.loads(params_json) if isinstance(params_json, str) else params_json
     sql_upper = sql.strip().upper()
 
