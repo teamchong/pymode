@@ -218,7 +218,14 @@ def extract_python_files(wheel_data: bytes) -> list[tuple[str, bytes]]:
 
             if any(name.endswith(s) for s in NATIVE_SUFFIXES):
                 continue
-            if name.endswith((".py", ".pyi", ".typed", ".txt", ".cfg",
+            # Skip .pyi type annotation files and py.typed markers (not needed at runtime)
+            if name.endswith((".pyi", ".typed")):
+                continue
+            # Skip test directories
+            parts = name.split("/")
+            if any(p in ("tests", "test", "testing", "_tests") for p in parts):
+                continue
+            if name.endswith((".py", ".txt", ".cfg",
                               ".ini", ".json", ".toml", ".yaml", ".yml", ".pem")):
                 files.append((name, whl.read(name)))
     return files
