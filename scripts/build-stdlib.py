@@ -14,7 +14,7 @@ import zipfile
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(SCRIPT_DIR)
 BUILD_DIR = os.path.join(ROOT_DIR, "build")
-CPYTHON_DIR = os.path.join(BUILD_DIR, "cpython")
+CPYTHON_DIR = os.path.join(ROOT_DIR, "cpython")
 STDLIB_SRC = os.path.join(CPYTHON_DIR, "Lib")
 WORK_DIR = os.path.join(BUILD_DIR, "stdlib-work")
 OUTPUT = os.path.join(BUILD_DIR, "stdlib-minimal.zip")
@@ -60,7 +60,7 @@ KEEP_ENCODINGS = {
 def main():
     if not os.path.isdir(STDLIB_SRC):
         print(f"Error: CPython stdlib not found at {STDLIB_SRC}")
-        print("Run build-phase2.sh first to clone CPython.")
+        print("Run build-phase2.py first to clone CPython.")
         sys.exit(1)
 
     print(f"Building minimal stdlib from {STDLIB_SRC}...")

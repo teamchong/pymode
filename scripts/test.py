@@ -52,7 +52,7 @@ def run_test(name: str, code: str, expected: str):
 
 def main():
     if not PYTHON_SH:
-        print(f"{RED}No WASI Python build found. Run build-phase1.sh or build-phase2.sh first.{NC}")
+        print(f"{RED}No WASI Python build found. Run build-phase1.sh or build-phase2.py first.{NC}")
         sys.exit(1)
 
     print(f"Using: {PYTHON_SH}\n")

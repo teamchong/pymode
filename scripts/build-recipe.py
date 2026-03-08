@@ -96,7 +96,7 @@ def main():
     # Check prerequisites
     pyconfig = os.path.join(BUILD_DIR, "pyconfig.h")
     if not os.path.isfile(pyconfig):
-        print("Error: CPython build not found. Run build-phase2.sh first.")
+        print("Error: CPython build not found. Run build-phase2.py first.")
         sys.exit(1)
 
     # Base compiler flags
@@ -214,7 +214,7 @@ def main():
 
     print()
     print(f"Done! To include in a variant, run:")
-    print(f"  ./scripts/build-variant.sh {name}")
+    print(f"  ./scripts/build-variant.py {name}")
 
 
 if __name__ == "__main__":

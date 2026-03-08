@@ -139,11 +139,7 @@ BOOT_FILES = [
     "ast.py",
     # logging — provided by polyfills/logging/__init__.py instead
     # (stdlib logging requires threading; polyfill is threading-free)
-    # xml
-    "xml/__init__.py",
-    "xml/etree/__init__.py",
-    "xml/etree/ElementTree.py",
-    "xml/etree/ElementPath.py",
+    # xml (main block is below with sax modules; these extras are here)
     "xml/etree/ElementInclude.py",
     "xml/etree/cElementTree.py",
     # uuid
@@ -407,7 +403,7 @@ def collect_files() -> dict[str, str]:
 def main():
     if not os.path.isdir(STDLIB_SRC):
         print(f"Error: CPython stdlib not found at {STDLIB_SRC}")
-        print("Run build-phase2.sh first.")
+        print("Run build-phase2.py first.")
         sys.exit(1)
 
     print(f"Generating stdlib data...")

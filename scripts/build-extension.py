@@ -241,7 +241,7 @@ def main():
     if not os.path.isdir(os.path.join(CPYTHON_DIR, "Include")):
         error("CPython not found. Run build-phase1.sh first.")
     if not os.path.isfile(os.path.join(BUILD_DIR, "pyconfig.h")):
-        error("pyconfig.h not found. Run build-phase2.sh first.")
+        error("pyconfig.h not found. Run build-phase2.py first.")
 
     if len(sys.argv) < 2:
         error(f"Usage: {sys.argv[0]} <package-name> | --list | --all")

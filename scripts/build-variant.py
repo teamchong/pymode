@@ -57,10 +57,10 @@ def main():
 
     # Check prerequisites
     if not os.path.isfile(os.path.join(BUILD_DIR, "python.wasm")):
-        print("Error: python.wasm not found. Run build-phase2.sh first.")
+        print("Error: python.wasm not found. Run build-phase2.py first.")
         sys.exit(1)
     if not os.access(ZIG_CC, os.X_OK):
-        print("Error: zig-cc wrapper not found. Run build-phase2.sh first.")
+        print("Error: zig-cc wrapper not found. Run build-phase2.py first.")
         sys.exit(1)
 
     recipe_names = sys.argv[1:]
