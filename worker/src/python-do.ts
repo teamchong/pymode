@@ -114,13 +114,18 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
     return {
       // --- TCP ---
       tcp_connect: (hostPtr: number, hostLen: number, port: number): number => {
-        const host = self.readString(hostPtr, hostLen);
-        const connId = self.nextConnId++;
-        const socket = connect({ hostname: host, port });
-        const writer = socket.writable.getWriter();
-        const reader = socket.readable.getReader();
-        self.tcpConns.set(connId, { socket, writer, reader });
-        return connId;
+        try {
+          const host = self.readString(hostPtr, hostLen);
+          const connId = self.nextConnId++;
+          const socket = connect({ hostname: host, port });
+          const writer = socket.writable.getWriter();
+          const reader = socket.readable.getReader();
+          self.tcpConns.set(connId, { socket, writer, reader });
+          return connId;
+        } catch (e: unknown) {
+          console.error("tcp_connect error:", e);
+          return -1;
+        }
       },
 
       tcp_send: (connId: number, dataPtr: number, dataLen: number): number => {
@@ -162,16 +167,21 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
         bodyPtr: number, bodyLen: number,
         headersPtr: number, headersLen: number
       ): Promise<number> => {
-        const url = self.readString(urlPtr, urlLen);
-        const method = self.readString(methodPtr, methodLen);
-        const body = bodyLen > 0 ? self.getMemBytes().slice(bodyPtr, bodyPtr + bodyLen) : undefined;
-        const headersJson = headersLen > 0 ? self.readString(headersPtr, headersLen) : "{}";
-        const headers = JSON.parse(headersJson);
-        const resp = await fetch(url, { method: method || "GET", headers, body });
-        const respBody = new Uint8Array(await resp.arrayBuffer());
-        const respId = self.nextResponseId++;
-        self.httpResponses.set(respId, { status: resp.status, headers: resp.headers, body: respBody, offset: 0 });
-        return respId;
+        try {
+          const url = self.readString(urlPtr, urlLen);
+          const method = self.readString(methodPtr, methodLen);
+          const body = bodyLen > 0 ? self.getMemBytes().slice(bodyPtr, bodyPtr + bodyLen) : undefined;
+          const headersJson = headersLen > 0 ? self.readString(headersPtr, headersLen) : "{}";
+          const headers = JSON.parse(headersJson);
+          const resp = await fetch(url, { method: method || "GET", headers, body });
+          const respBody = new Uint8Array(await resp.arrayBuffer());
+          const respId = self.nextResponseId++;
+          self.httpResponses.set(respId, { status: resp.status, headers: resp.headers, body: respBody, offset: 0 });
+          return respId;
+        } catch (e: unknown) {
+          console.error("http_fetch error:", e);
+          return -1;
+        }
       },
 
       http_response_status: (responseId: number): number => {
@@ -206,40 +216,62 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
 
       // --- KV (async) ---
       kv_get: async (keyPtr: number, keyLen: number, bufPtr: number, bufLen: number): Promise<number> => {
-        if (!self.env.KV) return -1;
-        const key = self.readString(keyPtr, keyLen);
-        const val = await self.env.KV.get(key, "arrayBuffer");
-        if (val === null) return -1;
-        return self.writeBytes(bufPtr, new Uint8Array(val), bufLen);
+        try {
+          if (!self.env.KV) return -1;
+          const key = self.readString(keyPtr, keyLen);
+          const val = await self.env.KV.get(key, "arrayBuffer");
+          if (val === null) return -1;
+          return self.writeBytes(bufPtr, new Uint8Array(val), bufLen);
+        } catch (e: unknown) {
+          console.error("kv_get error:", e);
+          return -1;
+        }
       },
 
       kv_put: async (keyPtr: number, keyLen: number, valPtr: number, valLen: number): Promise<void> => {
-        if (!self.env.KV) return;
-        const key = self.readString(keyPtr, keyLen);
-        const val = self.getMemBytes().slice(valPtr, valPtr + valLen);
-        await self.env.KV.put(key, val);
+        try {
+          if (!self.env.KV) return;
+          const key = self.readString(keyPtr, keyLen);
+          const val = self.getMemBytes().slice(valPtr, valPtr + valLen);
+          await self.env.KV.put(key, val);
+        } catch (e: unknown) {
+          console.error("kv_put error:", e);
+        }
       },
 
       kv_delete: async (keyPtr: number, keyLen: number): Promise<void> => {
-        if (!self.env.KV) return;
-        const key = self.readString(keyPtr, keyLen);
-        await self.env.KV.delete(key);
+        try {
+          if (!self.env.KV) return;
+          const key = self.readString(keyPtr, keyLen);
+          await self.env.KV.delete(key);
+        } catch (e: unknown) {
+          console.error("kv_delete error:", e);
+        }
       },
 
       // --- R2 (async) ---
       r2_get: async (keyPtr: number, keyLen: number, bufPtr: number, bufLen: number): Promise<number> => {
-        if (!self.env.R2) return -1;
-        const key = self.readString(keyPtr, keyLen);
-        const obj = await self.env.R2.get(key);
-        if (!obj) return -1;
-        return self.writeBytes(bufPtr, new Uint8Array(await obj.arrayBuffer()), bufLen);
+        try {
+          if (!self.env.R2) return -1;
+          const key = self.readString(keyPtr, keyLen);
+          const obj = await self.env.R2.get(key);
+          if (!obj) return -1;
+          return self.writeBytes(bufPtr, new Uint8Array(await obj.arrayBuffer()), bufLen);
+        } catch (e: unknown) {
+          console.error("r2_get error:", e);
+          return -1;
+        }
       },
 
       r2_put: async (keyPtr: number, keyLen: number, valPtr: number, valLen: number): Promise<void> => {
-        if (!self.env.R2) return;
-        const key = self.readString(keyPtr, keyLen);
-        const val = self.getMemBytes().slice(valPtr, valPtr + valLen);
-        await self.env.R2.put(key, val);
+        try {
+          if (!self.env.R2) return;
+          const key = self.readString(keyPtr, keyLen);
+          const val = self.getMemBytes().slice(valPtr, valPtr + valLen);
+          await self.env.R2.put(key, val);
+        } catch (e: unknown) {
+          console.error("r2_put error:", e);
+        }
       },
 
       // --- D1 (async) ---
@@ -248,13 +280,18 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
         paramsPtr: number, paramsLen: number,
         resultPtr: number, resultLen: number
       ): Promise<number> => {
-        if (!self.env.D1) return -1;
-        const sql = self.readString(sqlPtr, sqlLen);
-        const params = JSON.parse(self.readString(paramsPtr, paramsLen));
-        const stmt = self.env.D1.prepare(sql).bind(...params);
-        const { results } = await stmt.all();
-        const encoded = _encoder.encode(JSON.stringify(results));
-        return self.writeBytes(resultPtr, encoded, resultLen);
+        try {
+          if (!self.env.D1) return -1;
+          const sql = self.readString(sqlPtr, sqlLen);
+          const params = JSON.parse(self.readString(paramsPtr, paramsLen));
+          const stmt = self.env.D1.prepare(sql).bind(...params);
+          const { results } = await stmt.all();
+          const encoded = _encoder.encode(JSON.stringify(results));
+          return self.writeBytes(resultPtr, encoded, resultLen);
+        } catch (e: unknown) {
+          console.error("d1_exec error:", e);
+          return -1;
+        }
       },
 
       // --- Environment (sync) ---
@@ -296,9 +333,15 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
       thread_join: async (threadId: number, bufPtr: number, bufLen: number): Promise<number> => {
         const promise = self.threadResults.get(threadId);
         if (!promise) return -1;
-        const result = await promise;
-        self.threadResults.delete(threadId);
-        return self.writeBytes(bufPtr, result, bufLen);
+        try {
+          const result = await promise;
+          self.threadResults.delete(threadId);
+          return self.writeBytes(bufPtr, result, bufLen);
+        } catch (e: unknown) {
+          console.error("thread_join error:", e);
+          self.threadResults.delete(threadId);
+          return -1;
+        }
       },
 
       // --- Dynamic Loading (C extension polyfill) ---
