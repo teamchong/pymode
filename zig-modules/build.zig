@@ -16,14 +16,15 @@ pub fn build(b: *std.Build) void {
     const metal0_runtime = b.option([]const u8, "metal0-runtime", "Path to metal0 packages/runtime/src") orelse "../metal0/packages/runtime/src";
 
     // Build each module
-    const modules = [_]struct { name: []const u8, root: []const u8 }{
-        .{ .name = "_json", .root = "_json/module.zig" },
-        .{ .name = "_hashlib", .root = "_hashlib/module.zig" },
-        .{ .name = "_collections", .root = "_collections/module.zig" },
-        .{ .name = "_functools", .root = "_functools/module.zig" },
-        // .{ .name = "_sre", .root = "_sre/module.zig" },
-        // .{ .name = "math", .root = "_math/module.zig" },
-        // .{ .name = "_datetime", .root = "_datetime/module.zig" },
+    const modules = [_]struct { name: []const u8, root: []const u8, extra_include: ?[]const u8 }{
+        .{ .name = "_json", .root = "_json/module.zig", .extra_include = null },
+        .{ .name = "_hashlib", .root = "_hashlib/module.zig", .extra_include = null },
+        .{ .name = "_collections", .root = "_collections/module.zig", .extra_include = null },
+        .{ .name = "_functools", .root = "_functools/module.zig", .extra_include = null },
+        .{ .name = "_xxhash", .root = "xxhash/module.zig", .extra_include = "xxhash" },
+        // .{ .name = "_sre", .root = "_sre/module.zig", .extra_include = null },
+        // .{ .name = "math", .root = "_math/module.zig", .extra_include = null },
+        // .{ .name = "_datetime", .root = "_datetime/module.zig", .extra_include = null },
     };
 
     for (modules) |mod| {
@@ -40,6 +41,11 @@ pub fn build(b: *std.Build) void {
 
         // Add metal0 runtime source for @import
         lib.addIncludePath(.{ .cwd_relative = metal0_runtime });
+
+        // Add module-specific include paths (e.g. xxhash.h)
+        if (mod.extra_include) |inc| {
+            lib.addIncludePath(b.path(inc));
+        }
 
         // Link against libpython for CPython API symbols
         lib.linkSystemLibrary("python3.13");

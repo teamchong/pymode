@@ -300,12 +300,90 @@ def main():
         )
         info("  Built Modules/pymode_imports.o")
 
+    # Step 3e: Build Zig native extension modules
+    zig_modules_dir = os.path.join(ROOT_DIR, "zig-modules")
+    zig_native_modules = [
+        {
+            "name": "_xxhash",
+            "zig_src": os.path.join(zig_modules_dir, "xxhash", "module.zig"),
+            "c_srcs": [os.path.join(zig_modules_dir, "xxhash", "xxhash.c")],
+            "c_flags": ["-DXXH_IMPLEMENTATION", "-DXXH_STATIC_LINKING_ONLY"],
+            "extra_includes": [os.path.join(zig_modules_dir, "xxhash")],
+        },
+    ]
+    for mod in zig_native_modules:
+        if not os.path.isfile(mod["zig_src"]):
+            warn(f"  Zig module {mod['name']} source not found, skipping")
+            continue
+        info(f"Compiling Zig module {mod['name']}...")
+        mod_obj_dir = os.path.join(BUILD_DIR, "Modules")
+        os.makedirs(mod_obj_dir, exist_ok=True)
+
+        # Compile C sources with zig cc (separate from Zig to preserve symbol visibility)
+        c_objs = []
+        for c_src in mod.get("c_srcs", []):
+            c_obj_name = os.path.splitext(os.path.basename(c_src))[0] + f"_{mod['name']}.o"
+            c_obj = os.path.join(mod_obj_dir, c_obj_name)
+            c_cmd = [
+                "bash", zig_cc_script, "-c", "-Os",
+                f"-I{CPYTHON_DIR}/Include", f"-I{CPYTHON_DIR}/Include/internal", f"-I{BUILD_DIR}",
+            ]
+            for inc in mod.get("extra_includes", []):
+                c_cmd.append(f"-I{inc}")
+            for flag in mod.get("c_flags", []):
+                c_cmd.append(flag)
+            c_cmd.extend([c_src, "-o", c_obj])
+            subprocess.run(c_cmd, check=True)
+            c_objs.append(c_obj_name)
+
+        # Compile Zig source
+        zig_cmd = [
+            "zig", "build-obj",
+            "-target", "wasm32-wasi",
+            "-OReleaseFast",
+            "-lc",
+            f"-I{BUILD_DIR}", f"-I{CPYTHON_DIR}/Include", f"-I{CPYTHON_DIR}/Include/internal",
+        ]
+        for inc in mod.get("extra_includes", []):
+            zig_cmd.append(f"-I{inc}")
+        zig_cmd.extend([mod["zig_src"], "--name", mod["name"]])
+        subprocess.run(zig_cmd, check=True, cwd=mod_obj_dir)
+        info(f"  Built Modules/{mod['name']}.o + {len(c_objs)} C objects")
+
+        # Register as built-in module
+        if os.path.isfile(config_c):
+            with open(config_c) as f:
+                content = f.read()
+            init_func = f"PyInit{mod['name']}"
+            if init_func not in content:
+                content = content.replace(
+                    "/* -- ADDMODULE MARKER 1 -- */",
+                    f"extern PyObject* {init_func}(void);\n/* -- ADDMODULE MARKER 1 -- */",
+                )
+                content = content.replace(
+                    "/* -- ADDMODULE MARKER 2 -- */",
+                    f'    {{"{mod["name"]}", {init_func}}},\n/* -- ADDMODULE MARKER 2 -- */',
+                )
+                with open(config_c, "w") as f:
+                    f.write(content)
+                shutil.copy2(config_c, config_c_base)
+                info(f"  {mod['name']} registered in config.c")
+
     # Step 4: Build
     info("Building CPython with zig cc (ReleaseSmall)...")
     makefile = os.path.join(BUILD_DIR, "Makefile")
     with open(makefile, "a") as f:
         f.write("\nMODULE_OBJS += Modules/pymode_imports.o\n")
+        for mod in zig_native_modules:
+            if os.path.isfile(mod["zig_src"]):
+                f.write(f"MODULE_OBJS += Modules/{mod['name']}.o\n")
+                for c_src in mod.get("c_srcs", []):
+                    c_obj_name = os.path.splitext(os.path.basename(c_src))[0] + f"_{mod['name']}.o"
+                    f.write(f"MODULE_OBJS += Modules/{c_obj_name}\n")
     info("  Added Modules/pymode_imports.o to MODULE_OBJS")
+    for mod in zig_native_modules:
+        if os.path.isfile(mod["zig_src"]):
+            info(f"  Added Modules/{mod['name']}.o to MODULE_OBJS")
 
     build_log = os.path.join(BUILD_DIR, "build.log")
     with open(build_log, "w") as log:
