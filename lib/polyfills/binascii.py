@@ -217,21 +217,21 @@ _CRC_HQXX_TABLE = [
 def b2a_uu(data, *, backtick=False):
     if len(data) > 45:
         raise Error("At most 45 bytes at once")
-    pad_char = 96 if backtick else 32  # '`' or ' '
 
-    def enc(b):
-        return (b & 0x3F) + 32 if not backtick else (b & 0x3F) + 32 if (b & 0x3F) else 96
+    def enc(val):
+        c = (val & 0x3F) + 32
+        return 96 if backtick and c == 32 else c
 
     result = bytearray()
-    result.append(len(data) + 32)
+    result.append(enc(len(data)))
     for i in range(0, len(data), 3):
         b0 = data[i]
         b1 = data[i + 1] if i + 1 < len(data) else 0
         b2 = data[i + 2] if i + 2 < len(data) else 0
-        result.append(((b0 >> 2) & 0x3F) + 32)
-        result.append((((b0 & 0x03) << 4) | ((b1 >> 4) & 0x0F)) + 32)
-        result.append((((b1 & 0x0F) << 2) | ((b2 >> 6) & 0x03)) + 32)
-        result.append((b2 & 0x3F) + 32)
+        result.append(enc((b0 >> 2) & 0x3F))
+        result.append(enc(((b0 & 0x03) << 4) | ((b1 >> 4) & 0x0F)))
+        result.append(enc(((b1 & 0x0F) << 2) | ((b2 >> 6) & 0x03)))
+        result.append(enc(b2 & 0x3F))
     result.append(ord("\n"))
     return bytes(result)
 
