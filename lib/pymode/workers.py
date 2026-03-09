@@ -62,7 +62,7 @@ class Request:
         self.method = method
         self.url = url
         self.headers = Headers(headers) if not isinstance(headers, Headers) else headers
-        self._body = body or ""
+        self._body = body if body is not None else ""
 
     @property
     def _parsed_url(self):
