@@ -88,6 +88,7 @@ export class ThreadDO extends DurableObject<ThreadDOEnv> {
       stop_rewind: () => {},
     };
 
+    let exitCode = 0;
     try {
       const instance = new WebAssembly.Instance(pythonWasm, {
         wasi_snapshot_preview1: wasi.imports,
@@ -95,24 +96,15 @@ export class ThreadDO extends DurableObject<ThreadDOEnv> {
         asyncify: asyncifyNoop,
       });
       memory = instance.exports.memory as WebAssembly.Memory;
-
-      const start = instance.exports._start as () => void;
-      start();
-
-      return {
-        stdout: wasi.getStdout(),
-        stderr: wasi.getStderr(),
-        exitCode: 0,
-      };
+      (instance.exports._start as () => void)();
     } catch (e: unknown) {
-      if (e instanceof ProcExit) {
-        return {
-          stdout: wasi.getStdout(),
-          stderr: wasi.getStderr(),
-          exitCode: e.code,
-        };
-      }
-      throw e;
+      if (e instanceof ProcExit) exitCode = e.code;
+      else throw e;
     }
+    return {
+      stdout: wasi.getStdout(),
+      stderr: wasi.getStderr(),
+      exitCode,
+    };
   }
 }

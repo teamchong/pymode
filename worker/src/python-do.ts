@@ -540,24 +540,18 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
     // Initialize asyncify data buffer in linear memory
     asyncify.init(instance);
 
+    let exitCode = 0;
     try {
-      // Single call — asyncify handles all async suspensions internally
       await asyncify.callExport("_start");
-      return {
-        stdout: _decoder.decode(wasi.getStdout()),
-        stderr: _decoder.decode(wasi.getStderr()),
-        exitCode: 0,
-      };
     } catch (e: unknown) {
-      if (e instanceof ProcExit) {
-        return {
-          stdout: _decoder.decode(wasi.getStdout()),
-          stderr: _decoder.decode(wasi.getStderr()),
-          exitCode: e.code,
-        };
-      }
-      throw e;
+      if (e instanceof ProcExit) exitCode = e.code;
+      else throw e;
     }
+    return {
+      stdout: _decoder.decode(wasi.getStdout()),
+      stderr: _decoder.decode(wasi.getStderr()),
+      exitCode,
+    };
   }
 
   /**

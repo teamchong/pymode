@@ -146,32 +146,24 @@ async function runWasm(
   let memory: WebAssembly.Memory | undefined;
   const wasi = createWasi(args, env, files, () => memory!, stdinData, stdlibDirIndex);
 
+  let exitCode = 0;
   try {
     const { instance } = await WebAssembly.instantiate(pythonWasm, {
       wasi_snapshot_preview1: wasi.imports,
     });
     memory = instance.exports.memory as WebAssembly.Memory;
-    const start = instance.exports._start as () => void;
-    start();
-    return {
-      exitCode: 0,
-      stdout: wasi.getStdout(),
-      stderr: wasi.getStderr(),
-      files,
-      writtenFiles: wasi.getWrittenFiles(),
-    };
+    (instance.exports._start as () => void)();
   } catch (e: unknown) {
-    if (e instanceof ProcExit) {
-      return {
-        exitCode: e.code,
-        stdout: wasi.getStdout(),
-        stderr: wasi.getStderr(),
-        files,
-        writtenFiles: wasi.getWrittenFiles(),
-      };
-    }
-    throw e;
+    if (e instanceof ProcExit) exitCode = e.code;
+    else throw e;
   }
+  return {
+    exitCode,
+    stdout: wasi.getStdout(),
+    stderr: wasi.getStderr(),
+    files,
+    writtenFiles: wasi.getWrittenFiles(),
+  };
 }
 
 // Base64 encode/decode for fetch response serialization
@@ -196,12 +188,6 @@ function base64Decode(str: string): Uint8Array {
     bytes[i] = binary.charCodeAt(i);
   }
   return bytes;
-}
-
-// Response cache key: use request index from the pending array.
-// Avoids hash collisions and signed/unsigned mismatches between JS and Python.
-function responseKey(index: number): string {
-  return index.toString();
 }
 
 // Re-execution trampoline: run Python, catch exit 254, do fetches, re-run
@@ -246,26 +232,14 @@ async function replayTcpOps(
 
         // Always read from the socket to keep the protocol in sync,
         // even if we already have a cached response from a previous round.
-        const chunks: Uint8Array[] = [];
-        let totalLen = 0;
-        const bufsize = op.bufsize || 65536;
-
         const timeoutPromise = new Promise<{ value: undefined; done: true }>((resolve) =>
           setTimeout(() => resolve({ value: undefined, done: true }), 10000)
         );
 
-        // Read one chunk — database protocols send discrete messages
         const result = await Promise.race([conn.reader.read(), timeoutPromise]);
-        if (!result.done && result.value) {
-          chunks.push(result.value);
-          totalLen += result.value.length;
-        }
+        const recvData = (!result.done && result.value) ? result.value : new Uint8Array(0);
 
-        // Only write to VFS if not already cached
         if (!files[respPath]) {
-          const recvData = new Uint8Array(totalLen);
-          let off = 0;
-          for (const c of chunks) { recvData.set(c, off); off += c.length; }
           const meta = JSON.stringify({ dataBase64: base64Encode(recvData) });
           files[respPath] = _encoder.encode(meta);
         }
@@ -332,6 +306,18 @@ async function flushDataToKV(
   await Promise.all(writes);
 }
 
+// Write a TCP error response to VFS for the last recv op in the list
+function writeTcpError(ops: TcpOp[], err: unknown, files: Record<string, Uint8Array>): void {
+  const lastRecv = [...ops].reverse().find(op => op.op === "recv");
+  if (lastRecv && lastRecv.recvId !== undefined) {
+    const meta = JSON.stringify({
+      error: err instanceof Error ? err.message : String(err),
+      dataBase64: "",
+    });
+    files[`${TCP_RESPONSES_DIR}/${lastRecv.recvId}`] = _encoder.encode(meta);
+  }
+}
+
 // Replay TCP ops via TcpPoolDO — persistent connections across trampoline rounds.
 // All ops in a single replayOps() call = 1 billed DO request per host:port.
 async function replayTcpOpsViaDO(
@@ -389,14 +375,7 @@ async function replayTcpOpsViaDO(
           }
         }
       } catch (tcpErr) {
-        const lastRecv = [...newOps].reverse().find(op => op.op === "recv");
-        if (lastRecv && lastRecv.recvId !== undefined) {
-          const meta = JSON.stringify({
-            error: tcpErr instanceof Error ? tcpErr.message : String(tcpErr),
-            dataBase64: "",
-          });
-          files[`${TCP_RESPONSES_DIR}/${lastRecv.recvId}`] = _encoder.encode(meta);
-        }
+        writeTcpError(newOps, tcpErr, files);
       }
     })());
   });
@@ -455,7 +434,7 @@ async function runPythonWithFetch(
       const pending: Array<{
         url: string; method: string; headers?: Record<string, string>;
         body?: string; bodyIsBase64?: boolean;
-      }> = JSON.parse(__decoder.decode(pendingFetchRaw));
+      }> = JSON.parse(_decoder.decode(pendingFetchRaw));
 
       if (pending.length > 0) {
         const responses = await Promise.all(
@@ -473,7 +452,6 @@ async function runPythonWithFetch(
         );
 
         for (let i = 0; i < pending.length; i++) {
-          const key = responseKey(i);
           const body = new Uint8Array(await responses[i].arrayBuffer());
           const meta = JSON.stringify({
             url: pending[i].url,
@@ -482,7 +460,7 @@ async function runPythonWithFetch(
             headers: Object.fromEntries([...responses[i].headers.entries()]),
             bodyBase64: base64Encode(body),
           });
-          files[`${FETCH_RESPONSES_DIR}/${key}`] = _encoder.encode(meta);
+          files[`${FETCH_RESPONSES_DIR}/${i}`] = _encoder.encode(meta);
         }
       }
       delete files[PENDING_FETCHES_PATH];
@@ -491,7 +469,7 @@ async function runPythonWithFetch(
     // Handle TCP operations — use TcpPoolDO for persistent connections when
     // available, fall back to raw socket replay when DO binding is not configured
     if (pendingTcpOpsRaw) {
-      const ops: TcpOp[] = JSON.parse(__decoder.decode(pendingTcpOpsRaw));
+      const ops: TcpOp[] = JSON.parse(_decoder.decode(pendingTcpOpsRaw));
 
       if (tcpPool) {
         await replayTcpOpsViaDO(ops, files, tcpPool);
@@ -499,14 +477,7 @@ async function runPythonWithFetch(
         try {
           await replayTcpOps(ops, files);
         } catch (tcpErr) {
-          const lastRecv = [...ops].reverse().find(op => op.op === "recv");
-          if (lastRecv && lastRecv.recvId !== undefined) {
-            const meta = JSON.stringify({
-              error: tcpErr instanceof Error ? tcpErr.message : String(tcpErr),
-              dataBase64: "",
-            });
-            files[`${TCP_RESPONSES_DIR}/${lastRecv.recvId}`] = _encoder.encode(meta);
-          }
+          writeTcpError(ops, tcpErr, files);
         }
       }
       delete files[PENDING_TCP_OPS_PATH];

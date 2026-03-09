@@ -31,8 +31,7 @@ import pickle
 
 _pymode = None
 try:
-    import _pymode as _pymode_mod
-    _pymode = _pymode_mod
+    import _pymode
 except ImportError:
     pass
 
