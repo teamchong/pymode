@@ -1,0 +1,20 @@
+{
+  "name": "@pymode/pillow",
+  "version": "0.1.0",
+  "description": "Image processing on Cloudflare Workers — Python Pillow via pymode",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts"
+    }
+  },
+  "files": ["src"],
+  "keywords": ["cloudflare", "workers", "python", "pillow", "image", "resize", "crop"],
+  "scripts": {
+    "test": "vitest run"
+  },
+  "peerDependencies": {
+    "pymode": ">=0.1.0"
+  }
+}

@@ -410,6 +410,14 @@ def main():
 
     files = collect_files()
 
+    # Patch types.py: CapsuleType uses _socket.CAPI which isn't available in WASI.
+    # Use _datetime's C_API capsule instead (always available as a built-in).
+    if "types.py" in files:
+        files["types.py"] = files["types.py"].replace(
+            "import _socket\n        return type(_socket.CAPI)",
+            "import _datetime\n        return type(_datetime.datetime_CAPI)",
+        )
+
     # Write binary data file (JSON encoded as UTF-8)
     json_bytes = json.dumps(files, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     with open(OUTPUT_DAT, "wb") as f:

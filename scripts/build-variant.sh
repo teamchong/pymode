@@ -58,7 +58,7 @@ for recipe_name in "${RECIPE_NAMES[@]}"; do
     # Custom recipes (numpy) handle their own build
     if [ "$TYPE" = "custom" ]; then
         echo "  [$recipe_name] Custom build — checking for pre-built objects..."
-        OBJ_DIR="$BUILD_DIR/Modules/numpy"
+        OBJ_DIR="$BUILD_DIR/Modules/$recipe_name"
         if [ -d "$OBJ_DIR" ] && [ "$(ls "$OBJ_DIR"/*.o 2>/dev/null | wc -l)" -gt 0 ]; then
             for obj in "$OBJ_DIR"/*.o; do
                 ALL_OBJS+=("$obj")
@@ -171,9 +171,11 @@ while IFS= read -r obj; do
     base=$(basename "$obj")
     # Skip files we're replacing
     [[ "$base" == "config.o" ]] && continue
+    [[ "$base" == "config_wizer.o" ]] && continue
     [[ "$base" == "dynload_shlib.o" ]] && continue
+    [[ "$base" == "pymode_wizer.o" ]] && continue
     LINK_OBJS+=("$obj")
-done < <(find "$BUILD_DIR" -name "*.o" -not -path "*/recipes/*" -not -path "*/Modules/numpy/*" -not -name "config_variant.o")
+done < <(find "$BUILD_DIR" -name "*.o" -not -path "*/recipes/*" -not -path "*/Modules/numpy/*" -not -path "*/Modules/pillow/*" -not -path "*/Modules/scipy/*" -not -path "*/Modules/sklearn/*" -not -name "config_variant.o")
 
 # Add our variant config
 LINK_OBJS+=("$BUILD_DIR/Modules/config_variant.o")

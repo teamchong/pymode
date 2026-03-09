@@ -1,0 +1,13 @@
+{
+  "name": "pillow",
+  "version": "11.1.0",
+  "pypi": "Pillow",
+  "type": "custom",
+  "build_script": "scripts/build-pillow-wasm.sh",
+  "modules": {
+    "PIL._imaging": "PyInit__imaging"
+  },
+  "python_packages": ["PIL/"],
+  "extra_link_flags": [],
+  "depends": []
+}
