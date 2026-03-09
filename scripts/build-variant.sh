@@ -55,7 +55,7 @@ for recipe_name in "${RECIPE_NAMES[@]}"; do
 
     TYPE=$(python3 -c "import json; r=json.load(open('$RECIPE')); print(r['type'])")
 
-    # Custom recipes (numpy) handle their own build
+    # Custom recipes handle their own build (e.g. numpy, pillow)
     if [ "$TYPE" = "custom" ]; then
         echo "  [$recipe_name] Custom build — checking for pre-built objects..."
         OBJ_DIR="$BUILD_DIR/Modules/$recipe_name"
@@ -65,7 +65,7 @@ for recipe_name in "${RECIPE_NAMES[@]}"; do
             done
             echo "    Found $(ls "$OBJ_DIR"/*.o | wc -l | tr -d ' ') objects"
         else
-            echo "    No pre-built objects. Run build-recipe.sh $recipe_name first."
+            echo "    No pre-built objects. Run the recipe's build script first."
             exit 1
         fi
     elif [ "$TYPE" = "rust" ]; then
