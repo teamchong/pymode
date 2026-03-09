@@ -63,11 +63,11 @@ function sedi(filepath: string, pattern: RegExp, replacement: string): void {
 
 function which(cmd: string): string | null {
   try {
-    const result = execSync(`command -v ${cmd}`, {
+    const result = spawnSync("which", [cmd], {
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
-    }).trim();
-    return result || null;
+    });
+    return result.status === 0 ? (result.stdout as string).trim() || null : null;
   } catch {
     return null;
   }

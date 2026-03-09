@@ -100,7 +100,9 @@ function deploy(args: string[]): void {
   if (existsSync(pythonSh)) {
     spawnSync(pythonSh, [
       "-c",
-      `import py_compile; py_compile.compile('${handlerPath}', '${resolve(buildDir, handlerName + ".pyc")}')`,
+      `import sys, py_compile; py_compile.compile(sys.argv[1], sys.argv[2])`,
+      handlerPath,
+      resolve(buildDir, handlerName + ".pyc"),
     ], { stdio: "inherit" });
   }
 
@@ -135,13 +137,17 @@ function build(): void {
 
   // Prefer phase 2 (zig cc) if zig is available
   const hasZig = spawnSync("zig", ["version"], { stdio: "pipe" }).status === 0;
-  const script = hasZig ? "build-phase2.sh" : "build-phase1.sh";
 
   console.log(`Building with ${hasZig ? "zig cc" : "WASI SDK"}...`);
-  const result = spawnSync("bash", [resolve(projectRoot, `scripts/${script}`)], {
-    cwd: projectRoot,
-    stdio: "inherit",
-  });
+  const result = hasZig
+    ? spawnSync("npx", ["tsx", resolve(projectRoot, "scripts/build-phase2.ts")], {
+        cwd: projectRoot,
+        stdio: "inherit",
+      })
+    : spawnSync("bash", [resolve(projectRoot, "scripts/build-phase1.sh")], {
+        cwd: projectRoot,
+        stdio: "inherit",
+      });
 
   if (result.status !== 0) {
     console.error("Build failed");
