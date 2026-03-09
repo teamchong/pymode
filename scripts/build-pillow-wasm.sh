@@ -54,6 +54,7 @@ echo "Building Pillow ${PILLOW_VERSION} → wasm32-wasi..."
 
 SUCCESS=0
 FAIL=0
+rm -rf "$BUILD_DIR/obj"
 mkdir -p "$BUILD_DIR/obj"
 
 # ── Step 1: Build vendored zlib ──
@@ -291,7 +292,7 @@ if [ "$HAS_WASM_LD" = true ]; then
         "${LINK_OBJS[@]}" || echo "  WARNING: wasm-ld failed"
 
     if [ -f "$BUILD_DIR/_imaging.wasm" ]; then
-        WASM_SIZE=$(ls -la "$BUILD_DIR/_imaging.wasm" | awk '{print $5}')
+        WASM_SIZE=$(wc -c < "$BUILD_DIR/_imaging.wasm" | tr -d ' ')
         echo "  _imaging.wasm: $(echo "scale=1; $WASM_SIZE / 1048576" | bc) MB"
     fi
 fi

@@ -59,17 +59,23 @@ export interface PythonDOHandle {
 
 // Python backend source — injected into WASM VFS via userFiles on each call.
 // This is the only way to make the module importable without modifying the stdlib build.
-// @ts-ignore — loaded as raw text by bundler (vite ?raw / wrangler text module)
-import PILLOW_PY_SOURCE from './_pymode_pillow.py?raw';
+// @ts-ignore — loaded as raw text by bundler (wrangler text module / vite raw import)
+import PILLOW_PY_SOURCE from './_pymode_pillow.py';
 
 const BACKEND_FILES = { '_pymode_pillow.py': PILLOW_PY_SOURCE };
+
+interface PillowResult {
+  image_b64?: string;
+  info?: ImageInfo;
+  [key: string]: unknown;
+}
 
 async function runPillow(
   pythonDO: PythonDOHandle,
   operation: string,
   imageData: ArrayBuffer,
   params: Record<string, unknown> = {}
-): Promise<Record<string, unknown>> {
+): Promise<PillowResult> {
   const base64Input = bufferToBase64(imageData);
 
   const response = await pythonDO.callFunction(
@@ -83,7 +89,7 @@ async function runPillow(
     throw new Error(`Pillow error: ${response.stderr || 'unknown error'}`);
   }
 
-  return response.returnValue as Record<string, unknown>;
+  return response.returnValue as PillowResult;
 }
 
 export class Image {
@@ -110,13 +116,19 @@ export class Image {
     if (input instanceof Response) {
       data = await input.arrayBuffer();
     } else if (input instanceof Uint8Array) {
-      data = input.buffer.slice(input.byteOffset, input.byteOffset + input.byteLength);
+      data = input.buffer.slice(input.byteOffset, input.byteOffset + input.byteLength) as ArrayBuffer;
     } else {
       data = input;
     }
 
     const result = await runPillow(pythonDO, 'open', data);
-    return new Image(data, result as ImageInfo, pythonDO);
+    const info: ImageInfo = {
+      width: result.width as number,
+      height: result.height as number,
+      format: result.format as string,
+      mode: result.mode as string,
+    };
+    return new Image(data, info, pythonDO);
   }
 
   /** Image width in pixels. */
@@ -143,8 +155,8 @@ export class Image {
     const result = await runPillow(this._pythonDO, 'resize', this._data, {
       width, height, filter,
     });
-    const newData = base64ToBuffer(result.image_b64);
-    return new Image(newData, result.info, this._pythonDO);
+    const newData = base64ToBuffer(result.image_b64!);
+    return new Image(newData, result.info!, this._pythonDO);
   }
 
   /** Crop the image. Returns a new Image. */
@@ -152,8 +164,8 @@ export class Image {
     const result = await runPillow(this._pythonDO, 'crop', this._data, {
       left: box.left, top: box.top, right: box.right, bottom: box.bottom,
     });
-    const newData = base64ToBuffer(result.image_b64);
-    return new Image(newData, result.info, this._pythonDO);
+    const newData = base64ToBuffer(result.image_b64!);
+    return new Image(newData, result.info!, this._pythonDO);
   }
 
   /** Rotate the image by degrees. Returns a new Image. */
@@ -161,8 +173,8 @@ export class Image {
     const result = await runPillow(this._pythonDO, 'rotate', this._data, {
       degrees, expand,
     });
-    const newData = base64ToBuffer(result.image_b64);
-    return new Image(newData, result.info, this._pythonDO);
+    const newData = base64ToBuffer(result.image_b64!);
+    return new Image(newData, result.info!, this._pythonDO);
   }
 
   /** Flip the image horizontally or vertically. Returns a new Image. */
@@ -170,15 +182,15 @@ export class Image {
     const result = await runPillow(this._pythonDO, 'flip', this._data, {
       direction,
     });
-    const newData = base64ToBuffer(result.image_b64);
-    return new Image(newData, result.info, this._pythonDO);
+    const newData = base64ToBuffer(result.image_b64!);
+    return new Image(newData, result.info!, this._pythonDO);
   }
 
   /** Convert to a different color mode (RGB, RGBA, L, etc.). Returns a new Image. */
   async convert(mode: string): Promise<Image> {
     const result = await runPillow(this._pythonDO, 'convert', this._data, { mode });
-    const newData = base64ToBuffer(result.image_b64);
-    return new Image(newData, result.info, this._pythonDO);
+    const newData = base64ToBuffer(result.image_b64!);
+    return new Image(newData, result.info!, this._pythonDO);
   }
 
   /** Create a thumbnail that fits within the given dimensions, preserving aspect ratio. Returns a new Image. */
@@ -186,8 +198,8 @@ export class Image {
     const result = await runPillow(this._pythonDO, 'thumbnail', this._data, {
       max_width: maxWidth, max_height: maxHeight,
     });
-    const newData = base64ToBuffer(result.image_b64);
-    return new Image(newData, result.info, this._pythonDO);
+    const newData = base64ToBuffer(result.image_b64!);
+    return new Image(newData, result.info!, this._pythonDO);
   }
 
   /** Export the image as a buffer in the specified format. */
@@ -195,7 +207,7 @@ export class Image {
     const result = await runPillow(this._pythonDO, 'export', this._data, {
       format, ...options,
     });
-    return base64ToBuffer(result.image_b64);
+    return base64ToBuffer(result.image_b64!);
   }
 }
 

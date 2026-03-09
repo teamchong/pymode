@@ -13,11 +13,14 @@ import pillowPackagesData from "../worker/src/extension-site-packages.zip";
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
+// Pre-encode stdlib once (avoid re-encoding ~4MB on every test invocation)
+const stdlibBin: Record<string, Uint8Array> = {};
+for (const [path, content] of Object.entries(stdlibFS)) {
+  stdlibBin[path] = encoder.encode(content);
+}
+
 async function runPillow(code: string): Promise<{ text: string; stderr: string; status: number }> {
-  const files: Record<string, Uint8Array> = {};
-  for (const [path, content] of Object.entries(stdlibFS)) {
-    files[path] = encoder.encode(content);
-  }
+  const files: Record<string, Uint8Array> = { ...stdlibBin };
 
   let pythonPath = "/stdlib";
   if (pillowPackagesData) {

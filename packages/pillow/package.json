@@ -11,9 +11,7 @@
   },
   "files": ["src"],
   "keywords": ["cloudflare", "workers", "python", "pillow", "image", "resize", "crop"],
-  "scripts": {
-    "test": "vitest run"
-  },
+  "scripts": {},
   "peerDependencies": {
     "pymode": ">=0.1.0"
   }
