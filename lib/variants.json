@@ -14,6 +14,13 @@
       "sitePackages": "numpy-site-packages.zip",
       "extensions": ["numpy"],
       "size": "13.4MB"
+    },
+    "pillow": {
+      "description": "CPython 3.13 + Pillow 11.1.0 (_imaging + libjpeg-turbo + libpng + zlib statically linked)",
+      "wasm": "python-pillow.wasm",
+      "sitePackages": "pillow-site-packages.zip",
+      "extensions": ["pillow"],
+      "size": null
     }
   },
   "extensionPackages": {
@@ -22,8 +29,8 @@
     "scipy": null,
     "sklearn": null,
     "scikit-learn": null,
-    "pillow": null,
-    "PIL": null,
+    "pillow": "pillow",
+    "PIL": "pillow",
     "lxml": null,
     "cryptography": null,
     "cffi": null,

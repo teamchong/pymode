@@ -1,29 +1,29 @@
-#!/usr/bin/env python3
-"""Generate stdlib data for the CF Workers MemFS.
+#!/usr/bin/env npx tsx
+/**
+ * Generate stdlib data for the CF Workers MemFS.
+ *
+ * Reads Python stdlib files, PyMode runtime modules, and polyfills, then writes:
+ *   - worker/src/stdlib-data.dat  — JSON blob loaded as Data module (ArrayBuffer)
+ *   - worker/src/stdlib-fs.ts     — thin loader that decodes and exports the data
+ *
+ * This keeps the JS script small (~30 lines) while the stdlib content (~4MB)
+ * is loaded as a separate Data module.
+ */
 
-Reads Python stdlib files, PyMode runtime modules, and polyfills, then writes:
-  - worker/src/stdlib-data.dat  — JSON blob loaded as Data module (ArrayBuffer)
-  - worker/src/stdlib-fs.ts     — thin loader that decodes and exports the data
+import * as fs from "node:fs";
+import * as path from "node:path";
 
-This keeps the JS script small (~30 lines) while the stdlib content (~4MB)
-is loaded as a separate Data module.
-"""
+const SCRIPT_DIR = path.dirname(new URL(import.meta.url).pathname);
+const ROOT_DIR = path.dirname(SCRIPT_DIR);
+const STDLIB_SRC = path.join(ROOT_DIR, "cpython", "Lib");
+const OUTPUT_DAT = path.join(ROOT_DIR, "worker", "src", "stdlib-data.dat");
+const OUTPUT_TS = path.join(ROOT_DIR, "worker", "src", "stdlib-fs.ts");
 
-import json
-import os
-import sys
-
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-ROOT_DIR = os.path.dirname(SCRIPT_DIR)
-STDLIB_SRC = os.path.join(ROOT_DIR, "cpython", "Lib")
-OUTPUT_DAT = os.path.join(ROOT_DIR, "worker", "src", "stdlib-data.dat")
-OUTPUT_TS = os.path.join(ROOT_DIR, "worker", "src", "stdlib-fs.ts")
-
-# Modules Python needs to boot (from PYTHONVERBOSE trace)
-# Frozen modules are already in the binary, but encodings + site helpers
-# must come from the filesystem.
-BOOT_FILES = [
-    # encodings — required before Python can decode any text
+// Modules Python needs to boot (from PYTHONVERBOSE trace)
+// Frozen modules are already in the binary, but encodings + site helpers
+// must come from the filesystem.
+const BOOT_FILES = [
+    // encodings — required before Python can decode any text
     "encodings/__init__.py",
     "encodings/aliases.py",
     "encodings/utf_8.py",
@@ -41,12 +41,12 @@ BOOT_FILES = [
     "encodings/punycode.py",
     "encodings/idna.py",
     "encodings/charmap.py",
-    # Western European / Windows
+    // Western European / Windows
     "encodings/cp437.py",
     "encodings/cp1252.py",
     "encodings/iso8859_1.py",
     "encodings/iso8859_15.py",
-    # CJK
+    // CJK
     "encodings/gb2312.py",
     "encodings/gbk.py",
     "encodings/gb18030.py",
@@ -57,33 +57,33 @@ BOOT_FILES = [
     "encodings/cp949.py",
     "encodings/cp932.py",
     "encodings/cp950.py",
-    # Cyrillic / Eastern European
+    // Cyrillic / Eastern European
     "encodings/cp1251.py",
     "encodings/koi8_r.py",
     "encodings/iso8859_2.py",
-    # Codec helpers
+    // Codec helpers
     "encodings/base64_codec.py",
-    # boot chain: traceback support
+    // boot chain: traceback support
     "linecache.py",
     "tokenize.py",
     "token.py",
-    # json
+    // json
     "json/__init__.py",
     "json/decoder.py",
     "json/encoder.py",
     "json/scanner.py",
-    # re (regex)
+    // re (regex)
     "re/__init__.py",
     "re/_casefix.py",
     "re/_compiler.py",
     "re/_constants.py",
     "re/_parser.py",
-    # collections & functools
+    // collections & functools
     "collections/__init__.py",
     "collections/abc.py",
     "functools.py",
     "operator.py",
-    # core types
+    // core types
     "enum.py",
     "types.py",
     "typing.py",
@@ -94,15 +94,15 @@ BOOT_FILES = [
     "copyreg.py",
     "weakref.py",
     "_weakrefset.py",
-    # text
+    // text
     "string.py",
     "textwrap.py",
-    # data
+    // data
     "base64.py",
     "hashlib.py",
     "hmac.py",
     "secrets.py",
-    # numbers
+    // numbers
     "random.py",
     "bisect.py",
     "heapq.py",
@@ -110,17 +110,17 @@ BOOT_FILES = [
     "fractions.py",
     "decimal.py",
     "statistics.py",
-    # datetime
+    // datetime
     "datetime.py",
     "calendar.py",
-    # path
+    // path
     "fnmatch.py",
     "glob.py",
-    # url
+    // url
     "urllib/__init__.py",
     "urllib/parse.py",
     "ipaddress.py",
-    # import machinery (needed for pymode._handler)
+    // import machinery (needed for pymode._handler)
     "importlib/__init__.py",
     "importlib/_bootstrap.py",
     "importlib/_bootstrap_external.py",
@@ -128,31 +128,31 @@ BOOT_FILES = [
     "importlib/_abc.py",
     "importlib/machinery.py",
     "importlib/util.py",
-    # pickle (needed for pymode.parallel)
+    // pickle (needed for pymode.parallel)
     "pickle.py",
     "_compat_pickle.py",
-    # inspect + dependencies (needed for dataclasses)
+    // inspect + dependencies (needed for dataclasses)
     "inspect.py",
     "dis.py",
     "opcode.py",
     "_opcode_metadata.py",
     "ast.py",
-    # logging — provided by polyfills/logging/__init__.py instead
-    # (stdlib logging requires threading; polyfill is threading-free)
-    # xml (main block is below with sax modules; these extras are here)
+    // logging — provided by polyfills/logging/__init__.py instead
+    // (stdlib logging requires threading; polyfill is threading-free)
+    // xml (main block is below with sax modules; these extras are here)
     "xml/etree/ElementInclude.py",
     "xml/etree/cElementTree.py",
-    # uuid
+    // uuid
     "uuid.py",
-    # csv
+    // csv
     "csv.py",
-    # pathlib
+    // pathlib
     "pathlib/__init__.py",
     "pathlib/_abc.py",
     "pathlib/_local.py",
-    # pprint
+    // pprint
     "pprint.py",
-    # email (needed by requests, urllib3, http)
+    // email (needed by requests, urllib3, http)
     "email/__init__.py",
     "email/_encoded_words.py",
     "email/_header_value_parser.py",
@@ -178,32 +178,32 @@ BOOT_FILES = [
     "email/policy.py",
     "email/quoprimime.py",
     "email/utils.py",
-    # html (needed by bs4, pyparsing)
+    // html (needed by bs4, pyparsing)
     "html/__init__.py",
     "html/parser.py",
     "html/entities.py",
     "_markupbase.py",
-    # http (needed by requests, urllib3, httpx)
+    // http (needed by requests, urllib3, httpx)
     "http/__init__.py",
     "http/client.py",
     "http/cookiejar.py",
     "http/cookies.py",
     "http/server.py",
-    # urllib extras (needed by requests, httpx)
+    // urllib extras (needed by requests, httpx)
     "urllib/error.py",
     "urllib/request.py",
     "urllib/response.py",
-    # shlex (needed by click, distro)
+    // shlex (needed by click, distro)
     "shlex.py",
-    # signal
+    // signal
     "signal.py",
-    # concurrent (needed by tenacity)
+    // concurrent (needed by tenacity)
     "concurrent/__init__.py",
     "concurrent/futures/__init__.py",
     "concurrent/futures/_base.py",
     "concurrent/futures/thread.py",
     "concurrent/futures/process.py",
-    # importlib extras (needed by certifi, setuptools, metadata)
+    // importlib extras (needed by certifi, setuptools, metadata)
     "importlib/resources/__init__.py",
     "importlib/resources/_adapters.py",
     "importlib/resources/_common.py",
@@ -220,13 +220,13 @@ BOOT_FILES = [
     "importlib/metadata/_itertools.py",
     "importlib/metadata/_meta.py",
     "importlib/metadata/_text.py",
-    # quopri (needed by email)
+    // quopri (needed by email)
     "quopri.py",
-    # zipfile (needed by importlib.metadata)
+    // zipfile (needed by importlib.metadata)
     "zipfile/__init__.py",
     "zipfile/_path/__init__.py",
     "zipfile/_path/glob.py",
-    # unittest (needed by pyparsing)
+    // unittest (needed by pyparsing)
     "unittest/__init__.py",
     "unittest/case.py",
     "unittest/result.py",
@@ -237,35 +237,35 @@ BOOT_FILES = [
     "unittest/signals.py",
     "unittest/async_case.py",
     "unittest/main.py",
-    # subprocess
+    // subprocess
     "subprocess.py",
-    # selectors
+    // selectors
     "selectors.py",
-    # locale (needed by httpx, distro)
+    // locale (needed by httpx, distro)
     "locale.py",
-    # queue (needed by urllib3, logging)
+    // queue (needed by urllib3, logging)
     "queue.py",
-    # difflib (needed by pyparsing, unittest)
+    // difflib (needed by pyparsing, unittest)
     "difflib.py",
-    # mimetypes (needed by requests, httpx, urllib3)
+    // mimetypes (needed by requests, httpx, urllib3)
     "mimetypes.py",
-    # needed by many PyPI packages
+    // needed by many PyPI packages
     "__future__.py",
     "tempfile.py",
     "shutil.py",
     "gettext.py",
-    # needed by numpy
+    // needed by numpy
     "contextvars.py",
     "platform.py",
     "argparse.py",
-    # needed by requests/urllib3 (IDNA)
+    // needed by requests/urllib3 (IDNA)
     "stringprep.py",
-    # zoneinfo (needed by pydantic)
+    // zoneinfo (needed by pydantic)
     "zoneinfo/__init__.py",
     "zoneinfo/_common.py",
     "zoneinfo/_tzpath.py",
     "zoneinfo/_zoneinfo.py",
-    # asyncio (needed by pydantic, fastapi, typing_extensions)
+    // asyncio (needed by pydantic, fastapi, typing_extensions)
     "asyncio/__init__.py",
     "asyncio/base_events.py",
     "asyncio/base_futures.py",
@@ -299,7 +299,7 @@ BOOT_FILES = [
     "asyncio/unix_events.py",
     "asyncio/windows_events.py",
     "asyncio/windows_utils.py",
-    # xml (needed by langchain, defusedxml, etc.)
+    // xml (needed by langchain, defusedxml, etc.)
     "xml/__init__.py",
     "xml/sax/__init__.py",
     "xml/sax/_exceptions.py",
@@ -312,33 +312,33 @@ BOOT_FILES = [
     "xml/etree/__init__.py",
     "xml/etree/ElementTree.py",
     "xml/etree/ElementPath.py",
-    # misc
+    // misc
     "keyword.py",
     "reprlib.py",
     "traceback.py",
     "_colorize.py",
     "struct.py",
-    # io (needed for stdin reading)
+    // io (needed for stdin reading)
     "io.py",
     "_pyio.py",
     "abc.py",
-    # sysconfig (needed by pydantic, setuptools)
+    // sysconfig (needed by pydantic, setuptools)
     "sysconfig/__init__.py",
     "sysconfig/__main__.py",
     "_sysconfigdata__wasi_wasm32-wasi.py",
-    # colorsys (needed by pydantic color)
+    // colorsys (needed by pydantic color)
     "colorsys.py",
-    # configparser (needed by various packages)
+    // configparser (needed by various packages)
     "configparser.py",
-    # tomllib (needed by pydantic, project configs)
+    // tomllib (needed by pydantic, project configs)
     "tomllib/__init__.py",
     "tomllib/_parser.py",
     "tomllib/_re.py",
     "tomllib/_types.py",
-]
+];
 
-# PyMode runtime modules bundled alongside stdlib
-PYMODE_FILES = [
+// PyMode runtime modules bundled alongside stdlib
+const PYMODE_FILES = [
     "pymode/__init__.py",
     "pymode/workers.py",
     "pymode/_handler.py",
@@ -349,10 +349,10 @@ PYMODE_FILES = [
     "pymode/workflows.py",
     "pymode/importer.py",
     "pymode/compute.py",
-]
+];
 
-# Pure-Python polyfills for C extension modules unavailable in WASM.
-POLYFILL_FILES = [
+// Pure-Python polyfills for C extension modules unavailable in WASM.
+const POLYFILL_FILES = [
     "binascii.py",
     "socket.py",
     "_socket.py",
@@ -364,71 +364,73 @@ POLYFILL_FILES = [
     "zlib.py",
     "_wasi_compat.py",
     "multiprocessing/__init__.py",
-]
+];
 
+function collectFiles(): Record<string, string> {
+    const pymodeLib = path.join(ROOT_DIR, "lib");
+    const polyfillDir = path.join(ROOT_DIR, "lib", "polyfills");
+    const result: Record<string, string> = {};
 
-def collect_files() -> dict[str, str]:
-    """Collect all stdlib, pymode, and polyfill files into a dict."""
-    pymode_lib = os.path.join(ROOT_DIR, "lib")
-    polyfill_dir = os.path.join(ROOT_DIR, "lib", "polyfills")
-    result: dict[str, str] = {}
+    for (const relpath of BOOT_FILES) {
+        const srcfile = path.join(STDLIB_SRC, relpath);
+        if (!fs.existsSync(srcfile) || !fs.statSync(srcfile).isFile()) {
+            console.log(`  Warning: ${relpath} not found, skipping`);
+            continue;
+        }
+        result[relpath] = fs.readFileSync(srcfile, "utf-8");
+    }
 
-    for relpath in BOOT_FILES:
-        srcfile = os.path.join(STDLIB_SRC, relpath)
-        if not os.path.isfile(srcfile):
-            print(f"  Warning: {relpath} not found, skipping")
-            continue
-        with open(srcfile, "r") as f:
-            result[relpath] = f.read()
+    for (const relpath of PYMODE_FILES) {
+        const srcfile = path.join(pymodeLib, relpath);
+        if (!fs.existsSync(srcfile) || !fs.statSync(srcfile).isFile()) {
+            console.log(`  Warning: pymode/${relpath} not found, skipping`);
+            continue;
+        }
+        result[relpath] = fs.readFileSync(srcfile, "utf-8");
+    }
 
-    for relpath in PYMODE_FILES:
-        srcfile = os.path.join(pymode_lib, relpath)
-        if not os.path.isfile(srcfile):
-            print(f"  Warning: pymode/{relpath} not found, skipping")
-            continue
-        with open(srcfile, "r") as f:
-            result[relpath] = f.read()
+    for (const relpath of POLYFILL_FILES) {
+        const srcfile = path.join(polyfillDir, relpath);
+        if (!fs.existsSync(srcfile) || !fs.statSync(srcfile).isFile()) {
+            console.log(`  Warning: polyfill ${relpath} not found, skipping`);
+            continue;
+        }
+        result[relpath] = fs.readFileSync(srcfile, "utf-8");
+    }
 
-    for relpath in POLYFILL_FILES:
-        srcfile = os.path.join(polyfill_dir, relpath)
-        if not os.path.isfile(srcfile):
-            print(f"  Warning: polyfill {relpath} not found, skipping")
-            continue
-        with open(srcfile, "r") as f:
-            result[relpath] = f.read()
+    return result;
+}
 
-    return result
+function main(): void {
+    if (!fs.existsSync(STDLIB_SRC) || !fs.statSync(STDLIB_SRC).isDirectory()) {
+        console.error(`Error: CPython stdlib not found at ${STDLIB_SRC}`);
+        console.error("Run build-phase2.ts first.");
+        process.exit(1);
+    }
 
+    console.log("Generating stdlib data...");
 
-def main():
-    if not os.path.isdir(STDLIB_SRC):
-        print(f"Error: CPython stdlib not found at {STDLIB_SRC}")
-        print("Run build-phase2.py first.")
-        sys.exit(1)
+    const files = collectFiles();
 
-    print(f"Generating stdlib data...")
-
-    files = collect_files()
-
-    # Patch types.py: CapsuleType uses _socket.CAPI which isn't available in WASI.
-    # Use _datetime's C_API capsule instead (always available as a built-in).
-    if "types.py" in files:
+    // Patch types.py: CapsuleType uses _socket.CAPI which isn't available in WASI.
+    // Use _datetime's C_API capsule instead (always available as a built-in).
+    if ("types.py" in files) {
         files["types.py"] = files["types.py"].replace(
             "import _socket\n        return type(_socket.CAPI)",
             "import _datetime\n        return type(_datetime.datetime_CAPI)",
-        )
+        );
+    }
 
-    # Write binary data file (JSON encoded as UTF-8)
-    json_bytes = json.dumps(files, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    with open(OUTPUT_DAT, "wb") as f:
-        f.write(json_bytes)
+    // Write binary data file (JSON encoded as UTF-8)
+    const jsonStr = JSON.stringify(files);
+    const jsonBytes = Buffer.from(jsonStr, "utf-8");
+    fs.writeFileSync(OUTPUT_DAT, jsonBytes);
 
-    dat_kb = os.path.getsize(OUTPUT_DAT) // 1024
+    const datKb = Math.floor(fs.statSync(OUTPUT_DAT).size / 1024);
 
-    # Write thin TypeScript loader
-    with open(OUTPUT_TS, "w") as f:
-        f.write("""\
-// Auto-generated by scripts/generate-stdlib-fs.py
+    // Write thin TypeScript loader
+    const loaderContent = `\
+// Auto-generated by scripts/generate-stdlib-fs.ts
 // Loads stdlib data from a binary Data module (stdlib-data.dat).
 // This keeps the JS script small while stdlib content is a separate asset.
 
@@ -439,13 +441,14 @@ const _decoder = new TextDecoder();
 export const stdlibFS: Record<string, string> = JSON.parse(
   _decoder.decode(stdlibData)
 );
-""")
+`;
+    fs.writeFileSync(OUTPUT_TS, loaderContent, "utf-8");
 
-    ts_bytes = os.path.getsize(OUTPUT_TS)
-    print(f"Done:")
-    print(f"  {OUTPUT_DAT} ({len(files)} files, {dat_kb}KB)")
-    print(f"  {OUTPUT_TS} ({ts_bytes} bytes — loader only)")
+    const tsBytes = fs.statSync(OUTPUT_TS).size;
+    const fileCount = Object.keys(files).length;
+    console.log("Done:");
+    console.log(`  ${OUTPUT_DAT} (${fileCount} files, ${datKb}KB)`);
+    console.log(`  ${OUTPUT_TS} (${tsBytes} bytes — loader only)`);
+}
 
-
-if __name__ == "__main__":
-    main()
+main();

@@ -325,6 +325,11 @@ if [ -f "$BUILD_DIR/_imaging.wasm" ]; then
 fi
 cp "$BUILD_DIR/pillow-site-packages.zip" "$OUTPUT_DIR/"
 
+# Copy site-packages for variant builder (build-variant.sh expects this path)
+RECIPE_DIR="$ROOT_DIR/build/recipes/pillow"
+mkdir -p "$RECIPE_DIR"
+cp "$BUILD_DIR/pillow-site-packages.zip" "$RECIPE_DIR/"
+
 # Copy objects for variant builder
 VARIANT_OBJ_DIR="$ROOT_DIR/build/zig-wasi/Modules/pillow"
 mkdir -p "$VARIANT_OBJ_DIR"
