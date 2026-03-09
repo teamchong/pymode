@@ -109,8 +109,6 @@ print(builtins)
 import PIL
 print(f"PIL {PIL.__version__}")
 `);
-    console.log("PIL import stdout:", text);
-    console.log("PIL import stderr:", stderr);
     expect(status).toBe(0);
     expect(text).toContain("PIL");
   });

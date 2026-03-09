@@ -175,7 +175,7 @@ while IFS= read -r obj; do
     [[ "$base" == "dynload_shlib.o" ]] && continue
     [[ "$base" == "pymode_wizer.o" ]] && continue
     LINK_OBJS+=("$obj")
-done < <(find "$BUILD_DIR" -name "*.o" -not -path "*/recipes/*" -not -path "*/Modules/numpy/*" -not -path "*/Modules/pillow/*" -not -path "*/Modules/scipy/*" -not -path "*/Modules/sklearn/*" -not -name "config_variant.o")
+done < <(find "$BUILD_DIR" -name "*.o" -not -path "*/recipes/*" -not -path "*/Modules/numpy/*" -not -path "*/Modules/pillow/*" -not -name "config_variant.o")
 
 # Add our variant config
 LINK_OBJS+=("$BUILD_DIR/Modules/config_variant.o")

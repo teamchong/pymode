@@ -43,7 +43,7 @@ PILLOW_SRC="$BUILD_DIR/pillow-${PILLOW_VERSION}"
 if [ ! -d "$PILLOW_SRC" ]; then
     echo "Downloading Pillow ${PILLOW_VERSION}..."
     mkdir -p "$BUILD_DIR"
-    pip3 download "Pillow==${PILLOW_VERSION}" --no-binary=:all: --no-deps -d "$BUILD_DIR" 2>/dev/null
+    pip3 download "Pillow==${PILLOW_VERSION}" --no-binary=:all: --no-deps -d "$BUILD_DIR"
     cd "$BUILD_DIR"
     tar xzf "pillow-${PILLOW_VERSION}.tar.gz" || tar xzf "Pillow-${PILLOW_VERSION}.tar.gz"
     # Source dir may be Pillow-VERSION or pillow-VERSION
@@ -65,7 +65,7 @@ if [ ! -d "$ZLIB_SRC" ]; then
     curl -sL "https://github.com/madler/zlib/releases/download/v${ZLIB_VERSION}/zlib-${ZLIB_VERSION}.tar.gz" | tar xz
 fi
 
-ZLIB_CFLAGS="-target wasm32-wasi -c -Os -fPIC -D__wasm_exception_handling__ -DHAVE_UNISTD_H"
+ZLIB_CFLAGS="-target wasm32-wasi -c -Os -D__wasm_exception_handling__ -DHAVE_UNISTD_H"
 for src in adler32 compress crc32 deflate gzclose gzlib gzread gzwrite \
            infback inffast inflate inftrees trees uncompr zutil; do
     if zig cc $ZLIB_CFLAGS -o "$BUILD_DIR/obj/zlib_${src}.o" "$ZLIB_SRC/${src}.c" 2>/dev/null; then
@@ -127,7 +127,7 @@ cp "$JPEG_SRC/jversion.h" "$JPEG_SRC/src/jversion.h" 2>/dev/null
 cp "$JPEG_SRC/jconfig.h" "$JPEG_SRC/src/jconfig.h" 2>/dev/null
 cp "$JPEG_SRC/jconfigint.h" "$JPEG_SRC/src/jconfigint.h" 2>/dev/null
 
-JPEG_CFLAGS="-target wasm32-wasi -c -Os -fPIC -D__wasm_exception_handling__ -I$JPEG_SRC -I$JPEG_SRC/src"
+JPEG_CFLAGS="-target wasm32-wasi -c -Os -D__wasm_exception_handling__ -I$JPEG_SRC -I$JPEG_SRC/src"
 # Compile all library source files (skip standalone tools and test files)
 JPEG_SKIP="cjpeg|djpeg|jpegtran|example|tjbench|tjcomp|tjdecomp|tjtran|tjunittest|tjutil|turbojpeg|turbojpeg-mp|strtest|jcstest|rdbmp|rdcolmap|rdgif|rdjpgcom|rdppm|rdswitch|rdtarga|wrbmp|wrgif|wrjpgcom|wrppm|wrtarga|cdjpeg"
 for src in "$JPEG_SRC/src"/*.c; do
@@ -206,7 +206,7 @@ with open('pnglibconf.h', 'w') as f:
 " 2>/dev/null || echo "  WARNING: Could not generate pnglibconf.h"
 fi
 
-PNG_CFLAGS="-target wasm32-wasi -c -Os -fPIC -D__wasm_exception_handling__ -I$PNG_SRC -I$ZLIB_SRC"
+PNG_CFLAGS="-target wasm32-wasi -c -Os -D__wasm_exception_handling__ -I$PNG_SRC -I$ZLIB_SRC"
 for src in png pngerror pngget pngmem pngpread pngread pngrio pngrtran \
            pngrutil pngset pngtrans pngwio pngwrite pngwtran pngwutil; do
     if zig cc $PNG_CFLAGS -o "$BUILD_DIR/obj/png_${src}.o" "$PNG_SRC/${src}.c" 2>/dev/null; then
@@ -222,7 +222,7 @@ IMAGING_DIR="$PILLOW_SRC/src/libImaging"
 
 pillow_cc() {
     local src="$1" out="$2"
-    if zig cc -target wasm32-wasi -c -Os -fPIC \
+    if zig cc -target wasm32-wasi -c -Os \
         -D__wasm_exception_handling__ \
         -I"$CPYTHON/Include" -I"$CPYTHON/Include/cpython" -I"$PYCONFIG_DIR" \
         -I"$PILLOW_SRC/src/libImaging" -I"$PILLOW_SRC/src" \
@@ -259,7 +259,7 @@ done
 # setjmp/longjmp implementation for wasm32-wasi (needed by libjpeg and libpng)
 SETJMP_SHIM="$ROOT_DIR/lib/wasi-shims/setjmp_shim.c"
 if [ -f "$SETJMP_SHIM" ]; then
-    if zig cc -target wasm32-wasi -c -Os -fPIC -D__wasm_exception_handling__ \
+    if zig cc -target wasm32-wasi -c -Os -D__wasm_exception_handling__ \
         -o "$BUILD_DIR/obj/setjmp_shim.o" "$SETJMP_SHIM" 2>/dev/null; then
         SUCCESS=$((SUCCESS + 1))
     else
@@ -277,14 +277,18 @@ fi
 
 if [ "$HAS_WASM_LD" = true ]; then
     echo "  Linking _imaging.wasm..."
-    # Except.o symbols are already defined in _imaging.c — exclude to avoid duplicates
-    rm -f "$BUILD_DIR/obj/imaging_Except.o"
+    # Collect objects excluding imaging_Except.o (symbols already in _imaging.c)
+    LINK_OBJS=()
+    for obj in "$BUILD_DIR"/obj/*.o; do
+        [[ "$(basename "$obj")" == "imaging_Except.o" ]] && continue
+        LINK_OBJS+=("$obj")
+    done
     wasm-ld \
         --no-entry --shared --strip-all --gc-sections \
         --export=PyInit__imaging \
         --allow-undefined \
         -o "$BUILD_DIR/_imaging.wasm" \
-        "$BUILD_DIR"/obj/*.o 2>/dev/null || echo "  WARNING: wasm-ld failed"
+        "${LINK_OBJS[@]}" || echo "  WARNING: wasm-ld failed"
 
     if [ -f "$BUILD_DIR/_imaging.wasm" ]; then
         WASM_SIZE=$(ls -la "$BUILD_DIR/_imaging.wasm" | awk '{print $5}')

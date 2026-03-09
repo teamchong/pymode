@@ -69,7 +69,7 @@ async function runPillow(
   operation: string,
   imageData: ArrayBuffer,
   params: Record<string, unknown> = {}
-): Promise<any> {
+): Promise<Record<string, unknown>> {
   const base64Input = bufferToBase64(imageData);
 
   const response = await pythonDO.callFunction(
@@ -83,7 +83,7 @@ async function runPillow(
     throw new Error(`Pillow error: ${response.stderr || 'unknown error'}`);
   }
 
-  return response.returnValue;
+  return response.returnValue as Record<string, unknown>;
 }
 
 export class Image {
@@ -203,11 +203,13 @@ export class Image {
 
 function bufferToBase64(buf: ArrayBuffer): string {
   const bytes = new Uint8Array(buf);
-  let binary = '';
-  for (let i = 0; i < bytes.length; i++) {
-    binary += String.fromCharCode(bytes[i]);
+  // Build in 8KB chunks to avoid O(n²) string concatenation
+  const chunks: string[] = [];
+  for (let i = 0; i < bytes.length; i += 8192) {
+    const slice = bytes.subarray(i, Math.min(i + 8192, bytes.length));
+    chunks.push(String.fromCharCode(...slice));
   }
-  return btoa(binary);
+  return btoa(chunks.join(''));
 }
 
 function base64ToBuffer(b64: string): ArrayBuffer {
