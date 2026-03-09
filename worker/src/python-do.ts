@@ -375,17 +375,15 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
         self.dlLastError = null;
 
         // Look up pre-compiled extension module by path
-        // Try exact path first, then basename, then various normalizations
+        // Try exact path first, then basename, then suffix match
+        const basename = path.split("/").pop() || "";
         let wasmModule = self.extensionModules.get(path);
-        if (!wasmModule) {
-          // Try basename (e.g. "_speedups.wasm" from full path)
-          const basename = path.split("/").pop() || path;
+        if (!wasmModule && basename) {
           wasmModule = self.extensionModules.get(basename);
         }
         if (!wasmModule) {
-          // Try matching by module name pattern in the path
           for (const [key, mod] of self.extensionModules) {
-            if (path.endsWith(key) || key.endsWith(path.split("/").pop() || "")) {
+            if (path.endsWith(key) || (basename && key.endsWith(basename))) {
               wasmModule = mod;
               break;
             }

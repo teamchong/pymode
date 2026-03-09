@@ -175,6 +175,12 @@ async function runWasm(
 }
 
 // Base64 encode/decode for fetch response serialization
+const PYMODE_TEXT_HEADERS = { "Content-Type": "text/plain; charset=utf-8", "X-Powered-By": "PyMode" } as const;
+
+function textResponse(body: string, status = 200): Response {
+  return new Response(body, { status, headers: PYMODE_TEXT_HEADERS });
+}
+
 function base64Encode(data: Uint8Array): string {
   let binary = "";
   for (let i = 0; i < data.length; i++) {
@@ -546,10 +552,7 @@ async function serializeRequest(request: Request, env: Env): Promise<string> {
  */
 function deserializeResponse(stdout: string, stderr: string): Response {
   if (!stdout.trim()) {
-    return new Response(stderr || "(empty response)\n", {
-      status: 500,
-      headers: { "Content-Type": "text/plain", "X-Powered-By": "PyMode" },
-    });
+    return textResponse(stderr || "(empty response)\n", 500);
   }
 
   try {
@@ -570,9 +573,7 @@ function deserializeResponse(stdout: string, stderr: string): Response {
     });
   } catch {
     // stdout wasn't valid JSON — return as plain text (legacy mode output)
-    return new Response(stdout, {
-      headers: { "Content-Type": "text/plain; charset=utf-8", "X-Powered-By": "PyMode" },
-    });
+    return textResponse(stdout);
   }
 }
 
@@ -657,32 +658,19 @@ export default {
         const result = await pythonDO.executeCode(code);
 
         if (result.exitCode === 0) {
-          return new Response(result.stdout || "(empty output)\n", {
-            headers: { "Content-Type": "text/plain; charset=utf-8", "X-Powered-By": "PyMode" },
-          });
+          return textResponse(result.stdout || "(empty output)\n");
         }
-        return new Response(result.stdout + result.stderr, {
-          status: 500,
-          headers: { "Content-Type": "text/plain; charset=utf-8", "X-Powered-By": "PyMode" },
-        });
+        return textResponse(result.stdout + result.stderr, 500);
       }
 
       // Fallback: run in stateless worker without host imports
       const result = await runPythonWithFetch(code, files, env.PYMODE_DATA, pythonPath, env.TCP_POOL);
 
-      if (result.exitCode === 0) {
-        const output = _decoder.decode(result.stdout);
-        return new Response(output || "(empty output)\n", {
-          headers: { "Content-Type": "text/plain; charset=utf-8", "X-Powered-By": "PyMode" },
-        });
-      }
-
       const output = _decoder.decode(result.stdout);
-      const errors = _decoder.decode(result.stderr);
-      return new Response(output + errors, {
-        status: 500,
-        headers: { "Content-Type": "text/plain; charset=utf-8", "X-Powered-By": "PyMode" },
-      });
+      if (result.exitCode === 0) {
+        return textResponse(output || "(empty output)\n");
+      }
+      return textResponse(output + _decoder.decode(result.stderr), 500);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       return new Response(`Error: ${msg}\n`, {

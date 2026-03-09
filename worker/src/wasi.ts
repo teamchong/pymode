@@ -65,9 +65,6 @@ export function createWasi(
   stdinData?: Uint8Array,
   baseDirIndex?: Map<string, string[]>
 ) {
-  const encoder = _encoder;
-  const decoder = _decoder;
-
   const FD_STDIN = 0;
   const FD_STDOUT = 1;
   const FD_STDERR = 2;
@@ -81,9 +78,9 @@ export function createWasi(
 
   // Pre-encode preopen paths (called repeatedly during WASI init)
   const preopenPaths: Record<number, { str: string; bytes: Uint8Array }> = {
-    [FD_PREOPEN]: { str: preopenPath, bytes: encoder.encode(preopenPath) },
-    [FD_DATA_PREOPEN]: { str: dataPreopenPath, bytes: encoder.encode(dataPreopenPath) },
-    [FD_TMP_PREOPEN]: { str: tmpPreopenPath, bytes: encoder.encode(tmpPreopenPath) },
+    [FD_PREOPEN]: { str: preopenPath, bytes: _encoder.encode(preopenPath) },
+    [FD_DATA_PREOPEN]: { str: dataPreopenPath, bytes: _encoder.encode(dataPreopenPath) },
+    [FD_TMP_PREOPEN]: { str: tmpPreopenPath, bytes: _encoder.encode(tmpPreopenPath) },
   };
 
   interface OpenFile {
@@ -154,6 +151,18 @@ export function createWasi(
     if (!list.includes(name)) list.push(name);
   }
 
+  // Remove a child entry from its parent directory listing
+  function removeFromParent(fullPath: string): void {
+    const parts = fullPath.split("/");
+    const name = parts.pop()!;
+    const parent = parts.join("/");
+    const siblings = dirChildren.get(parent);
+    if (siblings) {
+      const idx = siblings.indexOf(name);
+      if (idx !== -1) siblings.splice(idx, 1);
+    }
+  }
+
   function view(): DataView { return new DataView(getMemory().buffer); }
   function mem(): Uint8Array { return new Uint8Array(getMemory().buffer); }
 
@@ -189,7 +198,7 @@ export function createWasi(
       for (const arg of args) {
         v.setUint32(argvPtr, bufPtr, true);
         argvPtr += 4;
-        const bytes = encoder.encode(arg + "\0");
+        const bytes = _encoder.encode(arg + "\0");
         mem().set(bytes, bufPtr);
         bufPtr += bytes.length;
       }
@@ -200,7 +209,7 @@ export function createWasi(
       const v = view();
       v.setUint32(countPtr, args.length, true);
       let size = 0;
-      for (const arg of args) size += encoder.encode(arg + "\0").length;
+      for (const arg of args) size += _encoder.encode(arg + "\0").length;
       v.setUint32(sizePtr, size, true);
       return ESUCCESS;
     },
@@ -210,7 +219,7 @@ export function createWasi(
       for (const [key, val] of Object.entries(env)) {
         v.setUint32(envPtr, bufPtr, true);
         envPtr += 4;
-        const bytes = encoder.encode(`${key}=${val}\0`);
+        const bytes = _encoder.encode(`${key}=${val}\0`);
         mem().set(bytes, bufPtr);
         bufPtr += bytes.length;
       }
@@ -222,7 +231,7 @@ export function createWasi(
       const entries = Object.entries(env);
       v.setUint32(countPtr, entries.length, true);
       let size = 0;
-      for (const [key, val] of entries) size += encoder.encode(`${key}=${val}\0`).length;
+      for (const [key, val] of entries) size += _encoder.encode(`${key}=${val}\0`).length;
       v.setUint32(sizePtr, size, true);
       return ESUCCESS;
     },
@@ -396,7 +405,7 @@ export function createWasi(
       oflags: number, _fsRightsBase: bigint, _fsRightsInheriting: bigint,
       _fdflags: number, retPtr: number
     ): number {
-      const pathStr = decoder.decode(mem().subarray(pathPtr, pathPtr + pathLen));
+      const pathStr = _decoder.decode(mem().subarray(pathPtr, pathPtr + pathLen));
       const fullPath = resolvePath(dirFd, pathStr);
       if (fullPath === null) return EBADF;
 
@@ -446,7 +455,7 @@ export function createWasi(
       dirFd: number, _flags: number,
       pathPtr: number, pathLen: number, retPtr: number
     ): number {
-      const pathStr = decoder.decode(mem().subarray(pathPtr, pathPtr + pathLen));
+      const pathStr = _decoder.decode(mem().subarray(pathPtr, pathPtr + pathLen));
       const fullPath = resolvePath(dirFd, pathStr);
       if (fullPath === null) return EBADF;
 
@@ -504,7 +513,7 @@ export function createWasi(
       const startIdx = Number(cookie);
       for (let i = startIdx; i < entries.length; i++) {
         const name = entries[i];
-        const nameBytes = encoder.encode(name);
+        const nameBytes = _encoder.encode(name);
         const entrySize = 24 + nameBytes.length;
         if (offset + entrySize > bufLen) break;
 
@@ -542,7 +551,7 @@ export function createWasi(
     fd_renumber(): number { return ENOSYS; },
 
     path_create_directory(dirFd: number, pathPtr: number, pathLen: number): number {
-      const pathStr = decoder.decode(mem().subarray(pathPtr, pathPtr + pathLen));
+      const pathStr = _decoder.decode(mem().subarray(pathPtr, pathPtr + pathLen));
       const fullPath = resolvePath(dirFd, pathStr);
       if (fullPath === null) return EBADF;
       if (dirChildren.has(fullPath)) return EEXIST;
@@ -555,22 +564,14 @@ export function createWasi(
     path_readlink(): number { return ENOSYS; },
 
     path_remove_directory(dirFd: number, pathPtr: number, pathLen: number): number {
-      const pathStr = decoder.decode(mem().subarray(pathPtr, pathPtr + pathLen));
+      const pathStr = _decoder.decode(mem().subarray(pathPtr, pathPtr + pathLen));
       const fullPath = resolvePath(dirFd, pathStr);
       if (fullPath === null) return EBADF;
       if (!dirChildren.has(fullPath)) return ENOENT;
       const children = dirChildren.get(fullPath)!;
       if (children.length > 0) return ENOTEMPTY;
       dirChildren.delete(fullPath);
-      // Remove from parent
-      const parts = fullPath.split("/");
-      const name = parts.pop()!;
-      const parent = parts.join("/");
-      const siblings = dirChildren.get(parent);
-      if (siblings) {
-        const idx = siblings.indexOf(name);
-        if (idx !== -1) siblings.splice(idx, 1);
-      }
+      removeFromParent(fullPath);
       return ESUCCESS;
     },
 
@@ -579,8 +580,8 @@ export function createWasi(
       newDirFd: number, newPathPtr: number, newPathLen: number
     ): number {
       const m = mem();
-      const oldPathStr = decoder.decode(m.subarray(oldPathPtr, oldPathPtr + oldPathLen));
-      const newPathStr = decoder.decode(m.subarray(newPathPtr, newPathPtr + newPathLen));
+      const oldPathStr = _decoder.decode(m.subarray(oldPathPtr, oldPathPtr + oldPathLen));
+      const newPathStr = _decoder.decode(m.subarray(newPathPtr, newPathPtr + newPathLen));
       const oldPath = resolvePath(oldDirFd, oldPathStr);
       const newPath = resolvePath(newDirFd, newPathStr);
       if (oldPath === null || newPath === null) return EBADF;
@@ -593,36 +594,20 @@ export function createWasi(
       registerFile(newPath);
       writtenFiles.delete(oldPath);
       deletedFiles.add(oldPath);
-      // Remove from old parent dir listing
-      const oldParts = oldPath.split("/");
-      const oldName = oldParts.pop()!;
-      const oldParent = oldParts.join("/");
-      const oldSiblings = dirChildren.get(oldParent);
-      if (oldSiblings) {
-        const idx = oldSiblings.indexOf(oldName);
-        if (idx !== -1) oldSiblings.splice(idx, 1);
-      }
+      removeFromParent(oldPath);
       return ESUCCESS;
     },
 
     path_symlink(): number { return ENOSYS; },
 
     path_unlink_file(dirFd: number, pathPtr: number, pathLen: number): number {
-      const pathStr = decoder.decode(mem().subarray(pathPtr, pathPtr + pathLen));
+      const pathStr = _decoder.decode(mem().subarray(pathPtr, pathPtr + pathLen));
       const fullPath = resolvePath(dirFd, pathStr);
       if (fullPath === null) return EBADF;
       if (!fileExists(fullPath)) return ENOENT;
       writtenFiles.delete(fullPath);
       deletedFiles.add(fullPath);
-      // Remove from parent dir listing
-      const parts = fullPath.split("/");
-      const name = parts.pop()!;
-      const parent = parts.join("/");
-      const siblings = dirChildren.get(parent);
-      if (siblings) {
-        const idx = siblings.indexOf(name);
-        if (idx !== -1) siblings.splice(idx, 1);
-      }
+      removeFromParent(fullPath);
       return ESUCCESS;
     },
 
@@ -644,24 +629,19 @@ export function createWasi(
     },
   };
 
+  function concatChunks(chunks: Uint8Array[]): Uint8Array {
+    let len = 0;
+    for (const c of chunks) len += c.length;
+    const result = new Uint8Array(len);
+    let off = 0;
+    for (const c of chunks) { result.set(c, off); off += c.length; }
+    return result;
+  }
+
   return {
     imports,
-    getStdout(): Uint8Array {
-      let len = 0;
-      for (const c of stdoutChunks) len += c.length;
-      const result = new Uint8Array(len);
-      let off = 0;
-      for (const c of stdoutChunks) { result.set(c, off); off += c.length; }
-      return result;
-    },
-    getStderr(): Uint8Array {
-      let len = 0;
-      for (const c of stderrChunks) len += c.length;
-      const result = new Uint8Array(len);
-      let off = 0;
-      for (const c of stderrChunks) { result.set(c, off); off += c.length; }
-      return result;
-    },
+    getStdout(): Uint8Array { return concatChunks(stdoutChunks); },
+    getStderr(): Uint8Array { return concatChunks(stderrChunks); },
     getWrittenFiles(): Map<string, Uint8Array> {
       return writtenFiles;
     },
