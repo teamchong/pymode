@@ -13,7 +13,6 @@ Prerequisites:
     - wasm-opt installed (brew install binaryen)
 """
 
-import glob
 import os
 import shutil
 import subprocess

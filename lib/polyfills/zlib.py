@@ -49,31 +49,7 @@ ZLIB_RUNTIME_VERSION = "1.2.13"
 
 # ── Checksums ────────────────────────────────────────────────────
 
-_CRC32_TABLE = None
-
-def _make_crc32_table():
-    global _CRC32_TABLE
-    if _CRC32_TABLE is not None:
-        return
-    _CRC32_TABLE = []
-    for i in range(256):
-        crc = i
-        for _ in range(8):
-            if crc & 1:
-                crc = (crc >> 1) ^ 0xEDB88320
-            else:
-                crc >>= 1
-        _CRC32_TABLE.append(crc)
-
-
-def crc32(data, value=0):
-    if isinstance(data, memoryview):
-        data = bytes(data)
-    _make_crc32_table()
-    crc = value ^ 0xFFFFFFFF
-    for b in data:
-        crc = _CRC32_TABLE[(crc ^ b) & 0xFF] ^ (crc >> 8)
-    return (crc ^ 0xFFFFFFFF) & 0xFFFFFFFF
+from binascii import crc32
 
 
 def adler32(data, value=1):

@@ -90,7 +90,6 @@ class RemotePackageFinder(importlib.abc.MetaPathFinder):
                         f.write(file_resp.read())
 
             # Now try to find the module again from cache
-            self._tried.discard(fullname)
             if os.path.exists(init_path):
                 return importlib.util.spec_from_file_location(
                     fullname, init_path,
