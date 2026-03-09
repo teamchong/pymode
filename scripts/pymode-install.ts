@@ -126,6 +126,7 @@ function crc32(buf: Uint8Array): number {
 
 /** Create a ZIP_STORED zip from entries. */
 function createStoredZip(entries: Array<{ name: string; data: Uint8Array }>): Uint8Array {
+  if (entries.length > 0xffff) throw new Error(`Too many ZIP entries (${entries.length} > 65535)`);
   if (fflate) {
     const obj: Record<string, Uint8Array> = {};
     for (const e of entries) {
@@ -325,10 +326,14 @@ function getDependencies(pypiData: any): string[] {
     // Skip optional/extra dependencies
     if (dep.includes("extra ==")) continue;
 
-    // Skip platform-specific deps with complex markers
+    // Skip deps with environment markers that don't apply to WASI
     if (dep.includes("; ")) {
       const marker = dep.split(";")[1].trim();
       if (marker.includes("extra")) continue;
+      if (marker.includes("sys_platform")) continue;
+      if (marker.includes("platform_system")) continue;
+      if (marker.includes("os_name")) continue;
+      if (marker.includes("implementation_name")) continue;
     }
 
     // Extract just the package name

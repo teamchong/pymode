@@ -12,8 +12,9 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const SCRIPT_DIR = path.dirname(new URL(import.meta.url).pathname);
+const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.dirname(SCRIPT_DIR);
 const STDLIB_SRC = path.join(ROOT_DIR, "cpython", "Lib");
 const OUTPUT_DAT = path.join(ROOT_DIR, "worker", "src", "stdlib-data.dat");

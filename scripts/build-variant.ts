@@ -256,7 +256,7 @@ function main(): void {
   // Step 3: Collect all base .o files (excluding config.o and dynload_shlib.o)
   console.log("  Collecting link objects...");
   const linkObjs: string[] = [];
-  const skipNames = new Set(["config.o", "dynload_shlib.o", "config_variant.o"]);
+  const skipNames = new Set(["config.o", "dynload_shlib.o", "config_variant.o", "config_wizer.o", "pymode_wizer.o"]);
 
   for (const filePath of walkDir(BUILD_DIR)) {
     // Skip recipe and numpy directories

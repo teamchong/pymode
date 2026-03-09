@@ -10,7 +10,7 @@
  */
 
 import { execSync, spawnSync } from "node:child_process";
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync } from "node:fs";
 import { resolve, basename, dirname } from "node:path";
 
 const USAGE = `
@@ -82,7 +82,7 @@ function deploy(args: string[]): void {
   }
 
   const projectRoot = findProjectRoot();
-  const wasmPath = resolve(projectRoot, "build/python.wasm");
+  const wasmPath = resolve(projectRoot, "build/zig-wasi/python.wasm");
 
   // Step 1: Ensure WASM binary exists
   if (!existsSync(wasmPath)) {
@@ -157,8 +157,7 @@ function build(): void {
   // Report size
   const wasmPath = resolve(projectRoot, "build/zig-wasi/python.wasm");
   if (existsSync(wasmPath)) {
-    const stats = readFileSync(wasmPath);
-    const sizeMB = (stats.length / (1024 * 1024)).toFixed(2);
+    const sizeMB = (statSync(wasmPath).size / (1024 * 1024)).toFixed(2);
     console.log(`WASM binary size: ${sizeMB} MB`);
   }
 }
@@ -211,8 +210,7 @@ function benchmark(args: string[]): void {
   }
 
   // Report WASM size
-  const stats = readFileSync(wasmPath);
-  const sizeMB = (stats.length / (1024 * 1024)).toFixed(2);
+  const sizeMB = (statSync(wasmPath).size / (1024 * 1024)).toFixed(2);
   console.log(`WASM size: ${sizeMB} MB`);
 
   // Measure cold start: time to instantiate WASM + Py_Initialize

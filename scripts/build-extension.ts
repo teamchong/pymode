@@ -119,7 +119,7 @@ function compileSideModule(outputWasm: string, srcFiles: string[]): boolean {
     ]);
     if (result.returncode !== 0) {
       if (result.stderr) {
-        error(`  Link error: ${result.stderr}`);
+        warn(`  Link error: ${result.stderr}`);
       }
       return false;
     }

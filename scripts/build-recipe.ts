@@ -36,6 +36,7 @@ interface Recipe {
 
 /** Minimal ZIP writer for ZIP_STORED (no compression). */
 function createStoredZip(entries: Array<{ arcname: string; data: Buffer }>): Buffer {
+  if (entries.length > 0xffff) throw new Error(`Too many ZIP entries (${entries.length} > 65535)`);
   const centralEntries: Buffer[] = [];
   const localParts: Buffer[] = [];
   let offset = 0;
@@ -305,7 +306,7 @@ function main(): void {
   let fail = 0;
 
   for (const src of sources) {
-    const outname = path.basename(src).replace(".c", "").replace(/\//g, "_");
+    const outname = path.basename(src).replace(/\.c$/, "");
     const outfile = path.join(objDir, `${name}_${outname}.o`);
     const srcPath = path.join(pkgSrc, src);
 
@@ -327,7 +328,7 @@ function main(): void {
   for (const pattern of recipe.vendor_sources ?? []) {
     const matched = findFiles(pkgSrc, pattern);
     for (const srcPath of matched) {
-      const outname = path.basename(srcPath).replace(".c", "").replace(/\//g, "_");
+      const outname = path.basename(srcPath).replace(/\.c$/, "");
       const outfile = path.join(objDir, `vendor_${outname}.o`);
       const result = run("zig", ["cc", ...cflags, "-o", outfile, srcPath], { capture: true });
       if (result.returncode === 0) {

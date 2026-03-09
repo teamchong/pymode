@@ -162,7 +162,9 @@ function main(): void {
 
 ARGS=()
 HAS_OPT=0
+SKIP_NEXT=0
 for arg in "$@"; do
+    if [[ "$SKIP_NEXT" -eq 1 ]]; then SKIP_NEXT=0; continue; fi
     case "$arg" in
         # Skip flags zig cc doesn't support for wasm32-wasi
         -pthread|-ldl|-lutil|-lrt|-lpthread) continue ;;
@@ -174,8 +176,7 @@ for arg in "$@"; do
         -Wl,-z,*) continue ;;
         -Wl,--initial-memory=*) continue ;;
         -Wl,--stack-first) continue ;;
-        -z) continue ;;  # next arg is the z-flag value
-        stack-size=*) continue ;;
+        -z) SKIP_NEXT=1; continue ;;  # skip -z and its argument
         # Replace optimization flags with -Os (ReleaseSmall)
         -O0|-O1|-O2|-O3|-Og) ARGS+=("-Os"); HAS_OPT=1 ;;
         -flto=thin) ARGS+=("-flto") ;;

@@ -39,25 +39,31 @@ function error(msg: string): never {
   process.exit(1);
 }
 
+/** Extract content of a TOML section (up to the next section header). */
+function getTomlSection(content: string, section: string): string {
+  const re = new RegExp(`^\\[${section.replace(/\./g, "\\.")}\\]`, "m");
+  const match = re.exec(content);
+  if (!match) return "";
+  const after = content.slice(match.index + match[0].length);
+  const nextSection = after.search(/^\[[a-zA-Z]/m);
+  return nextSection >= 0 ? after.slice(0, nextSection) : after;
+}
+
 function parseDependenciesFromToml(content: string): string[] {
-  // Match dependencies = [ ... ] with possible multiline
-  const match = content.match(/\[project\][\s\S]*?dependencies\s*=\s*\[([\s\S]*?)\]/);
+  const section = getTomlSection(content, "project");
+  const match = section.match(/dependencies\s*=\s*\[([\s\S]*?)\]/);
   if (!match) return [];
-  const inner = match[1];
   const deps: string[] = [];
-  for (const m of inner.matchAll(/"([^"]+)"|'([^']+)'/g)) {
+  for (const m of match[1].matchAll(/"([^"]+)"|'([^']+)'/g)) {
     deps.push(m[1] ?? m[2]);
   }
   return deps;
 }
 
 function parseEntryFromToml(content: string): string {
-  // Match [tool.pymode] ... main = "..."
-  const toolPymodeMatch = content.match(/\[tool\.pymode\][\s\S]*?main\s*=\s*"([^"]+)"/);
-  if (toolPymodeMatch) return toolPymodeMatch[1];
-  const singleQuoteMatch = content.match(/\[tool\.pymode\][\s\S]*?main\s*=\s*'([^']+)'/);
-  if (singleQuoteMatch) return singleQuoteMatch[1];
-  return "";
+  const section = getTomlSection(content, "tool.pymode");
+  const match = section.match(/main\s*=\s*["']([^"']+)["']/);
+  return match ? match[1] : "";
 }
 
 function findEntryPoint(projectDir: string): string {

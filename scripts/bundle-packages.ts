@@ -101,6 +101,7 @@ function readZip(buf: Buffer): ZipEntry[] {
  * in our WASM build, so we must use STORED.
  */
 function writeZipStored(files: [string, Buffer][]): Buffer {
+  if (files.length > 0xffff) throw new Error(`Too many ZIP entries (${files.length} > 65535)`);
   const localHeaders: Buffer[] = [];
   const centralEntries: Buffer[] = [];
   let offset = 0;

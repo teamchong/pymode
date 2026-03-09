@@ -162,7 +162,7 @@ function copyDirRecursive(src: string, dest: string): void {
 function main(): void {
   if (!fs.existsSync(STDLIB_SRC) || !fs.statSync(STDLIB_SRC).isDirectory()) {
     console.log(`Error: CPython stdlib not found at ${STDLIB_SRC}`);
-    console.log("Run build-phase2.ts first to clone CPython.");
+    console.log("Initialize cpython submodule: git submodule update --init");
     process.exit(1);
   }
 
