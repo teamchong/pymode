@@ -90,9 +90,8 @@ def _install_zip_metadata_finder():
 
         @classmethod
         def find_distributions(cls, context=metadata.DistributionFinder.Context()):
-            import sys as _sys
             name = getattr(context, "name", None)
-            for path_entry in _sys.path:
+            for path_entry in sys.path:
                 if not path_entry.endswith(".zip"):
                     continue
                 try:
