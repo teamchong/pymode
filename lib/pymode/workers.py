@@ -249,14 +249,6 @@ class D1Statement:
         D1.execute(self._qualified_sql(), self._params)
 
 
-# Binding type hints recognized by Env
-_BINDING_TYPES = {
-    "KV": KVBinding,
-    "R2": R2Binding,
-    "D1": D1Binding,
-}
-
-
 class Env:
     """Access CF bindings and environment variables.
 
