@@ -63,23 +63,20 @@ export class AsyncifyRuntime {
     this.exports = instance.exports;
     this.memory = instance.exports.memory as WebAssembly.Memory;
 
-    // Record where the original memory ends — this is where CPython's heap
-    // allocator (sbrk) can potentially grow into.
-    const origSize = this.memory.buffer.byteLength;
-
-    // Grow memory for the asyncify buffer + guard pages.
-    // The buffer goes at the START of the grown region so CPython's
-    // sbrk (which grows sequentially from __heap_base) must exhaust
-    // all original memory before reaching it.
+    // Grow memory for the asyncify buffer.
+    // Place the buffer at the END of the grown region so CPython's heap
+    // allocator (sbrk, which grows sequentially from __heap_base) has to
+    // exhaust ALL existing + grown memory before reaching it.
     const bufferPages = Math.ceil(ASYNCIFY_DATA_SIZE / 65536);
     try {
       this.memory.grow(bufferPages);
     } catch {
-      // At memory maximum — place buffer at end of existing memory
+      // At memory maximum — use end of existing memory
     }
 
-    // Place buffer at the start of the grown region
-    this.dataAddr = origSize;
+    // Place buffer at the END of memory — furthest from CPython's heap
+    const totalSize = this.memory.buffer.byteLength;
+    this.dataAddr = totalSize - ASYNCIFY_DATA_SIZE;
 
     // Initialize the data region: first 8 bytes are the stack pointer range
     const view = new DataView(this.memory.buffer);
