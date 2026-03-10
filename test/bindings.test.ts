@@ -73,9 +73,10 @@ print(f"count={result['count']}")
 describe("R2 bindings", () => {
   it("writes and reads back objects", async () => {
     const { text, status } = await runPython(`
-from pymode.env import R2
-R2.put("test-file.txt", b"hello from R2")
-data = R2.get("test-file.txt")
+from pymode.workers import Env
+env = Env()
+env.MY_R2.put("test-file.txt", b"hello from R2")
+data = env.MY_R2.get("test-file.txt")
 print(f"content={data.decode('utf-8')}")
 `);
     expect(status).toBe(200);
@@ -84,8 +85,9 @@ print(f"content={data.decode('utf-8')}")
 
   it("returns None for missing objects", async () => {
     const { text, status } = await runPython(`
-from pymode.env import R2
-data = R2.get("does-not-exist.txt")
+from pymode.workers import Env
+env = Env()
+data = env.MY_R2.get("does-not-exist.txt")
 print(f"result={data}")
 `);
     expect(status).toBe(200);

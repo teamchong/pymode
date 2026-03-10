@@ -45,3 +45,8 @@ bucket_name = "test-bucket"
 binding = "MY_DB"
 database_name = "test-db"
 database_id = "00000000-0000-0000-0000-000000000000"
+
+# Test environment variables — accessible via env_get host import
+[vars]
+NODE_ENV = "test"
+TEST_SECRET = "secret-value-42"
