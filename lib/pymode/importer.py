@@ -101,8 +101,9 @@ class RemotePackageFinder(importlib.abc.MetaPathFinder):
         except SystemExit:
             # Trampoline exit — re-raise so the JS host catches it
             raise
-        except Exception:
-            pass
+        except Exception as e:
+            from pymode.env import console_log
+            console_log(f"pymode importer: failed to fetch '{fullname}': {e}")
 
         return None
 

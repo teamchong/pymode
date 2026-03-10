@@ -74,7 +74,9 @@ class PyModeSocket:
         self._timeout = None if flag else 0.0
 
     def setsockopt(self, level, optname, value, optlen=None):
-        pass
+        # Socket options are not supported in WASM — silently ignored.
+        # TCP_NODELAY, SO_KEEPALIVE, etc. have no effect.
+        return
 
     def getsockopt(self, level, optname, buflen=None):
         return 0
@@ -121,7 +123,8 @@ class PyModeSocket:
         return io.TextIOWrapper(_SocketIO(self, mode), **kwargs)
 
     def shutdown(self, how):
-        pass
+        # WASM sockets don't support half-close; close() handles cleanup.
+        return
 
     def close(self):
         if not self._closed:
