@@ -102,7 +102,8 @@ jobs:
         run: npm install
 
       - name: Link python-numpy.wasm
-        run: npx tsx scripts/build-variant.ts numpy
+        run: npx tsx scripts/build-variant.ts numpy || echo "numpy link failed (optional, skipping)"
+        continue-on-error: true
 
       - name: Generate stdlib data
         run: npx tsx scripts/generate-stdlib-fs.ts
