@@ -1,10 +1,11 @@
 """PyMode parallel execution — real parallelism via child Durable Objects.
 
-Each spawned task runs in a separate DO with its own:
+Each spawned task runs in a separate ThreadDO with its own:
   - 30s CPU budget
   - 128MB memory
-  - python.wasm instance
-  - No access to host imports (TCP, HTTP, KV, R2, D1) — pure compute only
+  - python.wasm instance + Asyncify
+  - Full access to CF bindings (KV, R2, D1, HTTP, TCP) via host imports
+  - No recursive fan-out (thread_spawn disabled to prevent unbounded DO chains)
 
 Arguments and results are serialized via pickle. No shared mutable state
 between tasks — each runs in its own WASM linear memory.
