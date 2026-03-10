@@ -20,6 +20,7 @@ env.MY_KV.put("test-key", "test-value-123")
 value = env.MY_KV.get("test-key")
 print(f"value={value}")
 `);
+    if (status !== 200) console.log("KV write/read error:", text);
     expect(status).toBe(200);
     expect(text).toContain("value=test-value-123");
   });
