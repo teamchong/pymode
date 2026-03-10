@@ -11,9 +11,12 @@
  */
 
 // Asyncify uses a region of linear memory as a scratch buffer for
-// saving/restoring the call stack. We allocate this from the WASM
-// module's own memory.
-const ASYNCIFY_DATA_SIZE = 16384;  // 16KB for stack state
+// saving/restoring the call stack. CPython has deep call stacks
+// (_start → Py_Main → ceval → C extension → import), so we need
+// a large buffer. We also grow extra guard pages after the buffer
+// so CPython's heap allocator (sbrk) uses those instead of
+// overwriting our buffer.
+const ASYNCIFY_DATA_SIZE = 1048576;  // 1MB for stack state
 
 enum AsyncifyState {
   NONE = 0,      // Normal execution
@@ -60,19 +63,23 @@ export class AsyncifyRuntime {
     this.exports = instance.exports;
     this.memory = instance.exports.memory as WebAssembly.Memory;
 
-    // Grow memory first, then place asyncify buffer in the newly allocated region.
-    // This ensures the buffer doesn't overlap with CPython's heap allocator.
-    const pages = Math.ceil(ASYNCIFY_DATA_SIZE / 65536);
+    // Record where the original memory ends — this is where CPython's heap
+    // allocator (sbrk) can potentially grow into.
+    const origSize = this.memory.buffer.byteLength;
+
+    // Grow memory for the asyncify buffer + guard pages.
+    // The buffer goes at the START of the grown region so CPython's
+    // sbrk (which grows sequentially from __heap_base) must exhaust
+    // all original memory before reaching it.
+    const bufferPages = Math.ceil(ASYNCIFY_DATA_SIZE / 65536);
     try {
-      this.memory.grow(pages);
+      this.memory.grow(bufferPages);
     } catch {
-      // memory.grow can fail if at maximum — buffer is placed at end of
-      // existing memory which must have ASYNCIFY_DATA_SIZE free bytes.
+      // At memory maximum — place buffer at end of existing memory
     }
 
-    // Place buffer at end of (possibly grown) memory
-    const memSize = this.memory.buffer.byteLength;
-    this.dataAddr = memSize - ASYNCIFY_DATA_SIZE;
+    // Place buffer at the start of the grown region
+    this.dataAddr = origSize;
 
     // Initialize the data region: first 8 bytes are the stack pointer range
     const view = new DataView(this.memory.buffer);
