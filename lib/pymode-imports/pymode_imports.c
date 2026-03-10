@@ -142,6 +142,35 @@ static PyObject* py_kv_delete(PyObject* self, PyObject* args) {
     Py_RETURN_NONE;
 }
 
+static PyObject* py_kv_multi_get(PyObject* self, PyObject* args) {
+    const char* keys_json;
+    Py_ssize_t keys_json_len;
+    int bufsize = 10 * 1024 * 1024;
+    if (!PyArg_ParseTuple(args, "s#|i", &keys_json, &keys_json_len, &bufsize))
+        return NULL;
+    uint8_t* buf = (uint8_t*)PyMem_Malloc(bufsize);
+    if (!buf)
+        return PyErr_NoMemory();
+    int32_t n = pymode_kv_multi_get(keys_json, (int32_t)keys_json_len, buf, bufsize);
+    if (n < 0) {
+        PyMem_Free(buf);
+        PyErr_SetString(PyExc_OSError, "kv_multi_get failed");
+        return NULL;
+    }
+    PyObject* result = PyBytes_FromStringAndSize((const char*)buf, n);
+    PyMem_Free(buf);
+    return result;
+}
+
+static PyObject* py_kv_multi_put(PyObject* self, PyObject* args) {
+    const uint8_t* data;
+    Py_ssize_t data_len;
+    if (!PyArg_ParseTuple(args, "y#", &data, &data_len))
+        return NULL;
+    pymode_kv_multi_put(data, (int32_t)data_len);
+    Py_RETURN_NONE;
+}
+
 /* --- R2 wrappers --- */
 
 static PyObject* py_r2_get(PyObject* self, PyObject* args) {
@@ -190,6 +219,26 @@ static PyObject* py_d1_exec(PyObject* self, PyObject* args) {
     if (n < 0) {
         PyMem_Free(buf);
         PyErr_SetString(PyExc_RuntimeError, "d1_exec failed");
+        return NULL;
+    }
+    PyObject* result = PyUnicode_FromStringAndSize(buf, n);
+    PyMem_Free(buf);
+    return result;
+}
+
+static PyObject* py_d1_batch(PyObject* self, PyObject* args) {
+    const char* queries_json;
+    Py_ssize_t queries_json_len;
+    int bufsize = 10 * 1024 * 1024;
+    if (!PyArg_ParseTuple(args, "s#|i", &queries_json, &queries_json_len, &bufsize))
+        return NULL;
+    char* buf = (char*)PyMem_Malloc(bufsize);
+    if (!buf)
+        return PyErr_NoMemory();
+    int32_t n = pymode_d1_batch(queries_json, (int32_t)queries_json_len, buf, bufsize);
+    if (n < 0) {
+        PyMem_Free(buf);
+        PyErr_SetString(PyExc_RuntimeError, "d1_batch failed");
         return NULL;
     }
     PyObject* result = PyUnicode_FromStringAndSize(buf, n);
@@ -269,9 +318,12 @@ static PyMethodDef pymode_methods[] = {
     {"kv_get", py_kv_get, METH_VARARGS, NULL},
     {"kv_put", py_kv_put, METH_VARARGS, NULL},
     {"kv_delete", py_kv_delete, METH_VARARGS, NULL},
+    {"kv_multi_get", py_kv_multi_get, METH_VARARGS, NULL},
+    {"kv_multi_put", py_kv_multi_put, METH_VARARGS, NULL},
     {"r2_get", py_r2_get, METH_VARARGS, NULL},
     {"r2_put", py_r2_put, METH_VARARGS, NULL},
     {"d1_exec", py_d1_exec, METH_VARARGS, NULL},
+    {"d1_batch", py_d1_batch, METH_VARARGS, NULL},
     {"env_get", py_env_get, METH_VARARGS, NULL},
     {"thread_spawn", py_thread_spawn, METH_VARARGS, NULL},
     {"thread_join", py_thread_join, METH_VARARGS, NULL},

@@ -40,9 +40,12 @@ const ASYNC_IMPORTS = new Set([
   "pymode.kv_get",
   "pymode.kv_put",
   "pymode.kv_delete",
+  "pymode.kv_multi_get",
+  "pymode.kv_multi_put",
   "pymode.r2_get",
   "pymode.r2_put",
   "pymode.d1_exec",
+  "pymode.d1_batch",
   "pymode.thread_spawn",
   "pymode.thread_join",
   "pymode.dl_open",
@@ -249,6 +252,80 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
         }
       },
 
+      // --- KV batch (async) ---
+      // Fetch multiple keys in parallel (Promise.all), one Asyncify suspend
+      kv_multi_get: async (
+        keysPtr: number, keysLen: number,
+        resultPtr: number, resultLen: number
+      ): Promise<number> => {
+        try {
+          const keysJson: string[] = JSON.parse(self.readString(keysPtr, keysLen));
+          const results = await Promise.all(keysJson.map(async (raw) => {
+            const [bindingName, key] = parseBindingKey(raw, "KV");
+            const kv = self.env[bindingName] as KVNamespace | undefined;
+            if (!kv) return null;
+            const val = await kv.get(key, "arrayBuffer");
+            return val !== null ? new Uint8Array(val) : null;
+          }));
+
+          // Pack: [4B count][for each: [4B len (-1=missing)][data]]
+          const count = results.length;
+          let totalLen = 4; // count header
+          for (const r of results) totalLen += 4 + (r ? r.length : 0);
+          if (totalLen > resultLen) return -1;
+
+          const mem = self.getMemBytes();
+          const view = new DataView(mem.buffer, resultPtr, totalLen);
+          view.setInt32(0, count, true);
+          let offset = 4;
+          for (const r of results) {
+            if (r) {
+              view.setInt32(offset, r.length, true);
+              offset += 4;
+              mem.set(r, resultPtr + offset);
+              offset += r.length;
+            } else {
+              view.setInt32(offset, -1, true);
+              offset += 4;
+            }
+          }
+          return offset;
+        } catch (e: unknown) {
+          console.error("kv_multi_get error:", e);
+          return -1;
+        }
+      },
+
+      // Write multiple keys in parallel (Promise.all), one Asyncify suspend
+      kv_multi_put: async (dataPtr: number, dataLen: number): Promise<void> => {
+        try {
+          const mem = self.getMemBytes();
+          const view = new DataView(mem.buffer, dataPtr, dataLen);
+          const count = view.getInt32(0, true);
+          let offset = 4;
+          const ops: Promise<void>[] = [];
+
+          for (let i = 0; i < count; i++) {
+            const keyLen = view.getInt32(offset, true);
+            offset += 4;
+            const rawKey = _decoder.decode(mem.subarray(dataPtr + offset, dataPtr + offset + keyLen));
+            offset += keyLen;
+            const valLen = view.getInt32(offset, true);
+            offset += 4;
+            const val = mem.slice(dataPtr + offset, dataPtr + offset + valLen);
+            offset += valLen;
+
+            const [bindingName, key] = parseBindingKey(rawKey, "KV");
+            const kv = self.env[bindingName] as KVNamespace | undefined;
+            if (kv) ops.push(kv.put(key, val));
+          }
+
+          await Promise.all(ops);
+        } catch (e: unknown) {
+          console.error("kv_multi_put error:", e);
+        }
+      },
+
       // --- R2 (async) ---
       r2_get: async (keyPtr: number, keyLen: number, bufPtr: number, bufLen: number): Promise<number> => {
         try {
@@ -296,6 +373,37 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
           return self.writeBytes(resultPtr, encoded, resultLen);
         } catch (e: unknown) {
           console.error("d1_exec error:", e);
+          return -1;
+        }
+      },
+
+      // Batch multiple SQL statements in one async call (CF db.batch())
+      d1_batch: async (
+        queriesPtr: number, queriesLen: number,
+        resultPtr: number, resultLen: number
+      ): Promise<number> => {
+        try {
+          const queries: Array<{ sql: string; params?: unknown[]; binding?: string }> =
+            JSON.parse(self.readString(queriesPtr, queriesLen));
+          if (queries.length === 0) {
+            const encoded = _encoder.encode("[]");
+            return self.writeBytes(resultPtr, encoded, resultLen);
+          }
+
+          // Group queries by binding name for batch execution
+          const bindingName = queries[0].binding || "D1";
+          const d1 = self.env[bindingName] as D1Database | undefined;
+          if (!d1) return -1;
+
+          const stmts = queries.map((q) =>
+            d1.prepare(q.sql).bind(...(q.params || []))
+          );
+          const batchResults = await d1.batch(stmts);
+          const allResults = batchResults.map((r) => r.results);
+          const encoded = _encoder.encode(JSON.stringify(allResults));
+          return self.writeBytes(resultPtr, encoded, resultLen);
+        } catch (e: unknown) {
+          console.error("d1_batch error:", e);
           return -1;
         }
       },

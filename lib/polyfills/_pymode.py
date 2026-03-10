@@ -67,6 +67,41 @@ def kv_delete(key):
     _kv_store.pop(key, None)
 
 
+def kv_multi_get(keys_json):
+    """Polyfill for kv_multi_get — returns packed buffer."""
+    import struct
+    keys = json.loads(keys_json)
+    results = []
+    for key in keys:
+        val = kv_get(key)
+        results.append(val)
+    parts = [struct.pack("<i", len(results))]
+    for val in results:
+        if val is None:
+            parts.append(struct.pack("<i", -1))
+        else:
+            parts.append(struct.pack("<i", len(val)))
+            parts.append(val)
+    return b"".join(parts)
+
+
+def kv_multi_put(data):
+    """Polyfill for kv_multi_put — unpacks binary data."""
+    import struct
+    count = struct.unpack_from("<i", data, 0)[0]
+    offset = 4
+    for _ in range(count):
+        key_len = struct.unpack_from("<i", data, offset)[0]
+        offset += 4
+        key = data[offset:offset + key_len].decode("utf-8")
+        offset += key_len
+        val_len = struct.unpack_from("<i", data, offset)[0]
+        offset += 4
+        val = data[offset:offset + val_len]
+        offset += val_len
+        kv_put(key, val)
+
+
 def r2_get(key):
     key = _strip_binding_prefix(key)
     val = _r2_store.get(key)
@@ -183,6 +218,20 @@ def d1_exec(sql, params_json):
         return json.dumps([{"changes": before - len(_d1_tables[table])}])
 
     return json.dumps([])
+
+
+def d1_batch(queries_json):
+    """Polyfill for d1_batch — executes each query via d1_exec."""
+    queries = json.loads(queries_json)
+    all_results = []
+    for q in queries:
+        sql = q["sql"]
+        params = q.get("params", [])
+        binding = q.get("binding", "D1")
+        qualified_sql = f"{binding}\0{sql}"
+        result = d1_exec(qualified_sql, json.dumps(params))
+        all_results.append(json.loads(result))
+    return json.dumps(all_results)
 
 
 def env_get(key):

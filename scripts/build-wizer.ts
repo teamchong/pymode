@@ -30,8 +30,9 @@ const IMPORTS_DIR = path.join(ROOT_DIR, "lib", "pymode-imports");
 const OUTPUT = path.join(BUILD_DIR, "python-wizer.wasm");
 
 const ASYNC_IMPORTS =
-  "pymode.tcp_recv,pymode.http_fetch_full,pymode.kv_get,pymode.kv_put," +
-  "pymode.kv_delete,pymode.r2_get,pymode.r2_put,pymode.d1_exec," +
+  "pymode.tcp_recv,pymode.http_fetch_full," +
+  "pymode.kv_get,pymode.kv_put,pymode.kv_delete,pymode.kv_multi_get,pymode.kv_multi_put," +
+  "pymode.r2_get,pymode.r2_put,pymode.d1_exec,pymode.d1_batch," +
   "pymode.thread_spawn,pymode.thread_join,pymode.dl_open";
 
 function mb(size: number): string {

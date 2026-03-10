@@ -175,11 +175,45 @@ class KVBinding:
             return json.loads(data.decode("utf-8"))
         return data  # arrayBuffer
 
+    def get_multi(self, keys, type="text"):
+        """Get multiple keys in one Asyncify call (Promise.all on JS side).
+
+        Returns a dict of {key: value} for found keys. Missing keys are omitted.
+        """
+        from pymode.env import KV
+        results = KV.multi_get([self._qualify(k) for k in keys])
+        out = {}
+        for key, data in zip(keys, results):
+            if data is None:
+                continue
+            if type == "text":
+                out[key] = data.decode("utf-8")
+            elif type == "json":
+                out[key] = json.loads(data.decode("utf-8"))
+            else:
+                out[key] = data
+        return out
+
     def put(self, key, value):
         from pymode.env import KV
         if isinstance(value, str):
             value = value.encode("utf-8")
         KV.put(self._qualify(key), value)
+
+    def put_multi(self, items):
+        """Put multiple key-value pairs in one Asyncify call.
+
+        items: dict of {key: value} or list of (key, value) tuples.
+        """
+        from pymode.env import KV
+        if isinstance(items, dict):
+            items = list(items.items())
+        entries = []
+        for key, value in items:
+            if isinstance(value, str):
+                value = value.encode("utf-8")
+            entries.append((self._qualify(key), value))
+        KV.multi_put(entries)
 
     def delete(self, key):
         from pymode.env import KV
@@ -214,6 +248,22 @@ class D1Binding:
 
     def prepare(self, sql):
         return D1Statement(sql, self._binding_name)
+
+    def batch(self, statements):
+        """Execute multiple statements in one Asyncify call (CF db.batch()).
+
+        statements: list of D1Statement objects.
+        Returns list of result lists, one per statement.
+        """
+        from pymode.env import D1
+        queries = []
+        for stmt in statements:
+            queries.append({
+                "sql": stmt._sql,
+                "params": stmt._params,
+                "binding": self._binding_name,
+            })
+        return D1.batch(queries, self._binding_name)
 
 
 class D1Statement:

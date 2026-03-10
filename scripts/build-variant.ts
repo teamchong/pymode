@@ -26,8 +26,9 @@ const RECIPES_DIR = path.join(ROOT_DIR, "recipes");
 const ZIG_CC = path.join(ROOT_DIR, "build", "zig-wrappers", "zig-cc");
 
 const ASYNC_IMPORTS =
-  "pymode.tcp_recv,pymode.http_fetch_full,pymode.kv_get,pymode.kv_put," +
-  "pymode.kv_delete,pymode.r2_get,pymode.r2_put,pymode.d1_exec," +
+  "pymode.tcp_recv,pymode.http_fetch_full," +
+  "pymode.kv_get,pymode.kv_put,pymode.kv_delete,pymode.kv_multi_get,pymode.kv_multi_put," +
+  "pymode.r2_get,pymode.r2_put,pymode.d1_exec,pymode.d1_batch," +
   "pymode.thread_spawn,pymode.thread_join,pymode.dl_open";
 
 function globFiles(dir: string, pattern: string): string[] {

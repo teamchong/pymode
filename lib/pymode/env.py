@@ -38,10 +38,48 @@ class KV:
         return _pymode.kv_get(key)
 
     @staticmethod
+    def multi_get(keys: list[str]) -> list[bytes | None]:
+        """Get multiple keys in one Asyncify call. Returns list matching input order."""
+        import struct
+        if _pymode is None:
+            raise RuntimeError("KV requires PythonDO host imports (_pymode not available)")
+        keys_json = json.dumps(keys)
+        buf = _pymode.kv_multi_get(keys_json)
+        # Parse: [4B count][for each: [4B len (-1=missing)][data]]
+        count = struct.unpack_from("<i", buf, 0)[0]
+        results = []
+        offset = 4
+        for _ in range(count):
+            length = struct.unpack_from("<i", buf, offset)[0]
+            offset += 4
+            if length < 0:
+                results.append(None)
+            else:
+                results.append(buf[offset:offset + length])
+                offset += length
+        return results
+
+    @staticmethod
     def put(key: str, value: bytes):
         if _pymode is None:
             raise RuntimeError("KV requires PythonDO host imports (_pymode not available)")
         _pymode.kv_put(key, value)
+
+    @staticmethod
+    def multi_put(entries: list[tuple[str, bytes]]):
+        """Put multiple key-value pairs in one Asyncify call."""
+        import struct
+        if _pymode is None:
+            raise RuntimeError("KV requires PythonDO host imports (_pymode not available)")
+        # Pack: [4B count][for each: [4B key_len][key][4B val_len][val]]
+        parts = [struct.pack("<i", len(entries))]
+        for key, val in entries:
+            key_bytes = key.encode("utf-8")
+            parts.append(struct.pack("<i", len(key_bytes)))
+            parts.append(key_bytes)
+            parts.append(struct.pack("<i", len(val)))
+            parts.append(val)
+        _pymode.kv_multi_put(b"".join(parts))
 
     @staticmethod
     def delete(key: str):
@@ -71,6 +109,21 @@ class D1:
             raise RuntimeError("D1 requires PythonDO host imports (_pymode not available)")
         params_json = json.dumps(params or [])
         result = _pymode.d1_exec(sql, params_json)
+        if result is None:
+            return []
+        return json.loads(result)
+
+    @staticmethod
+    def batch(queries: list[dict], binding_name: str = "D1") -> list[list[dict]]:
+        """Execute multiple SQL statements in one Asyncify call (CF db.batch()).
+
+        queries: list of {sql, params, binding} dicts.
+        Returns list of result lists, one per query.
+        """
+        if _pymode is None:
+            raise RuntimeError("D1 requires PythonDO host imports (_pymode not available)")
+        queries_json = json.dumps(queries)
+        result = _pymode.d1_batch(queries_json)
         if result is None:
             return []
         return json.loads(result)

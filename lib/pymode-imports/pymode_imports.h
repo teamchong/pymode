@@ -60,6 +60,21 @@ void pymode_kv_put(const char* key, int32_t key_len, const uint8_t* val, int32_t
 __attribute__((import_module("pymode"), import_name("kv_delete")))
 void pymode_kv_delete(const char* key, int32_t key_len);
 
+/* Get multiple KV values in one async call (Promise.all on JS side).
+ * keys_json: JSON array of "BINDING\0key" strings.
+ * Result buf: [4B count LE] then for each: [4B len LE (-1=missing)] [data]
+ * Returns total bytes written, -1 on error. Async. */
+__attribute__((import_module("pymode"), import_name("kv_multi_get")))
+int32_t pymode_kv_multi_get(
+    const char* keys_json, int32_t keys_json_len,
+    uint8_t* result_buf, int32_t result_buf_len);
+
+/* Put multiple KV values in one async call (Promise.all on JS side).
+ * data layout: [4B count LE] then for each: [4B key_len][key][4B val_len][val]
+ * Async. */
+__attribute__((import_module("pymode"), import_name("kv_multi_put")))
+void pymode_kv_multi_put(const uint8_t* data, int32_t data_len);
+
 /* --- R2 --- */
 
 __attribute__((import_module("pymode"), import_name("r2_get")))
@@ -76,6 +91,15 @@ __attribute__((import_module("pymode"), import_name("d1_exec")))
 int32_t pymode_d1_exec(
     const char* sql, int32_t sql_len,
     const char* params_json, int32_t params_len,
+    char* result_buf, int32_t result_buf_len);
+
+/* Execute multiple SQL statements in one async call (CF db.batch()).
+ * queries_json: JSON array of {sql, params, binding} objects.
+ * Result JSON array written to result_buf.
+ * Returns bytes written, -1 on error. Async. */
+__attribute__((import_module("pymode"), import_name("d1_batch")))
+int32_t pymode_d1_batch(
+    const char* queries_json, int32_t queries_json_len,
     char* result_buf, int32_t result_buf_len);
 
 /* --- Environment --- */
