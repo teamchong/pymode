@@ -1,0 +1,47 @@
+# Test wrangler config — production worker + DOs + test bindings.
+# Used by: wrangler dev --config test/wrangler.toml
+name = "pymode-test"
+main = "../worker/src/worker.ts"
+compatibility_date = "2024-04-03"
+
+[[rules]]
+type = "CompiledWasm"
+globs = ["**/*.wasm"]
+
+[[rules]]
+type = "Data"
+globs = ["**/*.zip", "**/*.dat"]
+
+# Durable Objects — the full production architecture
+[durable_objects]
+bindings = [
+  { name = "TCP_POOL", class_name = "TcpPoolDO" },
+  { name = "PYTHON_DO", class_name = "PythonDO" },
+  { name = "THREAD_DO", class_name = "ThreadDO" },
+]
+
+[[migrations]]
+tag = "v1"
+new_classes = ["TcpPoolDO"]
+
+[[migrations]]
+tag = "v2"
+new_classes = ["PythonDO"]
+
+[[migrations]]
+tag = "v3"
+new_classes = ["ThreadDO"]
+
+# Test bindings — miniflare provides local in-memory implementations
+[[kv_namespaces]]
+binding = "MY_KV"
+id = "test-kv"
+
+[[r2_buckets]]
+binding = "MY_R2"
+bucket_name = "test-bucket"
+
+[[d1_databases]]
+binding = "MY_DB"
+database_name = "test-db"
+database_id = "00000000-0000-0000-0000-000000000000"

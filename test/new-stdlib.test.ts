@@ -1,18 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { SELF } from "cloudflare:test";
+import { runPython } from "./helpers";
 
 /**
  * Hands-on tests for newly bundled stdlib modules: csv, pathlib, pprint.
  * Validates they actually work in PyMode's workerd runtime.
  */
-
-async function runPython(code: string): Promise<string> {
-  const response = await SELF.fetch("http://localhost", {
-    method: "POST",
-    body: code,
-  });
-  return response.text();
-}
 
 // ---------------------------------------------------------------------------
 // csv module
@@ -29,7 +21,7 @@ header = next(reader)
 rows = list(reader)
 print(f"{header}|{len(rows)}|{rows[0]}")
 `);
-    expect(result.trim()).toBe("['name', 'age', 'city']|2|['Alice', '30', 'London']");
+    expect(result.text).toBe("['name', 'age', 'city']|2|['Alice', '30', 'London']");
   });
 
   it("reads CSV with csv.DictReader", async () => {
@@ -42,7 +34,7 @@ reader = csv.DictReader(io.StringIO(data))
 rows = list(reader)
 print(f"{rows[0]['name']}:{rows[0]['age']},{rows[1]['name']}:{rows[1]['age']}")
 `);
-    expect(result.trim()).toBe("Alice:30,Bob:25");
+    expect(result.text).toBe("Alice:30,Bob:25");
   });
 
   it("writes CSV with csv.writer", async () => {
@@ -57,7 +49,7 @@ writer.writerow([1, 2, 3])
 lines = out.getvalue().strip().splitlines()
 print(f"{lines[0]}|{lines[1]}")
 `);
-    expect(result.trim()).toBe("x,y,z|1,2,3");
+    expect(result.text).toBe("x,y,z|1,2,3");
   });
 
   it("handles quoting and escaping", async () => {
@@ -71,7 +63,7 @@ writer.writerow(["hello, world", 'say "hi"', "normal"])
 line = out.getvalue().strip()
 print(line)
 `);
-    expect(result.trim()).toBe('"hello, world","say ""hi""",normal');
+    expect(result.text).toBe('"hello, world","say ""hi""",normal');
   });
 
   it("uses DictWriter", async () => {
@@ -87,7 +79,7 @@ writer.writerow({"name": "Bob", "score": 87})
 lines = out.getvalue().strip().splitlines()
 print(f"{len(lines)}|{lines[0]}|{lines[2]}")
 `);
-    expect(result.trim()).toBe("3|name,score|Bob,87");
+    expect(result.text).toBe("3|name,score|Bob,87");
   });
 });
 
@@ -102,7 +94,7 @@ from pathlib import PurePosixPath
 p = PurePosixPath("/usr/local/bin/python")
 print(f"name={p.name},stem={p.stem},suffix={p.suffix},parent={p.parent}")
 `);
-    expect(result.trim()).toBe("name=python,stem=python,suffix=,parent=/usr/local/bin");
+    expect(result.text).toBe("name=python,stem=python,suffix=,parent=/usr/local/bin");
   });
 
   it("handles file extensions", async () => {
@@ -112,7 +104,7 @@ from pathlib import PurePosixPath
 p = PurePosixPath("archive.tar.gz")
 print(f"name={p.name},stem={p.stem},suffix={p.suffix},suffixes={p.suffixes}")
 `);
-    expect(result.trim()).toBe("name=archive.tar.gz,stem=archive.tar,suffix=.gz,suffixes=['.tar', '.gz']");
+    expect(result.text).toBe("name=archive.tar.gz,stem=archive.tar,suffix=.gz,suffixes=['.tar', '.gz']");
   });
 
   it("joins paths", async () => {
@@ -123,7 +115,7 @@ p = PurePosixPath("/home/user")
 full = p / "documents" / "file.txt"
 print(str(full))
 `);
-    expect(result.trim()).toBe("/home/user/documents/file.txt");
+    expect(result.text).toBe("/home/user/documents/file.txt");
   });
 
   it("matches glob patterns", async () => {
@@ -139,7 +131,7 @@ paths = [
 py_files = [str(p) for p in paths if p.match("*.py")]
 print(",".join(py_files))
 `);
-    expect(result.trim()).toBe("src/main.py,src/utils.py,tests/test_main.py");
+    expect(result.text).toBe("src/main.py,src/utils.py,tests/test_main.py");
   });
 
   it("resolves relative components", async () => {
@@ -151,7 +143,7 @@ parts = p.parts
 print(f"parts={parts}")
 `);
     // PurePosixPath normalizes single dots away but preserves ..
-    expect(result.trim()).toBe("parts=('/', 'usr', 'local', '..', 'bin', 'python')");
+    expect(result.text).toBe("parts=('/', 'usr', 'local', '..', 'bin', 'python')");
   });
 
   it("checks path properties", async () => {
@@ -162,7 +154,7 @@ abs_p = PurePosixPath("/etc/hosts")
 rel_p = PurePosixPath("src/main.py")
 print(f"abs={abs_p.is_absolute()},rel={rel_p.is_absolute()},root={abs_p.root}")
 `);
-    expect(result.trim()).toBe("abs=True,rel=False,root=/");
+    expect(result.text).toBe("abs=True,rel=False,root=/");
   });
 });
 
@@ -180,7 +172,7 @@ output = pprint.pformat(data, width=60)
 lines = output.strip().split("\\n")
 print(f"lines={len(lines)},starts={output[:1]}")
 `);
-    const lines = result.trim().split("\n");
+    const lines = result.text.split("\n");
     const parsed = Object.fromEntries(lines[0].split(",").map(p => p.split("=")));
     expect(parseInt(parsed["lines"])).toBeGreaterThan(1);
     expect(parsed["starts"]).toBe("{");
@@ -195,8 +187,8 @@ output = pprint.pformat(data, width=40)
 print(output)
 `);
     // pprint wraps long lists across multiple lines
-    expect(result.trim()).toContain("0");
-    expect(result.trim()).toContain("19");
+    expect(result.text).toContain("0");
+    expect(result.text).toContain("19");
   });
 
   it("handles depth limiting", async () => {
@@ -207,7 +199,7 @@ data = {"a": {"b": {"c": {"d": "deep"}}}}
 output = pprint.pformat(data, depth=2)
 print(output)
 `);
-    expect(result.trim()).toContain("...");
+    expect(result.text).toContain("...");
   });
 
   it("formats sets and tuples", async () => {
@@ -218,7 +210,7 @@ data = {"tuple": (1, 2, 3), "list": [4, 5, 6]}
 output = pprint.pformat(data)
 print(output)
 `);
-    expect(result.trim()).toContain("(1, 2, 3)");
-    expect(result.trim()).toContain("[4, 5, 6]");
+    expect(result.text).toContain("(1, 2, 3)");
+    expect(result.text).toContain("[4, 5, 6]");
   });
 });

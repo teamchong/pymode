@@ -1,8 +1,9 @@
-import { defineWorkersConfig } from "@cloudflare/vitest-pool-workers/config";
+import { defineConfig } from "vitest/config";
 
-export default defineWorkersConfig({
+export default defineConfig({
   test: {
-    testTimeout: 15000,
+    testTimeout: 30000,
+    globalSetup: "./test/setup.ts",
     exclude: [
       "test/pydantic.test.ts",
       "test/langchain.test.ts",
@@ -10,10 +11,5 @@ export default defineWorkersConfig({
       "test/ai-libs.test.ts",
       "**/node_modules/**",
     ],
-    poolOptions: {
-      workers: {
-        wrangler: { configPath: "./test/wrangler.jsonc" },
-      },
-    },
   },
 });

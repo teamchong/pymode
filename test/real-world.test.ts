@@ -1,89 +1,16 @@
 // Real-world Python patterns — proves PyMode handles popular library usage.
 //
 // Each test takes code you'd find in real Python repos and runs it
-// through the full workerd stack (same as wrangler dev).
+// through the full worker stack.
 
 import { describe, it, expect } from "vitest";
-import pythonWasm from "../worker/src/python-numpy.wasm";
-import { stdlibFS } from "../worker/src/stdlib-fs";
-import { ProcExit, createWasi, buildDirIndex } from "../worker/src/wasi";
-// @ts-ignore
-import extensionPackagesData from "../worker/src/extension-site-packages.zip";
-
-const encoder = new TextEncoder();
-const decoder = new TextDecoder();
-
-async function run(code: string): Promise<{ text: string; stderr: string; status: number }> {
-  const files: Record<string, Uint8Array> = {};
-  for (const [path, content] of Object.entries(stdlibFS)) {
-    files[path] = encoder.encode(content);
-  }
-
-  let pythonPath = "/stdlib";
-  if (extensionPackagesData) {
-    files["extension-site-packages.zip"] = new Uint8Array(extensionPackagesData);
-    pythonPath += ":/stdlib/extension-site-packages.zip";
-  }
-
-  let memory: WebAssembly.Memory | undefined;
-  const wasi = createWasi(
-    ["python", "-S", "-c", code],
-    { PYTHONPATH: pythonPath, PYTHONDONTWRITEBYTECODE: "1", PYTHONNOUSERSITE: "1" },
-    files,
-    () => memory!
-  );
-
-  const pymode: Record<string, Function> = {
-    tcp_connect: () => -1, tcp_send: () => -1, tcp_recv: () => -1, tcp_close: () => {},
-    http_fetch_full: () => -1,
-    kv_get: () => -1, kv_put: () => {}, kv_delete: () => {},
-    kv_multi_get: () => -1, kv_multi_put: () => {},
-    r2_get: () => -1, r2_put: () => {},
-    d1_exec: () => -1, d1_batch: () => -1, env_get: () => -1,
-    thread_spawn: () => -1, thread_join: () => -1,
-    dl_open: () => -1, dl_sym: () => 0, dl_close: () => {}, dl_error: () => 0,
-    console_log: () => {},
-  };
-
-  const asyncify: Record<string, Function> = {
-    start_unwind: () => {}, stop_unwind: () => {},
-    start_rewind: () => {}, stop_rewind: () => {},
-  };
-
-  try {
-    const result = await WebAssembly.instantiate(pythonWasm, {
-      wasi_snapshot_preview1: wasi.imports,
-      pymode,
-      asyncify,
-    });
-    const instance = (result as any).exports
-      ? (result as WebAssembly.Instance)
-      : (result as any).instance;
-    memory = instance.exports.memory as WebAssembly.Memory;
-    const start = instance.exports._start as () => void;
-    start();
-    return {
-      text: decoder.decode(wasi.getStdout()).trim(),
-      stderr: decoder.decode(wasi.getStderr()).trim(),
-      status: 0,
-    };
-  } catch (e: unknown) {
-    if (e instanceof ProcExit) {
-      return {
-        text: decoder.decode(wasi.getStdout()).trim(),
-        stderr: decoder.decode(wasi.getStderr()).trim(),
-        status: e.code,
-      };
-    }
-    throw e;
-  }
-}
+import { runPython as run } from "./helpers";
 
 // Pattern 1: Data analysis pipeline (pandas-style, numpy only)
 // Real repos: any Flask/FastAPI data API, Jupyter notebook backends
 describe("data analysis patterns", () => {
   it("should compute descriptive statistics like pandas.describe()", async () => {
-    const { text, status, stderr } = await run(`
+    const { text, status } = await run(`
 import numpy as np
 import json
 
@@ -105,8 +32,7 @@ result = {
 }
 print(json.dumps(result))
 `);
-    if (status !== 0) console.error("stderr:", stderr);
-    expect(status).toBe(0);
+    expect(status).toBe(200);
     const result = JSON.parse(text);
     expect(result.count).toBe(20);
     expect(result.mean).toBeCloseTo(26.43, 1);
@@ -115,7 +41,7 @@ print(json.dumps(result))
   });
 
   it("should handle moving averages (finance/timeseries pattern)", async () => {
-    const { text, status, stderr } = await run(`
+    const { text, status } = await run(`
 import numpy as np
 import json
 
@@ -140,8 +66,7 @@ result = {
 }
 print(json.dumps(result))
 `);
-    if (status !== 0) console.error("stderr:", stderr);
-    expect(status).toBe(0);
+    expect(status).toBe(200);
     const result = JSON.parse(text);
     expect(result.sma_len).toBe(16);
     expect(result.sma_last).toBeGreaterThan(160);
@@ -153,7 +78,7 @@ print(json.dumps(result))
 // Real repos: sklearn, fastai data preprocessing, feature engineering
 describe("ML computation patterns", () => {
   it("should do linear regression (sklearn-style)", async () => {
-    const { text, status, stderr } = await run(`
+    const { text, status } = await run(`
 import numpy as np
 import json
 
@@ -184,8 +109,7 @@ result = {
 }
 print(json.dumps(result))
 `);
-    if (status !== 0) console.error("stderr:", stderr);
-    expect(status).toBe(0);
+    expect(status).toBe(200);
     const result = JSON.parse(text);
     expect(result.r_squared).toBeGreaterThan(0.99);
     expect(result.predicted_1500sqft).toBeGreaterThan(280);
@@ -193,7 +117,7 @@ print(json.dumps(result))
   });
 
   it("should normalize features (sklearn StandardScaler pattern)", async () => {
-    const { text, status, stderr } = await run(`
+    const { text, status } = await run(`
 import numpy as np
 import json
 
@@ -226,8 +150,7 @@ result = {
 }
 print(json.dumps(result))
 `);
-    if (status !== 0) console.error("stderr:", stderr);
-    expect(status).toBe(0);
+    expect(status).toBe(200);
     const result = JSON.parse(text);
     // StandardScaler: mean should be ~0, std should be 1
     for (const m of result.scaled_means) expect(Math.abs(m)).toBeLessThan(1e-10);
@@ -238,7 +161,7 @@ print(json.dumps(result))
   });
 
   it("should compute cosine similarity (NLP/search pattern)", async () => {
-    const { text, status, stderr } = await run(`
+    const { text, status } = await run(`
 import numpy as np
 import json
 
@@ -263,8 +186,7 @@ result = {
 }
 print(json.dumps(result))
 `);
-    if (status !== 0) console.error("stderr:", stderr);
-    expect(status).toBe(0);
+    expect(status).toBe(200);
     const result = JSON.parse(text);
     expect(result.king_queen).toBeGreaterThan(result.king_car);
     expect(result.king_queen).toBeGreaterThan(0.9);
@@ -276,7 +198,7 @@ print(json.dumps(result))
 // Real repos: image APIs, audio processing
 describe("signal processing patterns", () => {
   it("should apply convolution filters (image processing)", async () => {
-    const { text, status, stderr } = await run(`
+    const { text, status } = await run(`
 import numpy as np
 import json
 
@@ -316,15 +238,14 @@ result = {
 }
 print(json.dumps(result))
 `);
-    if (status !== 0) console.error("stderr:", stderr);
-    expect(status).toBe(0);
+    expect(status).toBe(200);
     const result = JSON.parse(text);
     expect(result.output_shape).toEqual([5, 5]);
     expect(result.center_value).toBeGreaterThan(0); // center has strong edges
   });
 
   it("should compute signal correlation (audio/signal analysis)", async () => {
-    const { text, status, stderr } = await run(`
+    const { text, status } = await run(`
 import numpy as np
 import json
 
@@ -353,8 +274,7 @@ result = {
 }
 print(json.dumps(result))
 `);
-    if (status !== 0) console.error("stderr:", stderr);
-    expect(status).toBe(0);
+    expect(status).toBe(200);
     const result = JSON.parse(text);
     expect(result.sample_count).toBe(100);
     expect(result.correlation).toBeGreaterThan(0.5); // correlated signals
@@ -367,7 +287,7 @@ print(json.dumps(result))
 // Real repos: httpbin, FastAPI, Django REST Framework
 describe("API computation patterns", () => {
   it("should process batch JSON requests (real API pattern)", async () => {
-    const { text, status, stderr } = await run(`
+    const { text, status } = await run(`
 import numpy as np
 import json
 
@@ -403,8 +323,7 @@ for i, user in enumerate(request["users"]):
 
 print(json.dumps(response))
 `);
-    if (status !== 0) console.error("stderr:", stderr);
-    expect(status).toBe(0);
+    expect(status).toBe(200);
     const result = JSON.parse(text);
     expect(result.recommendations).toHaveLength(3);
     for (const rec of result.recommendations) {
@@ -416,7 +335,7 @@ print(json.dumps(response))
   });
 
   it("should do weighted scoring (analytics/ranking pattern)", async () => {
-    const { text, status, stderr } = await run(`
+    const { text, status } = await run(`
 import numpy as np
 import json
 
@@ -456,8 +375,7 @@ result = {
 }
 print(json.dumps(result))
 `);
-    if (status !== 0) console.error("stderr:", stderr);
-    expect(status).toBe(0);
+    expect(status).toBe(200);
     const result = JSON.parse(text);
     expect(result.scores).toHaveLength(6);
     expect(result.ranking).toHaveLength(6);
@@ -486,7 +404,7 @@ result = {
 }
 print(json.dumps(result))
 `);
-    expect(status).toBe(0);
+    expect(status).toBe(200);
     const result = JSON.parse(text);
     expect(result.scheme).toBe("https");
     expect(result.host).toBe("httpbin.org");
@@ -531,7 +449,7 @@ result = asdict(user)
 result["is_adult"] = user.is_adult()
 print(json.dumps(result))
 `);
-    expect(status).toBe(0);
+    expect(status).toBe(200);
     const result = JSON.parse(text);
     expect(result.name).toBe("Alice");
     expect(result.is_adult).toBe(true);
@@ -568,7 +486,7 @@ result = {
 }
 print(json.dumps(result))
 `);
-    expect(status).toBe(0);
+    expect(status).toBe(200);
     const result = JSON.parse(text);
     expect(result.row_count).toBe(5);
     expect(result.columns).toEqual(["name", "age", "city", "salary"]);

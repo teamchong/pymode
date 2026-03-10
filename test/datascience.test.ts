@@ -13,16 +13,7 @@
 // both regression tests and a compatibility report.
 
 import { describe, it, expect } from "vitest";
-import { SELF } from "cloudflare:test";
-
-async function runPython(code: string): Promise<{ text: string; status: number }> {
-  const response = await SELF.fetch("http://localhost", {
-    method: "POST",
-    body: code,
-  });
-  const text = await response.text();
-  return { text: text.trim(), status: response.status };
-}
+import { runPython } from "./helpers";
 
 // ============================================================
 // 1. CSV / Tabular Data Processing

@@ -1,0 +1,5 @@
+[project]
+name = "pymode-test"
+
+[tool.pymode]
+main = "main.py"

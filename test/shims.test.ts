@@ -1,20 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { SELF } from "cloudflare:test";
+import { runPython } from "./helpers";
 
 /**
  * Tests for compatibility shim modules: socket, threading, logging.
  * These allow packages that depend on OS features to import and work
  * in PyMode's single-threaded WASM runtime.
  */
-
-async function runPython(code: string): Promise<{ text: string; status: number }> {
-  const response = await SELF.fetch("http://localhost", {
-    method: "POST",
-    body: code,
-  });
-  const text = await response.text();
-  return { text: text.trim(), status: response.status };
-}
 
 // ---------------------------------------------------------------------------
 // threading shim

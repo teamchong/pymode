@@ -2,16 +2,7 @@
 // exports work correctly and can run Python code.
 
 import { describe, it, expect } from "vitest";
-import { SELF } from "cloudflare:test";
-
-async function run(code: string): Promise<{ text: string; status: number }> {
-  const response = await SELF.fetch("http://localhost", {
-    method: "POST",
-    body: code,
-  });
-  const text = await response.text();
-  return { text: text.trim(), status: response.status };
-}
+import { runPython as run } from "./helpers";
 
 describe("npm package: core exports", () => {
   it("runPython is importable and functional", async () => {

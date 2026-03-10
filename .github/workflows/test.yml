@@ -77,36 +77,11 @@ jobs:
           fi
           cp build/zig-wasi/python.wasm worker/src/python.wasm
 
-      - name: Cache numpy build
-        uses: actions/cache@v4
-        with:
-          path: /tmp/numpy-wasm-build/
-          key: numpy-build-${{ hashFiles('scripts/build-numpy-wasm.sh', 'recipes/numpy.json') }}
-
-      - name: Build numpy objects
-        run: |
-          # Copy cached objects if available, otherwise build from source
-          if [ -d /tmp/numpy-wasm-build/obj ] && [ "$(ls /tmp/numpy-wasm-build/obj/*.o 2>/dev/null | wc -l)" -gt 50 ]; then
-            echo "Using cached numpy objects"
-            mkdir -p build/zig-wasi/Modules/numpy
-            cp /tmp/numpy-wasm-build/obj/*.o build/zig-wasi/Modules/numpy/
-            # Also need numpy-site-packages.zip
-            if [ -f /tmp/numpy-wasm-build/numpy-site-packages.zip ]; then
-              cp /tmp/numpy-wasm-build/numpy-site-packages.zip worker/src/numpy-site-packages.zip
-            fi
-          else
-            bash scripts/build-numpy-wasm.sh
-          fi
-
       - name: Install npm dependencies
         run: npm install
-
-      - name: Link python-numpy.wasm
-        run: npx tsx scripts/build-variant.ts numpy || echo "numpy link failed (optional, skipping)"
-        continue-on-error: true
 
       - name: Generate stdlib data
         run: npx tsx scripts/generate-stdlib-fs.ts
 
-      - name: Run tests (workerd)
+      - name: Run tests
         run: npm test

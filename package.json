@@ -25,7 +25,6 @@
     "typecheck": "tsc --noEmit && tsc --noEmit -p cli/tsconfig.json"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.12.20",
     "@cloudflare/workers-types": "^4.20240512.0",
     "@types/node": "^25.4.0",
     "fflate": "^0.8.2",

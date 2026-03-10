@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { SELF } from "cloudflare:test";
+import { runPython } from "./helpers";
 
 /**
  * Tests for packages installed via pymode-install.py.
@@ -8,15 +8,6 @@ import { SELF } from "cloudflare:test";
  *
  * Before running: python3 scripts/pymode-install.py jinja2 markupsafe click pyyaml --no-deps
  */
-
-async function runPython(code: string): Promise<{ text: string; status: number }> {
-  const response = await SELF.fetch("http://localhost", {
-    method: "POST",
-    body: code,
-  });
-  const text = await response.text();
-  return { text: text.trim(), status: response.status };
-}
 
 describe("zip mount", () => {
   it("has site-packages.zip on sys.path and zipimport works", async () => {

@@ -1,16 +1,7 @@
 // msgpack tests — validates msgpack pack/unpack with the native _cmsgpack C extension.
 
 import { describe, it, expect } from "vitest";
-import { SELF } from "cloudflare:test";
-
-async function run(code: string): Promise<{ text: string; status: number }> {
-  const response = await SELF.fetch("http://localhost", {
-    method: "POST",
-    body: code,
-  });
-  const text = await response.text();
-  return { text: text.trim(), status: response.status };
-}
+import { runPython as run } from "./helpers";
 
 describe("msgpack: native _cmsgpack module", () => {
   it("imports msgpack successfully", async () => {

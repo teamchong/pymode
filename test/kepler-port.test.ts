@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { SELF } from "cloudflare:test";
+import { runPython } from "./helpers";
 
 /**
  * Real-World Pattern Tests
@@ -7,14 +7,6 @@ import { SELF } from "cloudflare:test";
  * These tests validate that common Python patterns from production
  * applications work correctly in PyMode's workerd runtime.
  */
-
-async function runPython(code: string): Promise<string> {
-  const response = await SELF.fetch("http://localhost", {
-    method: "POST",
-    body: code,
-  });
-  return response.text();
-}
 
 // ---------------------------------------------------------------------------
 // 1. Template variable extraction (from promptile parser)
@@ -32,7 +24,7 @@ template = "Hello {{name}}, your order {{order_id}} is ready"
 variables = extract_variables(template)
 print(",".join(variables))
 `);
-    expect(result.trim()).toBe("name,order_id");
+    expect(result.text).toBe("name,order_id");
   });
 
   it("handles filter pipes like promptile processor", async () => {
@@ -48,7 +40,7 @@ def parse_variable_with_filters(expr):
 var, filters = parse_variable_with_filters("username | upper | strip")
 print(f"{var}:{','.join(filters)}")
 `);
-    expect(result.trim()).toBe("username:upper,strip");
+    expect(result.text).toBe("username:upper,strip");
   });
 
   it("parses conditional blocks like promptile", async () => {
@@ -61,7 +53,7 @@ match = re.search(pattern, template)
 if match:
     print(f"condition={match.group(1)},body={match.group(2)}")
 `);
-    expect(result.trim()).toBe("condition=show_header,body=HEADER");
+    expect(result.text).toBe("condition=show_header,body=HEADER");
   });
 
   it("parses for-loop blocks", async () => {
@@ -74,7 +66,7 @@ match = re.search(pattern, template)
 if match:
     print(f"var={match.group(1)},iter={match.group(2)},body={match.group(3)}")
 `);
-    expect(result.trim()).toBe("var=item,iter=items,body=* {{item}}");
+    expect(result.text).toBe("var=item,iter=items,body=* {{item}}");
   });
 });
 
@@ -94,7 +86,7 @@ def sanitize_text(text):
 dirty = "Hello\\x00World\\x07Test\\x1f"
 print(sanitize_text(dirty))
 `);
-    expect(result.trim()).toBe("HelloWorldTest");
+    expect(result.text).toBe("HelloWorldTest");
   });
 
   it("normalizes whitespace", async () => {
@@ -106,7 +98,7 @@ def normalize_whitespace(text):
 
 print(normalize_whitespace("  hello   world  \\n\\t foo  "))
 `);
-    expect(result.trim()).toBe("hello world foo");
+    expect(result.text).toBe("hello world foo");
   });
 });
 
@@ -141,7 +133,7 @@ errors = [
 results = [str(is_oom_error(e)) for e in errors]
 print(",".join(results))
 `);
-    expect(result.trim()).toBe("True,True,False,True");
+    expect(result.text).toBe("True,True,False,True");
   });
 });
 
@@ -169,7 +161,7 @@ schema = {
 errors = validate_schema(schema)
 print(";".join(errors))
 `);
-    expect(result.trim()).toBe("data: unknown type 'json'");
+    expect(result.text).toBe("data: unknown type 'json'");
   });
 });
 
@@ -208,7 +200,7 @@ result = parse_env(content)
 parts = [f"{k}={v}" for k, v in sorted(result.items())]
 print("|".join(parts))
 `);
-    expect(result.trim()).toBe("API_KEY=sk-test-123|DB_HOST=localhost|DB_PORT=5432|DEBUG=true");
+    expect(result.text).toBe("API_KEY=sk-test-123|DB_HOST=localhost|DB_PORT=5432|DEBUG=true");
   });
 });
 
@@ -234,7 +226,7 @@ u1 = UserConfig(name="Alice", email="alice@example.com", tags=["admin"])
 u2 = UserConfig(name="Bob", email="invalid")
 print(f"{u1.is_valid()},{u2.is_valid()},{u1.max_retries},{u1.tags}")
 `);
-    expect(result.trim()).toBe("True,False,3,['admin']");
+    expect(result.text).toBe("True,False,3,['admin']");
   });
 });
 
@@ -283,7 +275,7 @@ results = [
 ]
 print(",".join(results))
 `);
-    expect(result.trim()).toBe("None,2,4");
+    expect(result.text).toBe("None,2,4");
   });
 });
 
@@ -316,7 +308,7 @@ for book in root.findall('book'):
     books.append(f"{bid}:{title}:{author}")
 print("|".join(books))
 `);
-    expect(result.trim()).toBe("1:Python Guide:Alice|2:Zig Manual:Bob");
+    expect(result.text).toBe("1:Python Guide:Alice|2:Zig Manual:Bob");
   });
 });
 
@@ -331,7 +323,7 @@ logger = logging.getLogger("test")
 logger.setLevel(logging.INFO)
 print(f"name={logger.name},level={logger.level}")
 `);
-    expect(result.trim()).toBe("name=test,level=20");
+    expect(result.text).toBe("name=test,level=20");
   });
 });
 
@@ -347,7 +339,7 @@ try:
 except ImportError:
     print("MISSING")
 `);
-    expect(result.trim()).toBe("MISSING");
+    expect(result.text).toBe("MISSING");
   });
 
   it("yaml is available via site-packages.zip", async () => {
@@ -358,7 +350,7 @@ try:
 except ImportError:
     print("MISSING")
 `);
-    expect(result.trim()).toBe("AVAILABLE");
+    expect(result.text).toBe("AVAILABLE");
   });
 });
 
@@ -373,7 +365,7 @@ u = uuid.uuid4()
 parts = str(u).split('-')
 print(f"{len(parts)},{len(str(u))}")
 `);
-    expect(result.trim()).toBe("5,36");
+    expect(result.text).toBe("5,36");
   });
 });
 
@@ -399,7 +391,7 @@ invalid = hmac.compare_digest(
 )
 print(f"len={len(sig)},valid={valid},invalid={invalid}")
 `);
-    expect(result.trim()).toBe("len=64,valid=True,invalid=False");
+    expect(result.text).toBe("len=64,valid=True,invalid=False");
   });
 });
 
@@ -419,7 +411,7 @@ parsed = urlparse(url)
 qs = parse_qs(parsed.query)
 print(f"scheme={parsed.scheme},host={parsed.netloc},q={qs['q'][0]},page={qs['page'][0]}")
 `);
-    expect(result.trim()).toBe("scheme=https,host=api.example.com,q=python wasm,page=1");
+    expect(result.text).toBe("scheme=https,host=api.example.com,q=python wasm,page=1");
   });
 });
 
@@ -446,7 +438,7 @@ admins = [u["name"] for u in users if "admin" in u["roles"]]
 total = len(users)
 print(f"total={total},admins={','.join(admins)}")
 `);
-    expect(result.trim()).toBe("total=2,admins=Alice");
+    expect(result.text).toBe("total=2,admins=Alice");
   });
 });
 
@@ -478,7 +470,7 @@ print(f"available={len(available)},missing={len(missing)}")
 if missing:
     print(f"missing_modules={','.join(missing)}")
 `);
-    const lines = result.trim().split("\n");
+    const lines = result.text.split("\n");
     expect(lines[0]).toMatch(/^available=\d+,missing=\d+$/);
   });
 });
