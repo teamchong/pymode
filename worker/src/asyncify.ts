@@ -82,7 +82,8 @@ export class AsyncifyRuntime {
     try {
       this.memory.grow(pages);
     } catch {
-      // Already have enough memory
+      // memory.grow can fail if at maximum — buffer is placed at end of
+      // existing memory which must have ASYNCIFY_DATA_SIZE free bytes.
     }
 
     // Place buffer at end of (possibly grown) memory

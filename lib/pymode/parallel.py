@@ -4,7 +4,7 @@ Each spawned task runs in a separate DO with its own:
   - 30s CPU budget
   - 128MB memory
   - python.wasm instance
-  - Full access to host imports (TCP, HTTP, KV, R2, D1)
+  - No access to host imports (TCP, HTTP, KV, R2, D1) — pure compute only
 
 Arguments and results are serialized via pickle. No shared mutable state
 between tasks — each runs in its own WASM linear memory.
