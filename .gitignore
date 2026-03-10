@@ -28,6 +28,8 @@ worker/src/*.zip
 worker/src/extensions/
 
 # Secrets
+.env
+.env.*
 .dev.vars
 
 # Package cache
