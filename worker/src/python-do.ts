@@ -32,6 +32,28 @@ function parseBindingKey(raw: string, fallback: string): [string, string] {
   return [raw.substring(0, sep), raw.substring(sep + 1)];
 }
 
+/** Block requests to private/internal networks (SSRF prevention). */
+function isPrivateHost(hostname: string): boolean {
+  // IPv4 private ranges
+  if (/^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(hostname)) return true;
+  // Link-local / metadata endpoints (AWS, GCP, Azure)
+  if (/^169\.254\./.test(hostname)) return true;
+  // Localhost
+  if (hostname === "localhost" || hostname === "[::1]" || hostname === "::1") return true;
+  // IPv6 loopback/private
+  if (/^\[?fe80:/i.test(hostname) || /^\[?fc/i.test(hostname) || /^\[?fd/i.test(hostname)) return true;
+  return false;
+}
+
+/** Validate HTTP headers — reject CRLF injection and null bytes. */
+function validateHeaders(headers: Record<string, unknown>): boolean {
+  for (const [key, value] of Object.entries(headers)) {
+    if (typeof key !== "string" || typeof value !== "string") return false;
+    if (/[\r\n\0]/.test(key) || /[\r\n\0]/.test(value)) return false;
+  }
+  return true;
+}
+
 // The set of pymode.* imports that are async (return Promises).
 // These must match the --pass-arg=asyncify-imports@ list in build-phase2.py.
 const ASYNC_IMPORTS = new Set([
@@ -118,6 +140,10 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
       tcp_connect: (hostPtr: number, hostLen: number, port: number): number => {
         try {
           const host = self.readString(hostPtr, hostLen);
+          if (isPrivateHost(host)) {
+            console.error(`tcp_connect blocked: private host ${host}`);
+            return -1;
+          }
           const connId = self.nextConnId++;
           const socket = connect({ hostname: host, port });
           const writer = socket.writable.getWriter();
@@ -134,7 +160,7 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
         const conn = self.tcpConns.get(connId);
         if (!conn) return -1;
         const data = self.getMemBytes().slice(dataPtr, dataPtr + dataLen);
-        conn.writer.write(data).catch(() => {});
+        conn.writer.write(data).catch((e: unknown) => console.error("tcp_send error:", e));
         return dataLen;
       },
 
@@ -177,10 +203,23 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
       ): Promise<number> => {
         try {
           const url = self.readString(urlPtr, urlLen);
+          const parsed = new URL(url);
+          if (!["http:", "https:"].includes(parsed.protocol)) {
+            console.error(`http_fetch_full blocked: unsupported protocol ${parsed.protocol}`);
+            return -1;
+          }
+          if (isPrivateHost(parsed.hostname)) {
+            console.error(`http_fetch_full blocked: private host ${parsed.hostname}`);
+            return -1;
+          }
           const method = self.readString(methodPtr, methodLen);
           const body = bodyLen > 0 ? self.getMemBytes().slice(bodyPtr, bodyPtr + bodyLen) : undefined;
           const headersJson = headersLen > 0 ? self.readString(headersPtr, headersLen) : "{}";
           const headers = JSON.parse(headersJson);
+          if (!validateHeaders(headers)) {
+            console.error("http_fetch_full blocked: invalid headers (CRLF/null injection)");
+            return -1;
+          }
           const resp = await fetch(url, { method: method || "GET", headers, body });
           const respBody = new Uint8Array(await resp.arrayBuffer());
 
