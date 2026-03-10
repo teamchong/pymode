@@ -156,10 +156,31 @@ async function runWasm(
   let memory: WebAssembly.Memory | undefined;
   const wasi = createWasi(args, env, files, () => memory!, stdinData, stdlibDirIndex);
 
+  // Minimal pymode.* imports for WASM linker compatibility.
+  // In legacy mode, bindings are handled by the re-execution trampoline
+  // or the _pymode.py polyfill — these just satisfy the WASM import table.
+  const pymode: Record<string, Function> = {
+    dl_open: () => -1, dl_sym: () => 0, dl_close: () => {}, dl_error: () => 0,
+    tcp_connect: () => -1, tcp_send: () => -1, tcp_recv: () => -1, tcp_close: () => {},
+    thread_spawn: () => -1, thread_join: () => -1,
+    http_fetch_full: () => -1,
+    kv_get: () => -1, kv_put: () => {}, kv_delete: () => {},
+    kv_multi_get: () => -1, kv_multi_put: () => {},
+    r2_get: () => -1, r2_put: () => {},
+    d1_exec: () => -1, d1_batch: () => -1,
+    env_get: () => -1, console_log: () => {},
+  };
+  const asyncify: Record<string, Function> = {
+    start_unwind: () => {}, stop_unwind: () => {},
+    start_rewind: () => {}, stop_rewind: () => {},
+  };
+
   let exitCode = 0;
   try {
     const { instance } = await WebAssembly.instantiate(pythonWasm, {
       wasi_snapshot_preview1: wasi.imports,
+      pymode,
+      asyncify,
     });
     memory = instance.exports.memory as WebAssembly.Memory;
     (instance.exports._start as () => void)();

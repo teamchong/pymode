@@ -35,11 +35,11 @@ async function run(code: string): Promise<{ text: string; stderr: string; status
 
   const pymode: Record<string, Function> = {
     tcp_connect: () => -1, tcp_send: () => -1, tcp_recv: () => -1, tcp_close: () => {},
-    http_fetch: () => -1, http_response_status: () => 0, http_response_read: () => 0,
-    http_response_header: () => -1,
+    http_fetch_full: () => -1,
     kv_get: () => -1, kv_put: () => {}, kv_delete: () => {},
+    kv_multi_get: () => -1, kv_multi_put: () => {},
     r2_get: () => -1, r2_put: () => {},
-    d1_exec: () => -1, env_get: () => -1,
+    d1_exec: () => -1, d1_batch: () => -1, env_get: () => -1,
     thread_spawn: () => -1, thread_join: () => -1,
     dl_open: () => -1, dl_sym: () => 0, dl_close: () => {}, dl_error: () => 0,
     console_log: () => {},

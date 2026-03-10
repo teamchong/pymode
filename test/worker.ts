@@ -146,16 +146,16 @@ async function runWasm(
       thread_join: () => -1,
       // These exist for WASM link compatibility but the Python polyfill
       // handles them before they'd reach the host import layer
-      http_fetch: () => -1,
-      http_response_status: () => 0,
-      http_response_read: () => 0,
-      http_response_header: () => -1,
+      http_fetch_full: () => -1,
       kv_get: () => -1,
       kv_put: () => {},
       kv_delete: () => {},
+      kv_multi_get: () => -1,
+      kv_multi_put: () => {},
       r2_get: () => -1,
       r2_put: () => {},
       d1_exec: () => -1,
+      d1_batch: () => -1,
       env_get: () => -1,
       console_log: () => {},
     };
