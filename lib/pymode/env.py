@@ -75,6 +75,8 @@ class KV:
         parts = [struct.pack("<i", len(entries))]
         for key, val in entries:
             key_bytes = key.encode("utf-8")
+            if isinstance(val, str):
+                val = val.encode("utf-8")
             parts.append(struct.pack("<i", len(key_bytes)))
             parts.append(key_bytes)
             parts.append(struct.pack("<i", len(val)))

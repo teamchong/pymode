@@ -199,9 +199,9 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
           }
 
           const mem = self.getMemBytes();
-          const view = new DataView(mem.buffer, resultPtr, 8);
-          view.setUint32(0, resp.status, true);
-          view.setUint32(4, headersBytes.length, true);
+          const dv = new DataView(mem.buffer);
+          dv.setUint32(resultPtr, resp.status, true);
+          dv.setUint32(resultPtr + 4, headersBytes.length, true);
           mem.set(headersBytes, resultPtr + 8);
           mem.set(respBody, resultPtr + 8 + headersBytes.length);
           return totalLen;
@@ -275,17 +275,17 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
           if (totalLen > resultLen) return -1;
 
           const mem = self.getMemBytes();
-          const view = new DataView(mem.buffer, resultPtr, totalLen);
-          view.setInt32(0, count, true);
+          const dv = new DataView(mem.buffer);
+          dv.setInt32(resultPtr, count, true);
           let offset = 4;
           for (const r of results) {
             if (r) {
-              view.setInt32(offset, r.length, true);
+              dv.setInt32(resultPtr + offset, r.length, true);
               offset += 4;
               mem.set(r, resultPtr + offset);
               offset += r.length;
             } else {
-              view.setInt32(offset, -1, true);
+              dv.setInt32(resultPtr + offset, -1, true);
               offset += 4;
             }
           }
@@ -300,19 +300,19 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
       kv_multi_put: async (dataPtr: number, dataLen: number): Promise<void> => {
         try {
           const mem = self.getMemBytes();
-          const view = new DataView(mem.buffer, dataPtr, dataLen);
-          const count = view.getInt32(0, true);
-          let offset = 4;
+          const dv = new DataView(mem.buffer);
+          const count = dv.getInt32(dataPtr, true);
+          let offset = dataPtr + 4;
           const ops: Promise<void>[] = [];
 
           for (let i = 0; i < count; i++) {
-            const keyLen = view.getInt32(offset, true);
+            const keyLen = dv.getInt32(offset, true);
             offset += 4;
-            const rawKey = _decoder.decode(mem.subarray(dataPtr + offset, dataPtr + offset + keyLen));
+            const rawKey = _decoder.decode(mem.subarray(offset, offset + keyLen));
             offset += keyLen;
-            const valLen = view.getInt32(offset, true);
+            const valLen = dv.getInt32(offset, true);
             offset += 4;
-            const val = mem.slice(dataPtr + offset, dataPtr + offset + valLen);
+            const val = mem.slice(offset, offset + valLen);
             offset += valLen;
 
             const [bindingName, key] = parseBindingKey(rawKey, "KV");
@@ -390,7 +390,7 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
             return self.writeBytes(resultPtr, encoded, resultLen);
           }
 
-          // Group queries by binding name for batch execution
+          // All queries target the same D1 binding (CF db.batch() operates on one database)
           const bindingName = queries[0].binding || "D1";
           const d1 = self.env[bindingName] as D1Database | undefined;
           if (!d1) return -1;
