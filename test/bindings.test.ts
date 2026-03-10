@@ -12,17 +12,33 @@ import { runPython } from "./helpers";
 // --- KV Bindings ---
 
 describe("KV bindings", () => {
+  it("basic _pymode import works", async () => {
+    const { text, status } = await runPython(`
+import _pymode
+print(f"has_kv_get={hasattr(_pymode, 'kv_get')}")
+print(f"has_kv_put={hasattr(_pymode, 'kv_put')}")
+`);
+    if (status !== 200) console.log("_pymode import error:", text);
+    expect(status).toBe(200);
+    expect(text).toContain("has_kv_get=True");
+  });
+
   it("writes and reads back values", async () => {
     const { text, status } = await runPython(`
-from pymode.workers import Env
-env = Env()
-env.MY_KV.put("test-key", "test-value-123")
-value = env.MY_KV.get("test-key")
-print(f"value={value}")
+import _pymode
+try:
+    _pymode.kv_put("MY_KV\\x00test-key", b"test-value-123")
+    result = _pymode.kv_get("MY_KV\\x00test-key")
+    if result is None:
+        print("result=None")
+    else:
+        print(f"result={result.decode()}")
+except Exception as e:
+    print(f"error={type(e).__name__}: {e}")
 `);
     if (status !== 200) console.log("KV write/read error:", text);
     expect(status).toBe(200);
-    expect(text).toContain("value=test-value-123");
+    expect(text).toContain("result=test-value-123");
   });
 
   it("returns None for missing keys", async () => {
