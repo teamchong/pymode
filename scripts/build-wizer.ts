@@ -223,7 +223,6 @@ function main(): void {
       "--enable-sign-ext",
       "--enable-mutable-globals",
       `--pass-arg=asyncify-imports@${ASYNC_IMPORTS}`,
-      "--pass-arg=asyncify-ignore-indirect",
       wizerRaw,
       "-o",
       optOutput,

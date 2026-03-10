@@ -176,7 +176,6 @@ awaits the Promise, then the stack rewinds (restoring locals) and execution resu
 ```bash
 wasm-opt -O2 --asyncify \
   --pass-arg=asyncify-imports@pymode.tcp_recv,pymode.http_fetch,pymode.kv_get,... \
-  --pass-arg=asyncify-ignore-indirect \
   python.wasm -o python.wasm
 ```
 

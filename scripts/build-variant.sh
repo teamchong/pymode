@@ -214,7 +214,6 @@ if command -v wasm-opt &>/dev/null; then
         --enable-sign-ext \
         --enable-mutable-globals \
         --pass-arg="asyncify-imports@${ASYNC_IMPORTS}" \
-        --pass-arg=asyncify-ignore-indirect \
         "$OUTPUT" -o "${OUTPUT}.opt"
     mv "${OUTPUT}.opt" "$OUTPUT"
     POST_SIZE=$(wc -c < "$OUTPUT" | tr -d ' ')

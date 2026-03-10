@@ -105,7 +105,6 @@ if command -v wasm-opt &>/dev/null; then
         --enable-sign-ext \
         --enable-mutable-globals \
         --pass-arg="asyncify-imports@${ASYNC_IMPORTS}" \
-        --pass-arg=asyncify-ignore-indirect \
         "$WIZER_RAW" -o "${WIZER_RAW}.opt"
     mv "${WIZER_RAW}.opt" "$WIZER_RAW"
     OPT_SIZE=$(wc -c < "$WIZER_RAW" | tr -d ' ')
