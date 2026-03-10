@@ -20,18 +20,23 @@ let wranglerProcess: ReturnType<typeof spawn> | null = null;
 
 async function waitForReady(url: string, timeoutMs: number): Promise<void> {
   const start = Date.now();
+  let lastStatus = 0;
+  let lastBody = "";
   while (Date.now() - start < timeoutMs) {
     try {
       const resp = await fetch(url);
-      const body = await resp.text();
-      console.log(`[test:setup] poll status=${resp.status} body=${body.substring(0, 200)}`);
-      if (resp.status < 500) return;
+      lastStatus = resp.status;
+      lastBody = await resp.text();
+      if (resp.ok) return;
     } catch {
       // not ready yet
     }
     await new Promise((r) => setTimeout(r, 1000));
   }
-  throw new Error(`wrangler dev did not become ready within ${timeoutMs}ms`);
+  throw new Error(
+    `wrangler dev did not become ready within ${timeoutMs}ms` +
+    ` (last status=${lastStatus}, body=${lastBody.substring(0, 200)})`
+  );
 }
 
 export async function setup(): Promise<void> {

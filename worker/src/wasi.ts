@@ -108,6 +108,28 @@ export function createWasi(
   if (baseDirIndex) {
     dirChildren = new Map<string, string[]>();
     for (const [k, v] of baseDirIndex) dirChildren.set(k, v.slice());
+    // Register any files in `files` that aren't in the base index
+    // (e.g., user project files added after stdlib was indexed).
+    for (const path of Object.keys(files)) {
+      const parts = path.split("/");
+      const dir = parts.slice(0, -1).join("/");
+      if (!dirChildren.has(dir) || !dirChildren.get(dir)!.includes(parts[parts.length - 1])) {
+        // Need registerFile, but it's not defined yet — inline the logic
+        for (let i = 0; i < parts.length - 1; i++) {
+          const parent = parts.slice(0, i).join("/");
+          const child = parts[i];
+          if (!dirChildren.has(parent)) dirChildren.set(parent, []);
+          const pList = dirChildren.get(parent)!;
+          if (!pList.includes(child)) pList.push(child);
+          const full = parts.slice(0, i + 1).join("/");
+          if (!dirChildren.has(full)) dirChildren.set(full, []);
+        }
+        const name = parts[parts.length - 1];
+        if (!dirChildren.has(dir)) dirChildren.set(dir, []);
+        const dList = dirChildren.get(dir)!;
+        if (!dList.includes(name)) dList.push(name);
+      }
+    }
   } else {
     dirChildren = buildDirIndex(files);
   }
