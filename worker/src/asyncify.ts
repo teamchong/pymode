@@ -49,22 +49,6 @@ export class AsyncifyRuntime {
       }
     }
 
-    // Add the asyncify control imports that wasm-opt --asyncify expects
-    wrapped["asyncify"] = {
-      start_unwind: (dataAddr: number) => {
-        this.state = AsyncifyState.UNWINDING;
-      },
-      stop_unwind: () => {
-        // Unwinding complete — we're back in JS
-      },
-      start_rewind: (dataAddr: number) => {
-        this.state = AsyncifyState.REWINDING;
-      },
-      stop_rewind: () => {
-        this.state = AsyncifyState.NONE;
-      },
-    };
-
     return wrapped;
   }
 
@@ -112,6 +96,10 @@ export class AsyncifyRuntime {
 
     // Loop: each iteration handles one async suspension
     while (this.state === AsyncifyState.UNWINDING) {
+      // Finalize the unwind — WASM stack has been saved
+      this.exports.asyncify_stop_unwind();
+      this.state = AsyncifyState.NONE;
+
       // An async import was hit — its Promise is stored in this.pendingPromise
       // Wait for it to resolve
       await this.pendingPromise;
@@ -149,7 +137,8 @@ export class AsyncifyRuntime {
     return function (this: any, ...args: any[]) {
       // During rewind, the async op already completed — return cached value
       if (runtime.state === AsyncifyState.REWINDING) {
-        // stop_rewind will be called by the instrumented code
+        runtime.exports.asyncify_stop_rewind();
+        runtime.state = AsyncifyState.NONE;
         const val = runtime.pendingReturnValue;
         runtime.pendingReturnValue = null;
         return val;
