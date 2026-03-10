@@ -82,32 +82,29 @@ def fetch(url, method="GET", headers=None, body=None):
 
 
 def _fetch_host_imports(url, method, headers, body):
-    """Fetch via _pymode host imports — runs inside PythonDO."""
+    """Fetch via _pymode host imports — runs inside PythonDO.
+
+    Uses http_fetch_full for a single JS↔WASM round-trip instead of
+    9+ separate calls (fetch + status + N×read + 7×header).
+    Buffer layout: [4B status LE][4B headers_json_len LE][headers_json][body]
+    """
+    import struct
+
     body_bytes = b""
     if body is not None:
         body_bytes = body if isinstance(body, bytes) else body.encode()
 
     headers_json = json.dumps(dict(headers or {}))
-    resp_id = _pymode.http_fetch(url, method or "GET", body_bytes, headers_json)
 
-    status = _pymode.http_response_status(resp_id)
+    buf = _pymode.http_fetch_full(url, method or "GET", body_bytes, headers_json)
 
-    # Read the full response body
-    chunks = []
-    while True:
-        chunk = _pymode.http_response_read(resp_id, 65536)
-        if not chunk:
-            break
-        chunks.append(chunk)
-    resp_body = b"".join(chunks)
+    # Parse the packed buffer
+    status, headers_len = struct.unpack_from("<II", buf, 0)
+    resp_headers = json.loads(buf[8:8 + headers_len])
+    resp_body = buf[8 + headers_len:]
 
-    # Read common headers
-    resp_headers = {}
-    for hdr in ["content-type", "content-length", "location", "set-cookie",
-                 "cache-control", "etag", "last-modified"]:
-        val = _pymode.http_response_header(resp_id, hdr)
-        if val is not None:
-            resp_headers[hdr] = val
+    # Normalize header keys to lowercase
+    resp_headers = {k.lower(): v for k, v in resp_headers.items()}
 
     return HTTPResponse(status=status, headers=resp_headers, body=resp_body)
 

@@ -18,8 +18,6 @@ _kv_store = {}
 _r2_store = {}
 _d1_tables = {}
 _env_vars = {}
-_http_responses = {}
-_next_resp_id = 0
 
 # Load seed data from VFS if available
 _SEED_PATH = "/stdlib/tmp/_pymode_seed.json"
@@ -191,92 +189,45 @@ def env_get(key):
     return _env_vars.get(key)
 
 
-def http_fetch(url, method, body, headers_json):
-    global _next_resp_id
-    resp_id = _next_resp_id
-    _next_resp_id += 1
+def http_fetch_full(url, method, body, headers_json):
+    """Polyfill for http_fetch_full — returns packed buffer:
+    [4B status LE][4B headers_json_len LE][headers_json][body]
+    """
+    import struct
 
     if url.startswith("mock://"):
         path = url[7:]
         if path == "echo":
-            _http_responses[resp_id] = {
-                "status": 200,
-                "headers": {"content-type": "application/octet-stream", "x-method": method},
-                "body": body if isinstance(body, bytes) else body.encode() if body else b"",
-                "offset": 0,
-            }
+            status = 200
+            resp_headers = {"content-type": "application/octet-stream", "x-method": method}
+            resp_body = body if isinstance(body, bytes) else body.encode() if body else b""
         elif path == "json":
-            data = json.dumps({"message": "hello", "method": method, "timestamp": 1234567890})
-            _http_responses[resp_id] = {
-                "status": 200,
-                "headers": {"content-type": "application/json"},
-                "body": data.encode(),
-                "offset": 0,
-            }
+            status = 200
+            resp_headers = {"content-type": "application/json"}
+            resp_body = json.dumps({"message": "hello", "method": method, "timestamp": 1234567890}).encode()
         elif path == "headers":
-            _http_responses[resp_id] = {
-                "status": 200,
-                "headers": {"content-type": "application/json"},
-                "body": headers_json.encode() if isinstance(headers_json, str) else headers_json,
-                "offset": 0,
-            }
+            status = 200
+            resp_headers = {"content-type": "application/json"}
+            resp_body = headers_json.encode() if isinstance(headers_json, str) else headers_json
         elif path == "status/404":
-            _http_responses[resp_id] = {
-                "status": 404,
-                "headers": {"content-type": "text/plain"},
-                "body": b"Not Found",
-                "offset": 0,
-            }
+            status = 404
+            resp_headers = {"content-type": "text/plain"}
+            resp_body = b"Not Found"
         elif path == "status/500":
-            _http_responses[resp_id] = {
-                "status": 500,
-                "headers": {"content-type": "text/plain"},
-                "body": b"Internal Server Error",
-                "offset": 0,
-            }
+            status = 500
+            resp_headers = {"content-type": "text/plain"}
+            resp_body = b"Internal Server Error"
         else:
-            _http_responses[resp_id] = {
-                "status": 200,
-                "headers": {"content-type": "text/plain"},
-                "body": f"mock response for: {path}".encode(),
-                "offset": 0,
-            }
+            status = 200
+            resp_headers = {"content-type": "text/plain"}
+            resp_body = f"mock response for: {path}".encode()
     else:
-        _http_responses[resp_id] = {
-            "status": 200,
-            "headers": {"content-type": "text/plain"},
-            "body": f"[test] would fetch: {url}".encode(),
-            "offset": 0,
-        }
+        status = 200
+        resp_headers = {"content-type": "text/plain"}
+        resp_body = f"[test] would fetch: {url}".encode()
 
-    return resp_id
-
-
-def http_response_status(resp_id):
-    resp = _http_responses.get(resp_id)
-    return resp["status"] if resp else -1
-
-
-def http_response_read(resp_id, bufsize):
-    resp = _http_responses.get(resp_id)
-    if not resp:
-        return b""
-    body = resp["body"]
-    offset = resp["offset"]
-    remaining = len(body) - offset
-    if remaining <= 0:
-        return b""
-    n = min(remaining, bufsize)
-    chunk = body[offset:offset + n]
-    resp["offset"] = offset + n
-    return chunk
-
-
-def http_response_header(resp_id, name):
-    resp = _http_responses.get(resp_id)
-    if not resp:
-        return None
-    return resp["headers"].get(name.lower())
+    headers_bytes = json.dumps(resp_headers).encode()
+    return struct.pack("<II", status, len(headers_bytes)) + headers_bytes + resp_body
 
 
 def tcp_connect(host, port):

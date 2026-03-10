@@ -36,7 +36,7 @@ function parseBindingKey(raw: string, fallback: string): [string, string] {
 // These must match the --pass-arg=asyncify-imports@ list in build-phase2.py.
 const ASYNC_IMPORTS = new Set([
   "pymode.tcp_recv",
-  "pymode.http_fetch",
+  "pymode.http_fetch_full",
   "pymode.kv_get",
   "pymode.kv_put",
   "pymode.kv_delete",
@@ -59,15 +59,6 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
     timedOut?: boolean;
   }>();
   private nextConnId = 1;
-
-  // HTTP response storage — fetch results for Python to read back
-  private httpResponses = new Map<number, {
-    status: number;
-    headers: Headers;
-    body: Uint8Array;
-    offset: number;
-  }>();
-  private nextResponseId = 1;
 
   // Thread state — spawned child DOs and their result promises
   private threadResults = new Map<number, Promise<Uint8Array>>();
@@ -172,12 +163,14 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
       },
 
       // --- HTTP ---
-      // Async — returns Promise
-      http_fetch: async (
+      // Batched fetch — returns status + headers + body in one async call.
+      // Buffer layout: [4B status LE][4B headers_json_len LE][headers_json][body]
+      http_fetch_full: async (
         urlPtr: number, urlLen: number,
         methodPtr: number, methodLen: number,
         bodyPtr: number, bodyLen: number,
-        headersPtr: number, headersLen: number
+        headersPtr: number, headersLen: number,
+        resultPtr: number, resultLen: number
       ): Promise<number> => {
         try {
           const url = self.readString(urlPtr, urlLen);
@@ -187,43 +180,32 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
           const headers = JSON.parse(headersJson);
           const resp = await fetch(url, { method: method || "GET", headers, body });
           const respBody = new Uint8Array(await resp.arrayBuffer());
-          const respId = self.nextResponseId++;
-          self.httpResponses.set(respId, { status: resp.status, headers: resp.headers, body: respBody, offset: 0 });
-          return respId;
+
+          // Serialize all response headers as JSON
+          const respHeaders: Record<string, string> = {};
+          resp.headers.forEach((value, key) => {
+            respHeaders[key] = value;
+          });
+          const headersBytes = _encoder.encode(JSON.stringify(respHeaders));
+
+          // Total: 4 (status) + 4 (headers len) + headers + body
+          const totalLen = 8 + headersBytes.length + respBody.length;
+          if (totalLen > resultLen) {
+            console.error(`http_fetch_full: result too large (${totalLen} > ${resultLen})`);
+            return -1;
+          }
+
+          const mem = self.getMemBytes();
+          const view = new DataView(mem.buffer, resultPtr, 8);
+          view.setUint32(0, resp.status, true);
+          view.setUint32(4, headersBytes.length, true);
+          mem.set(headersBytes, resultPtr + 8);
+          mem.set(respBody, resultPtr + 8 + headersBytes.length);
+          return totalLen;
         } catch (e: unknown) {
-          console.error("http_fetch error:", e);
+          console.error("http_fetch_full error:", e);
           return -1;
         }
-      },
-
-      http_response_status: (responseId: number): number => {
-        const resp = self.httpResponses.get(responseId);
-        return resp ? resp.status : -1;
-      },
-
-      http_response_read: (responseId: number, bufPtr: number, bufLen: number): number => {
-        const resp = self.httpResponses.get(responseId);
-        if (!resp) return -1;
-        const remaining = resp.body.length - resp.offset;
-        const n = Math.min(remaining, bufLen);
-        self.getMemBytes().set(resp.body.subarray(resp.offset, resp.offset + n), bufPtr);
-        resp.offset += n;
-        if (n === 0) self.httpResponses.delete(responseId);
-        return n;
-      },
-
-      http_response_header: (
-        responseId: number,
-        namePtr: number, nameLen: number,
-        bufPtr: number, bufLen: number
-      ): number => {
-        const resp = self.httpResponses.get(responseId);
-        if (!resp) return -1;
-        const name = self.readString(namePtr, nameLen);
-        const value = resp.headers.get(name);
-        if (!value) return -1;
-        const encoded = _encoder.encode(value);
-        return self.writeBytes(bufPtr, encoded, bufLen);
       },
 
       // --- KV (async) ---
@@ -665,7 +647,6 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
       try { conn.socket.close(); } catch {}
     }
     this.tcpConns.clear();
-    this.httpResponses.clear();
     this.dlModules.clear();
     this.threadResults.clear();
   }

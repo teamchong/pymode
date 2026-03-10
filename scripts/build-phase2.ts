@@ -612,7 +612,7 @@ exec zig cc -target wasm32-wasi -E "\${ARGS[@]}"
     const origSize = statSync(pythonWasm).size;
 
     const asyncImports =
-      "pymode.tcp_recv,pymode.http_fetch,pymode.kv_get,pymode.kv_put," +
+      "pymode.tcp_recv,pymode.http_fetch_full,pymode.kv_get,pymode.kv_put," +
       "pymode.kv_delete,pymode.r2_get,pymode.r2_put,pymode.d1_exec," +
       "pymode.thread_spawn,pymode.thread_join,pymode.dl_open";
 

@@ -97,7 +97,7 @@ fi
 # Step 5: Asyncify with wasm-opt
 if command -v wasm-opt &>/dev/null; then
     echo "  [5/6] Asyncify + optimize..."
-    ASYNC_IMPORTS="pymode.tcp_recv,pymode.http_fetch,pymode.kv_get,pymode.kv_put,pymode.kv_delete,pymode.r2_get,pymode.r2_put,pymode.d1_exec,pymode.thread_spawn,pymode.thread_join,pymode.dl_open"
+    ASYNC_IMPORTS="pymode.tcp_recv,pymode.http_fetch_full,pymode.kv_get,pymode.kv_put,pymode.kv_delete,pymode.r2_get,pymode.r2_put,pymode.d1_exec,pymode.thread_spawn,pymode.thread_join,pymode.dl_open"
     wasm-opt -O2 --asyncify \
         --enable-simd \
         --enable-nontrapping-float-to-int \

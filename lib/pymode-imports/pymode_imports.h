@@ -35,30 +35,16 @@ void pymode_tcp_close(int32_t conn_id);
 
 /* --- HTTP --- */
 
-/* Start a fetch request. Returns a response ID >= 0, or -1 on error.
- * headers_json is a JSON-encoded object of header key-value pairs.
- * Async — suspends with JSPI or triggers trampoline. */
-__attribute__((import_module("pymode"), import_name("http_fetch")))
-int32_t pymode_http_fetch(
+/* Fetch and return full response in one call. Writes into buf:
+ *   [4 bytes: status (LE)] [4 bytes: headers_json_len (LE)] [headers_json] [body]
+ * Returns total bytes written, -1 on error. Async. */
+__attribute__((import_module("pymode"), import_name("http_fetch_full")))
+int32_t pymode_http_fetch_full(
     const char* url, int32_t url_len,
     const char* method, int32_t method_len,
     const uint8_t* body, int32_t body_len,
-    const char* headers_json, int32_t headers_len);
-
-/* Get the HTTP status code of a completed response. */
-__attribute__((import_module("pymode"), import_name("http_response_status")))
-int32_t pymode_http_response_status(int32_t response_id);
-
-/* Read response body bytes into buf. Returns bytes read, 0 when exhausted. */
-__attribute__((import_module("pymode"), import_name("http_response_read")))
-int32_t pymode_http_response_read(int32_t response_id, uint8_t* buf, int32_t buf_len);
-
-/* Read a response header value into buf. Returns bytes written, -1 if not found. */
-__attribute__((import_module("pymode"), import_name("http_response_header")))
-int32_t pymode_http_response_header(
-    int32_t response_id,
-    const char* name, int32_t name_len,
-    char* buf, int32_t buf_len);
+    const char* headers_json, int32_t headers_len,
+    uint8_t* result_buf, int32_t result_buf_len);
 
 /* --- KV --- */
 

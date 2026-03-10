@@ -72,64 +72,33 @@ static PyObject* py_tcp_close(PyObject* self, PyObject* args) {
     Py_RETURN_NONE;
 }
 
-/* --- HTTP wrappers --- */
+/* --- HTTP wrapper --- */
 
-static PyObject* py_http_fetch(PyObject* self, PyObject* args) {
+static PyObject* py_http_fetch_full(PyObject* self, PyObject* args) {
     const char *url, *method, *headers_json;
     Py_ssize_t url_len, method_len, headers_len;
     const uint8_t* body;
     Py_ssize_t body_len;
-    if (!PyArg_ParseTuple(args, "s#s#y#s#",
+    int bufsize = 10 * 1024 * 1024;  /* 10MB default */
+    if (!PyArg_ParseTuple(args, "s#s#y#s#|i",
             &url, &url_len, &method, &method_len,
-            &body, &body_len, &headers_json, &headers_len))
+            &body, &body_len, &headers_json, &headers_len, &bufsize))
         return NULL;
-    int32_t resp_id = pymode_http_fetch(
-        url, (int32_t)url_len, method, (int32_t)method_len,
-        body, (int32_t)body_len, headers_json, (int32_t)headers_len);
-    if (resp_id < 0) {
-        PyErr_SetString(PyExc_OSError, "http_fetch failed");
-        return NULL;
-    }
-    return PyLong_FromLong(resp_id);
-}
-
-static PyObject* py_http_response_status(PyObject* self, PyObject* args) {
-    int resp_id;
-    if (!PyArg_ParseTuple(args, "i", &resp_id))
-        return NULL;
-    return PyLong_FromLong(pymode_http_response_status(resp_id));
-}
-
-static PyObject* py_http_response_read(PyObject* self, PyObject* args) {
-    int resp_id, bufsize;
-    if (!PyArg_ParseTuple(args, "ii", &resp_id, &bufsize))
-        return NULL;
-    if (bufsize <= 0) bufsize = 65536;
     uint8_t* buf = (uint8_t*)PyMem_Malloc(bufsize);
     if (!buf)
         return PyErr_NoMemory();
-    int32_t n = pymode_http_response_read(resp_id, buf, bufsize);
+    int32_t n = pymode_http_fetch_full(
+        url, (int32_t)url_len, method, (int32_t)method_len,
+        body, (int32_t)body_len, headers_json, (int32_t)headers_len,
+        buf, bufsize);
     if (n < 0) {
         PyMem_Free(buf);
-        PyErr_SetString(PyExc_OSError, "http_response_read failed");
+        PyErr_SetString(PyExc_OSError, "http_fetch_full failed");
         return NULL;
     }
     PyObject* result = PyBytes_FromStringAndSize((const char*)buf, n);
     PyMem_Free(buf);
     return result;
-}
-
-static PyObject* py_http_response_header(PyObject* self, PyObject* args) {
-    int resp_id;
-    const char* name;
-    Py_ssize_t name_len;
-    if (!PyArg_ParseTuple(args, "is#", &resp_id, &name, &name_len))
-        return NULL;
-    char buf[8192];
-    int32_t n = pymode_http_response_header(resp_id, name, (int32_t)name_len, buf, sizeof(buf));
-    if (n < 0)
-        Py_RETURN_NONE;
-    return PyUnicode_FromStringAndSize(buf, n);
 }
 
 /* --- KV wrappers --- */
@@ -296,10 +265,7 @@ static PyMethodDef pymode_methods[] = {
     {"tcp_send", py_tcp_send, METH_VARARGS, NULL},
     {"tcp_recv", py_tcp_recv, METH_VARARGS, NULL},
     {"tcp_close", py_tcp_close, METH_VARARGS, NULL},
-    {"http_fetch", py_http_fetch, METH_VARARGS, NULL},
-    {"http_response_status", py_http_response_status, METH_VARARGS, NULL},
-    {"http_response_read", py_http_response_read, METH_VARARGS, NULL},
-    {"http_response_header", py_http_response_header, METH_VARARGS, NULL},
+    {"http_fetch_full", py_http_fetch_full, METH_VARARGS, NULL},
     {"kv_get", py_kv_get, METH_VARARGS, NULL},
     {"kv_put", py_kv_put, METH_VARARGS, NULL},
     {"kv_delete", py_kv_delete, METH_VARARGS, NULL},
