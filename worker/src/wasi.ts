@@ -177,9 +177,17 @@ export function createWasi(
   const ENOTEMPTY = 55;
 
   function normalizePath(p: string): string {
-    let r = p.replace(/^\.\//, "").replace(/\/\.\//g, "/").replace(/\/\.$/, "").replace(/\/+/g, "/").replace(/\/$/, "");
-    if (r === ".") r = "";
-    return r;
+    // Resolve ".." segments to prevent path traversal, then clean up "." and slashes
+    const parts = p.split("/");
+    const resolved: string[] = [];
+    for (const part of parts) {
+      if (part === ".." ) {
+        resolved.pop(); // go up — but can't escape root (empty array stays empty)
+      } else if (part !== "." && part !== "") {
+        resolved.push(part);
+      }
+    }
+    return resolved.join("/");
   }
 
   function resolvePath(dirFd: number, relPath: string): string | null {
