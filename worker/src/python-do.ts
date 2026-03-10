@@ -229,14 +229,6 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
     }
     const stdout = _decoder.decode(wasi.getStdout());
     const stderr = _decoder.decode(wasi.getStderr());
-    console.error(`[PythonDO] exit=${exitCode} outLen=${stdout.length} errLen=${stderr.length}`);
-    // Log response body separately to avoid CI line truncation
-    try {
-      const parsed = JSON.parse(stdout);
-      if (parsed.status >= 400 && parsed.body) {
-        console.error(`[PythonDO] ERROR body:\n${parsed.body}`);
-      }
-    } catch { /* not JSON */ }
     return { stdout, stderr, exitCode };
   }
 

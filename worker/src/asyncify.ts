@@ -97,12 +97,9 @@ export class AsyncifyRuntime {
 
     // First call — normal execution until an async import suspends
     let result = fn(...args);
-    console.error(`[Asyncify] after first call: state=${this.state} hasPending=${!!this.pendingPromise}`);
 
     // Loop: each iteration handles one async suspension
-    let iterations = 0;
     while (this.state === AsyncifyState.UNWINDING) {
-      iterations++;
       // Finalize the unwind — WASM stack has been saved
       this.exports.asyncify_stop_unwind();
       this.state = AsyncifyState.NONE;
@@ -111,8 +108,6 @@ export class AsyncifyRuntime {
       // Wait for it to resolve
       await this.pendingPromise;
       this.pendingPromise = null;
-
-      console.error(`[Asyncify] rewind #${iterations}: returnVal=${this.pendingReturnValue}`);
 
       // Reset the asyncify data buffer for rewinding
       const view = new DataView(this.memory!.buffer);
@@ -124,10 +119,8 @@ export class AsyncifyRuntime {
       this.exports.asyncify_start_rewind(this.dataAddr);
       this.state = AsyncifyState.REWINDING;
       result = fn(...args);
-      console.error(`[Asyncify] after rewind: state=${this.state}`);
     }
 
-    console.error(`[Asyncify] done: ${iterations} async suspensions`);
     return result;
   }
 
@@ -152,17 +145,14 @@ export class AsyncifyRuntime {
         runtime.state = AsyncifyState.NONE;
         const val = runtime.pendingReturnValue;
         runtime.pendingReturnValue = null;
-        console.error(`[Asyncify] ${importName}: rewind complete, returning ${val}`);
         return val;
       }
 
       // Normal execution — call the actual function
-      console.error(`[Asyncify] ${importName}: calling (state=${runtime.state})`);
       const result = fn.apply(this, args);
 
       // If it returned a Promise, we need to suspend
       if (result && typeof result.then === "function") {
-        console.error(`[Asyncify] ${importName}: got Promise, starting unwind`);
         // Store the promise for the run loop to await
         runtime.pendingPromise = result.then((resolvedValue: any) => {
           runtime.pendingReturnValue = resolvedValue;
@@ -177,7 +167,6 @@ export class AsyncifyRuntime {
       }
 
       // Synchronous result — no suspension needed
-      console.error(`[Asyncify] ${importName}: sync result=${result}`);
       return result;
     };
   }
