@@ -263,7 +263,7 @@ class D1Binding:
                 "params": stmt._params,
                 "binding": self._binding_name,
             })
-        return D1.batch(queries, self._binding_name)
+        return D1.batch(queries)
 
 
 class D1Statement:

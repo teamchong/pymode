@@ -390,8 +390,13 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
             return self.writeBytes(resultPtr, encoded, resultLen);
           }
 
-          // All queries target the same D1 binding (CF db.batch() operates on one database)
+          // CF db.batch() operates on one database — validate all queries use the same binding
           const bindingName = queries[0].binding || "D1";
+          const mismatch = queries.find((q) => (q.binding || "D1") !== bindingName);
+          if (mismatch) {
+            console.error(`d1_batch: mixed bindings (${bindingName} vs ${mismatch.binding})`);
+            return -1;
+          }
           const d1 = self.env[bindingName] as D1Database | undefined;
           if (!d1) return -1;
 

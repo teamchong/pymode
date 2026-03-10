@@ -116,10 +116,11 @@ class D1:
         return json.loads(result)
 
     @staticmethod
-    def batch(queries: list[dict], binding_name: str = "D1") -> list[list[dict]]:
+    def batch(queries: list[dict]) -> list[list[dict]]:
         """Execute multiple SQL statements in one Asyncify call (CF db.batch()).
 
         queries: list of {sql, params, binding} dicts.
+        All queries must target the same D1 binding.
         Returns list of result lists, one per query.
         """
         if _pymode is None:
