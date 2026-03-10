@@ -229,9 +229,7 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
     }
     const stdout = _decoder.decode(wasi.getStdout());
     const stderr = _decoder.decode(wasi.getStderr());
-    if (exitCode !== 0) {
-      console.error(`[PythonDO] exitCode=${exitCode} stdout=${JSON.stringify(stdout.substring(0, 200))} stderr=${JSON.stringify(stderr.substring(0, 500))}`);
-    }
+    console.log(`[PythonDO] exitCode=${exitCode} stdoutLen=${stdout.length} stderrLen=${stderr.length} stdout=${JSON.stringify(stdout.substring(0, 300))}`);
     return { stdout, stderr, exitCode };
   }
 
