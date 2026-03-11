@@ -131,7 +131,7 @@ jobs:
             typing-extensions jsonpatch jsonpointer distro tblib httpcore \
             tenacity requests httpx urllib3 \
             xxhash regex msgpack \
-            pydantic fastapi langchain-core langsmith langgraph \
+            pydantic==2.11.5 fastapi langchain-core langsmith langgraph \
             instructor openai dspy \
             orjson httptools
 

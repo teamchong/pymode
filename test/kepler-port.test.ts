@@ -331,7 +331,7 @@ print(f"name={logger.name},level={logger.level}")
 // 10. Package import failures (expected)
 // ---------------------------------------------------------------------------
 describe("missing packages", () => {
-  it("reports pydantic as unavailable", async () => {
+  it("reports pydantic as available", async () => {
     const result = await runPython(`
 try:
     import pydantic
@@ -339,7 +339,7 @@ try:
 except ImportError:
     print("MISSING")
 `);
-    expect(result.text).toBe("MISSING");
+    expect(result.text).toBe("AVAILABLE");
   });
 
   it("yaml is available via site-packages.zip", async () => {

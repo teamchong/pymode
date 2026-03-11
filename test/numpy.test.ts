@@ -18,7 +18,19 @@ except ImportError as e:
     print(f"ok=False")
     print(f"error={e}")
 `);
-    // numpy may not be available in the base python.wasm
     expect(status).toBe(200);
+  });
+
+  it("should create arrays and do basic operations", async () => {
+    const { text, status } = await runPython(`
+import numpy as np
+a = np.array([1, 2, 3, 4, 5])
+print(f"sum={int(np.sum(a))}")
+print(f"mean={float(np.mean(a))}")
+print(f"len={len(a)}")
+`);
+    expect(text + " [status=" + status + "]").toContain("sum=15");
+    expect(text).toContain("mean=3.0");
+    expect(text).toContain("len=5");
   });
 });
