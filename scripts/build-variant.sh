@@ -117,6 +117,9 @@ for mod_path, init_func in r.get('modules', {}).items():
     SITE_ZIP="$ROOT_DIR/build/recipes/$recipe_name/${recipe_name}-site-packages.zip"
     if [ -f "$SITE_ZIP" ]; then
         SITE_PACKAGES+=("$SITE_ZIP")
+        echo "  [$recipe_name] Site-packages: $SITE_ZIP"
+    else
+        echo "  [$recipe_name] No site-packages zip at: $SITE_ZIP"
     fi
 done
 
