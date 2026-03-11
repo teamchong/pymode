@@ -98,70 +98,29 @@ export class AsyncifyRuntime {
     // First call — normal execution until an async import suspends
     let result = fn(...args);
 
-    const getWasmState = this.exports.asyncify_get_state;
-    console.error(`[Asyncify] after _start: jsState=${this.state} wasmState=${getWasmState?.()}`);
-
     // Loop: each iteration handles one async suspension
-    let iterations = 0;
     while (this.state === AsyncifyState.UNWINDING) {
-      iterations++;
       // Finalize the unwind — WASM stack has been saved
       this.exports.asyncify_stop_unwind();
       this.state = AsyncifyState.NONE;
-
-      console.error(`[Asyncify] after stop_unwind: wasmState=${getWasmState?.()}`);
-
-      // Check what was saved in the buffer
-      const preView = new DataView(this.memory!.buffer);
-      const savedPtr = preView.getInt32(this.dataAddr, true);
-      const savedEnd = preView.getInt32(this.dataAddr + 4, true);
-      const savedBytes = savedPtr - (this.dataAddr + 8);
-      console.error(`[Asyncify] buffer: ptr=${savedPtr} end=${savedEnd} savedBytes=${savedBytes} dataAddr=${this.dataAddr}`);
 
       // An async import was hit — its Promise is stored in this.pendingPromise
       // Wait for it to resolve
       await this.pendingPromise;
       this.pendingPromise = null;
 
-      console.error(`[Asyncify] rewind #${iterations}: returnVal=${this.pendingReturnValue}`);
-
       // Reset the asyncify data buffer for rewinding
       const view = new DataView(this.memory!.buffer);
       view.setInt32(this.dataAddr, this.dataAddr + 8, true);
       view.setInt32(this.dataAddr + 4, this.dataAddr + ASYNCIFY_DATA_SIZE, true);
 
-      // Verify buffer integrity before rewind
-      const checkView = new DataView(this.memory!.buffer);
-      const bufStart = checkView.getInt32(this.dataAddr, true);
-      const bufEnd = checkView.getInt32(this.dataAddr + 4, true);
-      console.error(`[Asyncify] pre-rewind buffer: start=${bufStart} end=${bufEnd} expected_start=${this.dataAddr + 8}`);
-
-      // Dump first 32 bytes of saved data for comparison
-      const mem = new Uint8Array(this.memory!.buffer);
-      const preview = Array.from(mem.subarray(this.dataAddr + 8, this.dataAddr + 40))
-        .map(b => b.toString(16).padStart(2, '0')).join(' ');
-      console.error(`[Asyncify] saved data preview: ${preview}`);
-
       // Start rewinding — re-enter the function, it will fast-forward
       // to the point where it suspended
       this.exports.asyncify_start_rewind(this.dataAddr);
-      console.error(`[Asyncify] after start_rewind: wasmState=${getWasmState?.()}`);
       this.state = AsyncifyState.REWINDING;
-      try {
-        result = fn(...args);
-      } catch (rewindErr: unknown) {
-        console.error(`[Asyncify] REWIND EXCEPTION: ${rewindErr}`);
-        if (rewindErr instanceof Error) {
-          console.error(`[Asyncify] stack: ${rewindErr.stack}`);
-        }
-        throw rewindErr;
-      }
-      console.error(`[Asyncify] after rewind fn: jsState=${this.state} wasmState=${getWasmState?.()}`);
+      result = fn(...args);
     }
 
-    if (iterations > 0) {
-      console.error(`[Asyncify] done: ${iterations} async suspensions`);
-    }
     return result;
   }
 
@@ -176,20 +135,16 @@ export class AsyncifyRuntime {
    * - During NONE: call the function. If it returns a Promise, trigger unwind.
    *   If it returns a non-Promise, pass through (it was actually sync).
    */
-  private wrapAsyncImport(fn: Function, importName: string): Function {
+  private wrapAsyncImport(fn: Function, _importName: string): Function {
     const runtime = this;
 
     return function (this: any, ...args: any[]) {
-      const wasmState = runtime.exports.asyncify_get_state?.();
-      console.error(`[Asyncify] ${importName}: called jsState=${runtime.state} wasmState=${wasmState}`);
-
       // During rewind, the async op already completed — return cached value
       if (runtime.state === AsyncifyState.REWINDING) {
         runtime.exports.asyncify_stop_rewind();
         runtime.state = AsyncifyState.NONE;
         const val = runtime.pendingReturnValue;
         runtime.pendingReturnValue = null;
-        console.error(`[Asyncify] ${importName}: rewind complete, returning ${val}`);
         return val;
       }
 
@@ -198,7 +153,6 @@ export class AsyncifyRuntime {
 
       // If it returned a Promise, we need to suspend
       if (result && typeof result.then === "function") {
-        console.error(`[Asyncify] ${importName}: got Promise, starting unwind`);
         // Store the promise for the run loop to await
         runtime.pendingPromise = result.then((resolvedValue: any) => {
           runtime.pendingReturnValue = resolvedValue;
