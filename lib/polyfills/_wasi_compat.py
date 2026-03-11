@@ -72,15 +72,15 @@ def _install_zip_metadata_finder():
         return name.lower().replace("-", "_").replace(".", "_")
 
     class ZipDistribution(metadata.Distribution):
-        def __init__(self, importer, archive, dist_dir):
+        def __init__(self, importer, dist_dir):
             self._importer = importer
-            self._archive = archive
-            self._dist_dir = dist_dir
+            self._dist_dir = dist_dir  # relative path, e.g. "pydantic-2.10.dist-info"
 
         def read_text(self, filename):
-            full_path = os.path.join(self._archive, self._dist_dir, filename)
+            # _get_files() keys are relative paths within the zip
+            rel_path = self._dist_dir + "/" + filename
             try:
-                return self._importer.get_data(full_path).decode("utf-8", errors="replace")
+                return self._importer.get_data(rel_path).decode("utf-8", errors="replace")
             except (OSError, IOError):
                 return None
 
@@ -109,8 +109,8 @@ def _install_zip_metadata_finder():
                         continue
                 if not isinstance(importer, zipimport.zipimporter):
                     continue
-                # Get the zip directory listing. CPython 3.13 uses _get_files()
-                # method (files cached in zipimport._zip_directory_cache).
+                # _get_files() returns dict with RELATIVE path keys
+                # (e.g. "pydantic/__init__.py", "pydantic-2.10.dist-info/METADATA")
                 try:
                     zip_files = importer._get_files()
                 except (AttributeError, Exception):
@@ -121,10 +121,12 @@ def _install_zip_metadata_finder():
                         dist_dir = fpath.split(".dist-info/")[0] + ".dist-info"
                         dist_dirs.add(dist_dir)
                 for dist_dir in sorted(dist_dirs):
-                    meta_path = os.path.join(path_entry, dist_dir, "METADATA")
+                    meta_rel = dist_dir + "/METADATA"
+                    if meta_rel not in zip_files:
+                        continue
                     if name:
                         try:
-                            meta = importer.get_data(meta_path).decode("utf-8", errors="replace")
+                            meta = importer.get_data(meta_rel).decode("utf-8", errors="replace")
                         except (OSError, IOError):
                             continue
                         pkg_name = None
@@ -134,7 +136,7 @@ def _install_zip_metadata_finder():
                                 break
                         if pkg_name and _normalize(name) != _normalize(pkg_name):
                             continue
-                    yield ZipDistribution(importer, path_entry, dist_dir)
+                    yield ZipDistribution(importer, dist_dir)
 
     sys.meta_path.append(ZipMetadataFinder)
 
