@@ -7,16 +7,7 @@
 // Run via: npx vitest run --config vitest-pydantic.config.ts test/langgraph.test.ts
 
 import { describe, it, expect } from "vitest";
-import { SELF } from "cloudflare:test";
-
-async function run(code: string): Promise<{ text: string; status: number }> {
-  const response = await SELF.fetch("http://localhost", {
-    method: "POST",
-    body: code,
-  });
-  const text = await response.text();
-  return { text: text.trim(), status: response.status };
-}
+import { runPython as run } from "./helpers";
 
 describe("langgraph: imports", () => {
   it("imports langgraph and checks version", { timeout: 20000 }, async () => {

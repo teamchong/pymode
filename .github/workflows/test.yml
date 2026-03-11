@@ -9,7 +9,7 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v4
@@ -25,8 +25,13 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential
+          sudo apt-get install -y build-essential lld
           pip3 install cython
+
+      - name: Install Rust (for pydantic-core)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1
 
       - name: Install zig
         uses: mlugg/setup-zig@v2
@@ -77,6 +82,35 @@ jobs:
           fi
           cp build/zig-wasi/python.wasm worker/src/python.wasm
 
+      - name: Cache numpy build
+        uses: actions/cache@v4
+        with:
+          path: /tmp/numpy-wasm-build/
+          key: numpy-wasm-${{ hashFiles('scripts/build-numpy-wasm.sh', 'recipes/numpy.json') }}
+
+      - name: Build numpy WASM objects
+        run: |
+          if [ ! -d build/zig-wasi/Modules/numpy ] || [ "$(ls build/zig-wasi/Modules/numpy/*.o 2>/dev/null | wc -l)" -eq 0 ]; then
+            ./scripts/build-numpy-wasm.sh
+          fi
+
+      - name: Cache pydantic-core build
+        uses: actions/cache@v4
+        with:
+          path: build/recipes/pydantic-core/
+          key: pydantic-core-wasm-${{ hashFiles('scripts/build-pydantic-core-wasm.sh', 'recipes/pydantic-core.json') }}
+
+      - name: Build pydantic-core WASM objects
+        run: |
+          if [ ! -d build/recipes/pydantic-core/obj ] || [ "$(ls build/recipes/pydantic-core/obj/*.o build/recipes/pydantic-core/obj/*.a 2>/dev/null | wc -l)" -eq 0 ]; then
+            ./scripts/build-pydantic-core-wasm.sh
+          fi
+
+      - name: Build variant python.wasm (numpy + pydantic-core)
+        run: |
+          ./scripts/build-variant.sh numpy pydantic-core
+          cp worker/src/python-numpy-pydantic-core.wasm worker/src/python.wasm
+
       - name: Install npm dependencies
         run: npm install
 
@@ -91,7 +125,10 @@ jobs:
             charset-normalizer anyio sniffio annotated-types \
             typing-extensions jsonpatch jsonpointer distro tblib httpcore \
             tenacity requests httpx urllib3 \
-            xxhash regex msgpack
+            xxhash regex msgpack \
+            pydantic fastapi langchain-core langsmith langgraph \
+            instructor openai dspy \
+            orjson httptools
 
       - name: Run tests
         run: npm test

@@ -207,7 +207,7 @@ echo "  Raw size: $(echo "scale=1; $PRE_SIZE / 1048576" | bc)MB"
 if command -v wasm-opt &>/dev/null; then
     echo "  Running wasm-opt --asyncify..."
     ASYNC_IMPORTS="pymode.tcp_recv,pymode.http_fetch_full,pymode.kv_get,pymode.kv_put,pymode.kv_delete,pymode.kv_multi_get,pymode.kv_multi_put,pymode.r2_get,pymode.r2_put,pymode.d1_exec,pymode.d1_batch,pymode.thread_spawn,pymode.thread_join,pymode.dl_open"
-    wasm-opt -O2 --asyncify \
+    wasm-opt -O1 --asyncify \
         --enable-simd \
         --enable-nontrapping-float-to-int \
         --enable-bulk-memory \

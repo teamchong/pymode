@@ -313,7 +313,7 @@ function main(): void {
     const optOutput = output + ".opt";
     const optRes = run([
       "wasm-opt",
-      "-O2",
+      "-O1",
       "--asyncify",
       "--enable-simd",
       "--enable-nontrapping-float-to-int",

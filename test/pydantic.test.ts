@@ -4,16 +4,7 @@
 // and statically linked into the python-pydantic-core.wasm binary.
 
 import { describe, it, expect } from "vitest";
-import { SELF } from "cloudflare:test";
-
-async function run(code: string): Promise<{ text: string; status: number }> {
-  const response = await SELF.fetch("http://localhost", {
-    method: "POST",
-    body: code,
-  });
-  const text = await response.text();
-  return { text: text.trim(), status: response.status };
-}
+import { runPython as run } from "./helpers";
 
 describe("pydantic", () => {
   it("validates models with type coercion", async () => {
