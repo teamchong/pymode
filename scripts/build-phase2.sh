@@ -307,6 +307,7 @@ if command -v wasm-opt >/dev/null 2>&1; then
         --enable-sign-ext \
         --enable-mutable-globals \
         --pass-arg="asyncify-imports@${ASYNC_IMPORTS}" \
+        --pass-arg=asyncify-verbose \
         "$BUILD_DIR/python.wasm" -o "$BUILD_DIR/python.wasm.asyncified"
     mv "$BUILD_DIR/python.wasm.asyncified" "$BUILD_DIR/python.wasm"
 

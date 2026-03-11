@@ -631,6 +631,7 @@ exec zig cc -target wasm32-wasi -E "\${ARGS[@]}"
         "--enable-sign-ext",
         "--enable-mutable-globals",
         `--pass-arg=asyncify-imports@${asyncImports}`,
+        "--pass-arg=asyncify-verbose",
         pythonWasm,
         "-o",
         asyncified,
