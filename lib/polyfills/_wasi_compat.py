@@ -109,10 +109,11 @@ def _install_zip_metadata_finder():
                         continue
                 if not isinstance(importer, zipimport.zipimporter):
                     continue
-                # Scan the zip's file list for .dist-info directories
+                # Get the zip directory listing. CPython 3.13 uses _get_files()
+                # method (files cached in zipimport._zip_directory_cache).
                 try:
-                    zip_files = importer._files
-                except AttributeError:
+                    zip_files = importer._get_files()
+                except (AttributeError, Exception):
                     continue
                 dist_dirs = set()
                 for fpath in zip_files:
