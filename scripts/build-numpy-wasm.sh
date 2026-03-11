@@ -169,6 +169,7 @@ echo "  Compiling C/C++ files..."
 CFLAGS="-target wasm32-wasi -c -fPIC -Os \
   -D_MULTIARRAYMODULE -D_UMATHMODULE -DNPY_INTERNAL_BUILD=1 -DNPY_NO_SMP=1 \
   -UHAVE_BACKTRACE -DHAVE_XLOCALE_H=0 \
+  -Drestrict=__restrict__ \
   -I$BUILD_DIR \
   -I$CPYTHON/Include -I$CPYTHON/Include/cpython -I$PYCONFIG_DIR \
   -I$NUMPY_SRC/numpy/_core/include -I$NUMPY_SRC/numpy/_core/src/common \
@@ -317,6 +318,7 @@ done
 # numpy.random — C source files (bit generators, distributions)
 echo "  Compiling numpy.random..."
 RANDOM_CFLAGS="-target wasm32-wasi -c -Os -DNDEBUG \
+  -Drestrict=__restrict__ \
   -I$CPYTHON/Include -I$CPYTHON/Include/cpython -I$PYCONFIG_DIR \
   -I$NUMPY_SRC/numpy/_core/include -I$NUMPY_SRC/numpy/_core/src/common \
   -I$NUMPY_SRC/numpy/random/src -I$NUMPY_SRC/numpy/random \
@@ -348,6 +350,7 @@ CFLAGS="$SAVE_CFLAGS"
 
 # Cython random modules — need cython to generate .c from .pyx
 CYTHON_RANDOM_CFLAGS="-target wasm32-wasi -c -Os -DNDEBUG -DCYTHON_COMPRESS_STRINGS=0 \
+  -Drestrict=__restrict__ \
   -I$CPYTHON/Include -I$CPYTHON/Include/cpython -I$PYCONFIG_DIR \
   -I$NUMPY_SRC/numpy/_core/include -I$NUMPY_SRC/numpy/_core/src/common \
   -I$NUMPY_SRC/numpy/random/src -I$NUMPY_SRC/numpy/random \
@@ -384,6 +387,7 @@ echo "  Compiling numpy.fft..."
 FFT_SRC="$NUMPY_SRC/numpy/fft/_pocketfft_umath.cpp"
 if [ -f "$FFT_SRC" ]; then
   FFT_CFLAGS="-target wasm32-wasi -c -Os -DNDEBUG -std=c++17 \
+    -Drestrict=__restrict__ \
     -I$CPYTHON/Include -I$CPYTHON/Include/cpython -I$PYCONFIG_DIR \
     -I$NUMPY_SRC/numpy/_core/include -I$NUMPY_SRC/numpy/_core/src/common \
     -I$NUMPY_SRC/numpy/fft -I$BUILD_DIR \
