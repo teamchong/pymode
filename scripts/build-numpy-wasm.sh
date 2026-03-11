@@ -383,7 +383,7 @@ fi
 echo "  Compiling numpy.fft..."
 FFT_SRC="$NUMPY_SRC/numpy/fft/_pocketfft_umath.cpp"
 if [ -f "$FFT_SRC" ]; then
-  FFT_CFLAGS="-target wasm32-wasi -c -Os -DNDEBUG -std=c++17 \
+  FFT_CFLAGS="-target wasm32-wasi -c -fPIC -Os -DNDEBUG -std=c++17 \
     -Drestrict=__restrict__ \
     -I$CPYTHON/Include -I$CPYTHON/Include/cpython -I$PYCONFIG_DIR \
     -I$NUMPY_SRC/numpy/_core/include -I$NUMPY_SRC/numpy/_core/src/common \

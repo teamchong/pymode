@@ -91,7 +91,6 @@ jobs:
           key: numpy-wasm-${{ hashFiles('scripts/build-numpy-wasm.sh', 'recipes/numpy.json') }}
 
       - name: Build numpy WASM objects
-        continue-on-error: true
         run: |
           if [ ! -d build/zig-wasi/Modules/numpy ] || [ "$(ls build/zig-wasi/Modules/numpy/*.o 2>/dev/null | wc -l)" -eq 0 ]; then
             bash scripts/build-numpy-wasm.sh
@@ -104,25 +103,15 @@ jobs:
           key: pydantic-core-wasm-${{ hashFiles('scripts/build-pydantic-core-wasm.sh', 'recipes/pydantic-core.json') }}
 
       - name: Build pydantic-core WASM objects
-        continue-on-error: true
         run: |
           if [ ! -d build/recipes/pydantic-core/obj ] || [ "$(ls build/recipes/pydantic-core/obj/*.o build/recipes/pydantic-core/obj/*.a 2>/dev/null | wc -l)" -eq 0 ]; then
             bash scripts/build-pydantic-core-wasm.sh
           fi
 
-      - name: Build variant python.wasm (pydantic-core, then try +numpy)
+      - name: Build variant python.wasm (numpy + pydantic-core)
         run: |
-          # Build pydantic-core only variant first (guaranteed to work)
-          bash scripts/build-variant.sh pydantic-core
-          cp worker/src/python-pydantic-core.wasm worker/src/python.wasm
-
-          # Attempt numpy+pydantic-core variant (may fail due to incomplete numpy objects)
-          if bash scripts/build-variant.sh numpy pydantic-core; then
-            echo "Full variant built successfully — using numpy+pydantic-core"
-            cp worker/src/python-numpy-pydantic-core.wasm worker/src/python.wasm
-          else
-            echo "WARNING: numpy variant link failed — using pydantic-core only"
-          fi
+          bash scripts/build-variant.sh numpy pydantic-core
+          cp worker/src/python-numpy-pydantic-core.wasm worker/src/python.wasm
 
       - name: Install npm dependencies
         run: npm install

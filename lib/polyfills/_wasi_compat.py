@@ -60,33 +60,39 @@ del _tempfile
 
 # Make importlib.metadata work with packages inside zip files.
 # Packages in site-packages.zip include dist-info/METADATA but the default
-# MetadataPathFinder can't look inside zips. Register a custom finder.
+# MetadataPathFinder can't look inside zips via the WASI VFS (zipfile.ZipFile
+# re-open fails). Use zipimport.zipimporter which already loaded these zips.
 def _install_zip_metadata_finder():
     import importlib.metadata as metadata
-    import sys
-    import zipfile
+    import zipimport
     import pathlib
+    import os
 
     def _normalize(name):
         return name.lower().replace("-", "_").replace(".", "_")
 
     class ZipDistribution(metadata.Distribution):
-        def __init__(self, zf, dist_dir):
-            self._zf = zf
+        def __init__(self, importer, archive, dist_dir):
+            self._importer = importer
+            self._archive = archive
             self._dist_dir = dist_dir
 
         def read_text(self, filename):
-            path = f"{self._dist_dir}/{filename}"
+            full_path = os.path.join(self._archive, self._dist_dir, filename)
             try:
-                return self._zf.read(path).decode("utf-8", errors="replace")
-            except KeyError:
+                return self._importer.get_data(full_path).decode("utf-8", errors="replace")
+            except (OSError, IOError):
                 return None
 
         def locate_file(self, path):
             return pathlib.PurePosixPath(path)
 
     class ZipMetadataFinder(metadata.DistributionFinder):
-        """Finds package metadata inside zip files on sys.path."""
+        """Finds package metadata inside zip files on sys.path.
+
+        Uses zipimport.zipimporter (already loaded by Python for module imports)
+        instead of zipfile.ZipFile (which requires re-opening the file via VFS).
+        """
 
         @classmethod
         def find_distributions(cls, context=metadata.DistributionFinder.Context()):
@@ -94,21 +100,32 @@ def _install_zip_metadata_finder():
             for path_entry in sys.path:
                 if not path_entry.endswith(".zip"):
                     continue
+                # Get the zipimporter from cache (Python already created one for imports)
+                importer = sys.path_importer_cache.get(path_entry)
+                if importer is None:
+                    try:
+                        importer = zipimport.zipimporter(path_entry)
+                    except (OSError, zipimport.ZipImportError):
+                        continue
+                if not isinstance(importer, zipimport.zipimporter):
+                    continue
+                # Scan the zip's file list for .dist-info directories
                 try:
-                    zf = zipfile.ZipFile(path_entry)
-                except (OSError, zipfile.BadZipFile):
+                    zip_files = importer._files
+                except AttributeError:
                     continue
                 dist_dirs = set()
-                for entry in zf.namelist():
-                    if ".dist-info/" in entry:
-                        dist_dir = entry.split(".dist-info/")[0] + ".dist-info"
+                for fpath in zip_files:
+                    if ".dist-info/" in fpath:
+                        dist_dir = fpath.split(".dist-info/")[0] + ".dist-info"
                         dist_dirs.add(dist_dir)
-                for dist_dir in dist_dirs:
-                    meta_path = f"{dist_dir}/METADATA"
-                    if meta_path not in zf.namelist():
-                        continue
+                for dist_dir in sorted(dist_dirs):
+                    meta_path = os.path.join(path_entry, dist_dir, "METADATA")
                     if name:
-                        meta = zf.read(meta_path).decode("utf-8", errors="replace")
+                        try:
+                            meta = importer.get_data(meta_path).decode("utf-8", errors="replace")
+                        except (OSError, IOError):
+                            continue
                         pkg_name = None
                         for line in meta.splitlines():
                             if line.startswith("Name:"):
@@ -116,7 +133,7 @@ def _install_zip_metadata_finder():
                                 break
                         if pkg_name and _normalize(name) != _normalize(pkg_name):
                             continue
-                    yield ZipDistribution(zf, dist_dir)
+                    yield ZipDistribution(importer, path_entry, dist_dir)
 
     sys.meta_path.append(ZipMetadataFinder)
 
