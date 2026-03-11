@@ -590,8 +590,10 @@ if [ -f "$BUILD_DIR/_multiarray_umath.wasm" ]; then
 fi
 cp "$BUILD_DIR/numpy-site-packages.zip" "$OUTPUT_DIR/"
 
-# Also copy numpy-site-packages.zip to worker/src for tests
-cp "$BUILD_DIR/numpy-site-packages.zip" "$ROOT_DIR/worker/src/numpy-site-packages.zip"
+# Copy to build/recipes/numpy/ where build-variant.sh expects site-packages
+RECIPE_DIR="$ROOT_DIR/build/recipes/numpy"
+mkdir -p "$RECIPE_DIR"
+cp "$BUILD_DIR/numpy-site-packages.zip" "$RECIPE_DIR/"
 
 echo ""
 echo "Done! numpy for wasm32-wasi:"

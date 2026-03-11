@@ -95,6 +95,9 @@ jobs:
           if [ ! -d build/zig-wasi/Modules/numpy ] || [ "$(ls build/zig-wasi/Modules/numpy/*.o 2>/dev/null | wc -l)" -eq 0 ]; then
             bash scripts/build-numpy-wasm.sh
           fi
+          # Ensure site-packages zip is where build-variant.sh expects it
+          mkdir -p build/recipes/numpy
+          cp /tmp/numpy-wasm-build/numpy-site-packages.zip build/recipes/numpy/ 2>/dev/null || true
 
       - name: Cache pydantic-core build
         uses: actions/cache@v4
