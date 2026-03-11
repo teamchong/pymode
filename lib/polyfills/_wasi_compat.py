@@ -60,83 +60,157 @@ del _tempfile
 
 # Make importlib.metadata work with packages inside zip files.
 # Packages in site-packages.zip include dist-info/METADATA but the default
-# MetadataPathFinder can't look inside zips via the WASI VFS (zipfile.ZipFile
-# re-open fails). Use zipimport.zipimporter which already loaded these zips.
+# MetadataPathFinder can't look inside zips via the WASI VFS.
+#
+# We read the zip central directory using _io.open_code() — the same function
+# that zipimport uses internally to read zip files in WASI. This avoids both
+# zipfile.ZipFile (VFS re-open issues) and zipimport internal APIs.
 def _install_zip_metadata_finder():
     import importlib.metadata as metadata
-    import zipimport
+    import struct
     import pathlib
-    import os
+    import _io
 
     def _normalize(name):
         return name.lower().replace("-", "_").replace(".", "_")
 
+    def _read_zip_entries(archive):
+        """Read file names from a ZIP central directory using _io.open_code."""
+        try:
+            fp = _io.open_code(archive)
+        except OSError:
+            return []
+        entries = []
+        try:
+            # Find End of Central Directory record (last 22+ bytes)
+            fp.seek(0, 2)
+            file_size = fp.tell()
+            search_start = max(file_size - 65557, 0)  # 65535 comment + 22 EOCD
+            fp.seek(search_start)
+            data = fp.read()
+            eocd_pos = data.rfind(b'PK\x05\x06')
+            if eocd_pos < 0:
+                return []
+            cd_offset = struct.unpack_from('<I', data, eocd_pos + 16)[0]
+            cd_count = struct.unpack_from('<H', data, eocd_pos + 8)[0]
+            # Read central directory entries
+            fp.seek(cd_offset)
+            for _ in range(cd_count):
+                header = fp.read(46)
+                if len(header) < 46 or header[:4] != b'PK\x01\x02':
+                    break
+                name_len = struct.unpack_from('<H', header, 28)[0]
+                extra_len = struct.unpack_from('<H', header, 30)[0]
+                comment_len = struct.unpack_from('<H', header, 32)[0]
+                compress = struct.unpack_from('<H', header, 10)[0]
+                data_size = struct.unpack_from('<I', header, 20)[0]
+                file_offset = struct.unpack_from('<I', header, 42)[0]
+                name = fp.read(name_len).decode('utf-8', errors='replace')
+                fp.read(extra_len + comment_len)  # skip extra + comment
+                entries.append((name, compress, data_size, file_offset))
+        finally:
+            fp.close()
+        return entries
+
+    def _read_zip_file(archive, compress, data_size, file_offset):
+        """Read a single file from the ZIP archive."""
+        try:
+            fp = _io.open_code(archive)
+        except OSError:
+            return None
+        try:
+            fp.seek(file_offset)
+            local_header = fp.read(30)
+            if len(local_header) < 30 or local_header[:4] != b'PK\x03\x04':
+                return None
+            name_len = struct.unpack_from('<H', local_header, 26)[0]
+            extra_len = struct.unpack_from('<H', local_header, 28)[0]
+            fp.read(name_len + extra_len)  # skip name + extra
+            raw_data = fp.read(data_size)
+            if compress == 0:
+                return raw_data
+            # Compressed — use zlib (our polyfill handles this)
+            import zlib
+            return zlib.decompress(raw_data, -15)
+        except Exception:
+            return None
+        finally:
+            fp.close()
+
+    # Pre-scan zip files on sys.path and build a metadata cache
+    _metadata_cache = {}  # package_name -> (archive, entries_dict)
+
+    def _scan_zip(archive):
+        """Scan a zip file and cache dist-info metadata locations."""
+        entries = _read_zip_entries(archive)
+        entry_map = {}
+        for name, compress, data_size, file_offset in entries:
+            entry_map[name] = (compress, data_size, file_offset)
+        dist_dirs = set()
+        for name in entry_map:
+            if ".dist-info/" in name:
+                dist_dir = name.split(".dist-info/")[0] + ".dist-info"
+                dist_dirs.add(dist_dir)
+        for dist_dir in dist_dirs:
+            meta_key = dist_dir + "/METADATA"
+            if meta_key not in entry_map:
+                continue
+            compress, data_size, file_offset = entry_map[meta_key]
+            raw = _read_zip_file(archive, compress, data_size, file_offset)
+            if raw is None:
+                continue
+            meta_text = raw.decode("utf-8", errors="replace")
+            pkg_name = None
+            for line in meta_text.splitlines():
+                if line.startswith("Name:"):
+                    pkg_name = line.split(":", 1)[1].strip()
+                    break
+            if pkg_name:
+                _metadata_cache[_normalize(pkg_name)] = (archive, dist_dir, entry_map)
+
+    # Scan all zip paths eagerly (runs once at import time)
+    for _path_entry in sys.path:
+        if _path_entry.endswith(".zip"):
+            _scan_zip(_path_entry)
+
     class ZipDistribution(metadata.Distribution):
-        def __init__(self, importer, dist_dir):
-            self._importer = importer
-            self._dist_dir = dist_dir  # relative path, e.g. "pydantic-2.10.dist-info"
+        def __init__(self, archive, dist_dir, entry_map):
+            self._archive = archive
+            self._dist_dir = dist_dir
+            self._entry_map = entry_map
 
         def read_text(self, filename):
-            # _get_files() keys are relative paths within the zip
-            rel_path = self._dist_dir + "/" + filename
-            try:
-                return self._importer.get_data(rel_path).decode("utf-8", errors="replace")
-            except (OSError, IOError):
+            key = self._dist_dir + "/" + filename
+            info = self._entry_map.get(key)
+            if info is None:
                 return None
+            compress, data_size, file_offset = info
+            raw = _read_zip_file(self._archive, compress, data_size, file_offset)
+            if raw is None:
+                return None
+            return raw.decode("utf-8", errors="replace")
 
         def locate_file(self, path):
             return pathlib.PurePosixPath(path)
 
     class ZipMetadataFinder(metadata.DistributionFinder):
-        """Finds package metadata inside zip files on sys.path.
-
-        Uses zipimport.zipimporter (already loaded by Python for module imports)
-        instead of zipfile.ZipFile (which requires re-opening the file via VFS).
-        """
+        """Finds package metadata inside zip files on sys.path."""
 
         @classmethod
         def find_distributions(cls, context=metadata.DistributionFinder.Context()):
             name = getattr(context, "name", None)
-            for path_entry in sys.path:
-                if not path_entry.endswith(".zip"):
-                    continue
-                # Get the zipimporter from cache (Python already created one for imports)
-                importer = sys.path_importer_cache.get(path_entry)
-                if importer is None:
-                    try:
-                        importer = zipimport.zipimporter(path_entry)
-                    except (OSError, zipimport.ZipImportError):
-                        continue
-                if not isinstance(importer, zipimport.zipimporter):
-                    continue
-                # _get_files() returns dict with RELATIVE path keys
-                # (e.g. "pydantic/__init__.py", "pydantic-2.10.dist-info/METADATA")
-                try:
-                    zip_files = importer._get_files()
-                except (AttributeError, Exception):
-                    continue
-                dist_dirs = set()
-                for fpath in zip_files:
-                    if ".dist-info/" in fpath:
-                        dist_dir = fpath.split(".dist-info/")[0] + ".dist-info"
-                        dist_dirs.add(dist_dir)
-                for dist_dir in sorted(dist_dirs):
-                    meta_rel = dist_dir + "/METADATA"
-                    if meta_rel not in zip_files:
-                        continue
-                    if name:
-                        try:
-                            meta = importer.get_data(meta_rel).decode("utf-8", errors="replace")
-                        except (OSError, IOError):
-                            continue
-                        pkg_name = None
-                        for line in meta.splitlines():
-                            if line.startswith("Name:"):
-                                pkg_name = line.split(":", 1)[1].strip()
-                                break
-                        if pkg_name and _normalize(name) != _normalize(pkg_name):
-                            continue
-                    yield ZipDistribution(importer, dist_dir)
+            if name:
+                key = _normalize(name)
+                info = _metadata_cache.get(key)
+                if info:
+                    archive, dist_dir, entry_map = info
+                    yield ZipDistribution(archive, dist_dir, entry_map)
+            else:
+                seen = set()
+                for key, (archive, dist_dir, entry_map) in _metadata_cache.items():
+                    if dist_dir not in seen:
+                        seen.add(dist_dir)
+                        yield ZipDistribution(archive, dist_dir, entry_map)
 
     sys.meta_path.append(ZipMetadataFinder)
 
