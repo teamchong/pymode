@@ -128,7 +128,7 @@ jobs:
             jinja2 markupsafe click pyyaml beautifulsoup4 soupsieve \
             h11 attrs starlette packaging pyparsing six certifi idna \
             charset-normalizer anyio sniffio annotated-types \
-            typing-extensions jsonpatch jsonpointer distro tblib httpcore \
+            typing-extensions typing-inspection jsonpatch jsonpointer distro tblib httpcore \
             tenacity requests httpx urllib3 \
             xxhash regex msgpack \
             pydantic==2.11.5 fastapi langchain-core langsmith langgraph \
