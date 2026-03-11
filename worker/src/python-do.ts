@@ -237,15 +237,22 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
    * Only serializable params (strings) cross the RPC boundary.
    */
   async executeCode(
-    code: string
+    code: string,
+    sitePackagesData?: ArrayBuffer,
   ): Promise<{
     stdout: string;
     stderr: string;
     exitCode: number;
   }> {
+    let pythonPath = "/stdlib";
+    if (sitePackagesData) pythonPath += ":/stdlib/site-packages.zip";
+    if (extensionPackagesBin) pythonPath += ":/stdlib/extension-site-packages.zip";
     return this.run(
       ["python", "-S", "-c", "import _wasi_compat\n" + code],
-      { PYTHONPATH: "/stdlib", PYTHONDONTWRITEBYTECODE: "1", PYTHONNOUSERSITE: "1" },
+      { PYTHONPATH: pythonPath, PYTHONDONTWRITEBYTECODE: "1", PYTHONNOUSERSITE: "1" },
+      undefined,
+      undefined,
+      sitePackagesData,
     );
   }
 

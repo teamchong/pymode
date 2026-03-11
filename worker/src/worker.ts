@@ -663,7 +663,7 @@ export default {
       if (env.PYTHON_DO) {
         const doId = env.PYTHON_DO.idFromName("default");
         const pythonDO = env.PYTHON_DO.get(doId) as any;
-        const result = await pythonDO.executeCode(code);
+        const result = await pythonDO.executeCode(code, sitePackagesData);
 
         if (result.exitCode === 0) {
           return textResponse(result.stdout || "(empty output)\n");
