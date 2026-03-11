@@ -356,6 +356,25 @@ async function main() {
     }
   }
 
+  // Inject bridge shims for native C/Zig extensions compiled into python.wasm.
+  // PyPI packages use relative imports (e.g. `from ._xxhash import ...`) but our
+  // native modules are registered as top-level builtins. These shims redirect the
+  // relative import to the top-level builtin module.
+  const nativeBridges: Record<string, string> = {
+    "xxhash/_xxhash.py": "import _xxhash as _mod; import sys; sys.modules[__name__] = _mod",
+    "regex/_regex.py": "import _regex as _mod; import sys; sys.modules[__name__] = _mod",
+    "msgpack/_cmsgpack.py": "import _cmsgpack as _mod; import sys; sys.modules[__name__] = _mod",
+  };
+  for (const [bridgePath, bridgeCode] of Object.entries(nativeBridges)) {
+    const pkgDir = bridgePath.split("/")[0];
+    // Only inject if the package is actually bundled
+    const hasPkg = [...allFiles.keys()].some((k) => k.startsWith(pkgDir + "/"));
+    if (hasPkg && !allFiles.has(bridgePath)) {
+      allFiles.set(bridgePath, Buffer.from(bridgeCode, "utf-8"));
+      console.log(`  Injected native bridge: ${bridgePath}`);
+    }
+  }
+
   // Create the output zip (ZIP_STORED)
   fs.mkdirSync(path.dirname(output), { recursive: true });
   const sortedFiles: [string, Buffer][] = [...allFiles.entries()].sort(

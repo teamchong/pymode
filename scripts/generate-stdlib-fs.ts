@@ -365,6 +365,7 @@ const POLYFILL_FILES = [
     "zlib.py",
     "_wasi_compat.py",
     "multiprocessing/__init__.py",
+    "ormsgpack.py",
 ];
 
 function collectFiles(): Record<string, string> {
