@@ -495,7 +495,42 @@ int can_elide_temp_unary(PyArrayObject *m1) {
  */
 static int _blas_supports_fpe = 0;
 int npy_blas_supports_fpe(void) { return _blas_supports_fpe; }
-void npy_set_blas_supports_fpe(int val) { _blas_supports_fpe = val; }
+int npy_set_blas_supports_fpe(int val) { _blas_supports_fpe = val; return 0; }
+
+/*
+ * C++ exception ABI for wasm32-wasi.
+ *
+ * WASI has no native C++ exception support (no stack unwinding, no personality
+ * routines). zig cc provides libc++ but NOT libc++abi for the wasm32-wasi target.
+ * These functions implement the Itanium C++ ABI exception interface — since
+ * wasm32-wasi cannot propagate exceptions, throw terminates the program.
+ *
+ * Referenced by: pocketfft_umath.cpp (FFT error handling), unique.cpp (sort errors)
+ */
+#include <stdlib.h>
+
+void *__cxa_allocate_exception(unsigned long thrown_size) {
+    (void)thrown_size;
+    abort();
+    return (void*)0;
+}
+
+void __cxa_throw(void *thrown_exception, void *tinfo, void (*dest)(void *)) {
+    (void)thrown_exception;
+    (void)tinfo;
+    (void)dest;
+    abort();
+}
+
+void *__cxa_begin_catch(void *exn) {
+    (void)exn;
+    abort();
+    return (void*)0;
+}
+
+void __cxa_end_catch(void) {
+    abort();
+}
 
 SCALAR
 compile_c "$BUILD_DIR/obj/_wasm_scalar_loops.c" "_wasm_scalar_loops.o"
