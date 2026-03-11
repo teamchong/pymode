@@ -300,7 +300,7 @@ if command -v wasm-opt >/dev/null 2>&1; then
     ASYNC_IMPORTS="pymode.tcp_recv,pymode.http_fetch_full,pymode.kv_get,pymode.kv_put,pymode.kv_delete,pymode.kv_multi_get,pymode.kv_multi_put,pymode.r2_get,pymode.r2_put,pymode.d1_exec,pymode.d1_batch,pymode.thread_spawn,pymode.thread_join,pymode.dl_open"
 
     info "Running wasm-opt --asyncify (async imports: tcp_recv, http_fetch, kv_*, r2_*, d1_exec)..."
-    wasm-opt -O2 --asyncify \
+    wasm-opt --asyncify \
         --enable-simd \
         --enable-nontrapping-float-to-int \
         --enable-bulk-memory \
