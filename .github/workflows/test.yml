@@ -91,7 +91,7 @@ jobs:
       - name: Build numpy WASM objects
         run: |
           if [ ! -d build/zig-wasi/Modules/numpy ] || [ "$(ls build/zig-wasi/Modules/numpy/*.o 2>/dev/null | wc -l)" -eq 0 ]; then
-            ./scripts/build-numpy-wasm.sh
+            bash scripts/build-numpy-wasm.sh
           fi
 
       - name: Cache pydantic-core build
@@ -103,12 +103,12 @@ jobs:
       - name: Build pydantic-core WASM objects
         run: |
           if [ ! -d build/recipes/pydantic-core/obj ] || [ "$(ls build/recipes/pydantic-core/obj/*.o build/recipes/pydantic-core/obj/*.a 2>/dev/null | wc -l)" -eq 0 ]; then
-            ./scripts/build-pydantic-core-wasm.sh
+            bash scripts/build-pydantic-core-wasm.sh
           fi
 
       - name: Build variant python.wasm (numpy + pydantic-core)
         run: |
-          ./scripts/build-variant.sh numpy pydantic-core
+          bash scripts/build-variant.sh numpy pydantic-core
           cp worker/src/python-numpy-pydantic-core.wasm worker/src/python.wasm
 
       - name: Install npm dependencies
