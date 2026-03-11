@@ -36,8 +36,9 @@ try {
   // @ts-ignore — conditional import, only present when zip is bundled
   sitePackagesData = require("./site-packages.zip");
   sitePackagesBin = new Uint8Array(sitePackagesData);
-} catch {
-  // No site-packages bundled
+  console.log(`[PyMode] site-packages.zip loaded: ${sitePackagesBin.length} bytes`);
+} catch (e) {
+  console.log(`[PyMode] site-packages.zip not available: ${e}`);
 }
 
 interface TcpOp {

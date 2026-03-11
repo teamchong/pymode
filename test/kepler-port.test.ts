@@ -344,13 +344,26 @@ except ImportError:
 
   it("yaml is available via site-packages.zip", async () => {
     const result = await runPython(`
+import sys, os
+# Diagnostic: check if zip is mounted and on path
+zip_path = "/stdlib/site-packages.zip"
+print(f"exists={os.path.exists(zip_path)}")
+print(f"in_path={zip_path in sys.path}")
+print(f"sys_path={sys.path}")
+try:
+    import zipimport
+    zi = zipimport.zipimporter(zip_path)
+    print(f"zipimporter_ok")
+except Exception as e:
+    print(f"zipimporter_err={e}")
 try:
     import yaml
     print("AVAILABLE")
-except ImportError:
-    print("MISSING")
+except ImportError as e:
+    print(f"MISSING: {e}")
 `);
-    expect(result.text).toBe("AVAILABLE");
+    console.log("[DIAG yaml test]", result.text, "status:", result.status);
+    expect(result.text).toContain("AVAILABLE");
   });
 });
 
