@@ -68,7 +68,7 @@ jobs:
           path: |
             build/zig-wasi/
             build/zig-wrappers/
-          key: wasm-build-${{ hashFiles('scripts/build-phase2.sh', 'scripts/build-phase2.ts', 'scripts/config.site-wasi', 'lib/wasi-shims/**', 'lib/pymode-imports/**') }}
+          key: wasm-build-${{ hashFiles('scripts/build-phase2.sh', 'scripts/build-phase2.ts', 'scripts/config.site-wasi', 'lib/wasi-shims/**', 'lib/pymode-imports/**', 'zig-modules/**', 'c-modules/**') }}
 
       - name: Build python.wasm
         run: |
@@ -82,6 +82,14 @@ jobs:
 
       - name: Generate stdlib data
         run: npx tsx scripts/generate-stdlib-fs.ts
+
+      - name: Bundle site-packages for tests
+        run: |
+          npx tsx scripts/bundle-packages.ts \
+            jinja2 markupsafe click pyyaml beautifulsoup4 soupsieve \
+            h11 attrs starlette packaging pyparsing six certifi idna \
+            charset-normalizer anyio sniffio annotated-types \
+            typing-extensions jsonpatch jsonpointer distro tblib httpcore
 
       - name: Run tests
         run: npm test

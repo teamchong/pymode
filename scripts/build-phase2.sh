@@ -270,13 +270,98 @@ if [ -f "$PYMODE_IMPORTS_DIR/pymode_imports.c" ]; then
     info "  Built Modules/pymode_imports.o"
 fi
 
+# Step 3e: Build native extension modules (C and Zig)
+ZIG_MODULES_DIR="$ROOT_DIR/zig-modules"
+C_MODULES_DIR="$ROOT_DIR/c-modules"
+NATIVE_MODULE_OBJS=""
+
+compile_c_module() {
+    local name="$1" src="$2" obj_name="$3"
+    shift 3
+    # remaining args are extra flags (-I, -D, etc.)
+    "$ZIG_WRAPPER_DIR/zig-cc" -c -Os \
+        -I"$CPYTHON_DIR/Include" \
+        -I"$CPYTHON_DIR/Include/internal" \
+        -I"$BUILD_DIR" \
+        "$@" \
+        "$src" -o "$BUILD_DIR/Modules/$obj_name"
+}
+
+register_builtin_module() {
+    local name="$1"
+    local init_func="PyInit_${name}"
+    if [ -f "$CONFIG_C" ] && ! grep -q "$init_func" "$CONFIG_C"; then
+        sedi "/\/\* -- ADDMODULE MARKER 1 --/i\\
+extern PyObject* ${init_func}(void);" "$CONFIG_C"
+        sedi "/\/\* -- ADDMODULE MARKER 2 --/i\\
+    {\"${name}\", ${init_func}}," "$CONFIG_C"
+        info "  $name registered in config.c"
+    fi
+}
+
+# _xxhash (Zig + C)
+if [ -f "$ZIG_MODULES_DIR/xxhash/module.zig" ] && [ -f "$ZIG_MODULES_DIR/xxhash/xxhash.c" ]; then
+    info "Compiling native module _xxhash..."
+    compile_c_module "_xxhash" "$ZIG_MODULES_DIR/xxhash/xxhash.c" "xxhash__xxhash.o" \
+        -DXXH_IMPLEMENTATION -DXXH_STATIC_LINKING_ONLY -I"$ZIG_MODULES_DIR/xxhash"
+    (cd "$BUILD_DIR/Modules" && zig build-obj -target wasm32-wasi -OReleaseFast -lc \
+        -I"$BUILD_DIR" -I"$CPYTHON_DIR/Include" -I"$CPYTHON_DIR/Include/internal" \
+        -I"$ZIG_MODULES_DIR/xxhash" \
+        "$ZIG_MODULES_DIR/xxhash/module.zig" --name _xxhash)
+    register_builtin_module "_xxhash"
+    NATIVE_MODULE_OBJS="$NATIVE_MODULE_OBJS Modules/_xxhash.o Modules/xxhash__xxhash.o"
+    info "  Built _xxhash"
+else
+    warn "  _xxhash sources not found, skipping"
+fi
+
+# _regex (C only)
+if [ -f "$C_MODULES_DIR/regex/_regex.c" ] && [ -f "$C_MODULES_DIR/regex/_regex_unicode.c" ]; then
+    info "Compiling native module _regex..."
+    compile_c_module "_regex" "$C_MODULES_DIR/regex/_regex.c" "_regex__regex.o" \
+        -I"$C_MODULES_DIR/regex"
+    compile_c_module "_regex" "$C_MODULES_DIR/regex/_regex_unicode.c" "_regex_unicode__regex.o" \
+        -I"$C_MODULES_DIR/regex"
+    register_builtin_module "_regex"
+    NATIVE_MODULE_OBJS="$NATIVE_MODULE_OBJS Modules/_regex__regex.o Modules/_regex_unicode__regex.o"
+    info "  Built _regex"
+else
+    warn "  _regex sources not found, skipping"
+fi
+
+# _cmsgpack (C only)
+if [ -f "$C_MODULES_DIR/msgpack/_cmsgpack.c" ]; then
+    info "Compiling native module _cmsgpack..."
+    compile_c_module "_cmsgpack" "$C_MODULES_DIR/msgpack/_cmsgpack.c" "_cmsgpack__cmsgpack.o" \
+        -I"$C_MODULES_DIR/msgpack"
+    register_builtin_module "_cmsgpack"
+    NATIVE_MODULE_OBJS="$NATIVE_MODULE_OBJS Modules/_cmsgpack__cmsgpack.o"
+    info "  Built _cmsgpack"
+else
+    warn "  _cmsgpack sources not found, skipping"
+fi
+
+# _markupsafe_speedups (C only)
+if [ -f "$C_MODULES_DIR/markupsafe/_speedups.c" ]; then
+    info "Compiling native module _markupsafe_speedups..."
+    compile_c_module "_markupsafe_speedups" "$C_MODULES_DIR/markupsafe/_speedups.c" "_speedups__markupsafe_speedups.o"
+    register_builtin_module "_markupsafe_speedups"
+    NATIVE_MODULE_OBJS="$NATIVE_MODULE_OBJS Modules/_speedups__markupsafe_speedups.o"
+    info "  Built _markupsafe_speedups"
+else
+    warn "  _markupsafe_speedups sources not found, skipping"
+fi
+
 # Step 4: Build
 info "Building CPython with zig cc (ReleaseSmall)..."
 NCPU="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
-# Patch Makefile to include pymode_imports.o in the build
-# Append to MODULE_OBJS so it gets linked into python.wasm
+# Patch Makefile to include pymode_imports.o and native modules
 echo 'MODULE_OBJS += Modules/pymode_imports.o' >> "$BUILD_DIR/Makefile"
 info "  Added Modules/pymode_imports.o to MODULE_OBJS"
+if [ -n "$NATIVE_MODULE_OBJS" ]; then
+    echo "MODULE_OBJS +=$NATIVE_MODULE_OBJS" >> "$BUILD_DIR/Makefile"
+    info "  Added native modules to MODULE_OBJS:$NATIVE_MODULE_OBJS"
+fi
 make -j"$NCPU" 2>&1 | tee "$BUILD_DIR/build.log"
 
 # Step 5: Verify python.wasm exists

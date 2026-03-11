@@ -5,6 +5,7 @@ Request flow:
   → _handler.py → this module's on_fetch() → exec(code) → Response(stdout)
 """
 
+import _wasi_compat  # noqa: F401 — polyfills os.getpid etc.
 import sys
 import io
 import traceback
@@ -16,13 +17,15 @@ def on_fetch(request, env):
     if not code:
         return Response("ready")
 
-    # Make env available to exec'd code so binding tests work
-    globals_dict = {"env": env, "__builtins__": __builtins__}
+    # Use __main__.__dict__ as globals so pickle can find functions
+    # defined in exec'd code (pickle does attribute lookup on __main__)
+    import __main__
+    __main__.__dict__["env"] = env
 
     old_stdout = sys.stdout
     sys.stdout = buf = io.StringIO()
     try:
-        exec(compile(code, "<test>", "exec"), globals_dict)
+        exec(compile(code, "<test>", "exec"), __main__.__dict__)
         output = buf.getvalue()
         return Response(output, status=200)
     except Exception:
