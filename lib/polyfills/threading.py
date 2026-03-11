@@ -199,14 +199,10 @@ _main_thread = _DummyThread()
 
 
 class Thread:
-    """Thread that runs target in a child Durable Object via pymode.parallel.
+    """Synchronous thread shim for single-threaded WASM.
 
-    When host imports are available (running in PythonDO), Thread.start()
-    spawns the target function in a separate DO with its own 30s CPU and
-    128MB memory. Thread.join() blocks until the child completes.
-
-    When host imports are unavailable (test environment), falls back to
-    running the target synchronously in the current thread.
+    Runs the target function synchronously in start(). For real parallelism
+    across Durable Objects, use pymode.parallel directly.
     """
 
     _next_ident = 2  # 1 is MainThread
@@ -220,7 +216,6 @@ class Thread:
         self._started = False
         self._alive = False
         self._ident = None
-        self._handle = None  # pymode.parallel.TaskHandle
         self._result = None
         self._error = None
 
@@ -262,27 +257,14 @@ class Thread:
             return
 
         try:
-            from pymode.parallel import spawn
-            # Run in a child DO — real parallelism
-            self._handle = spawn(self._target, *self._args, **self._kwargs)
-        except (ImportError, RuntimeError):
-            # No host imports available — run synchronously
-            try:
-                self._result = self._target(*self._args, **self._kwargs)
-            except Exception as e:
-                self._error = e
-            self._alive = False
+            self._result = self._target(*self._args, **self._kwargs)
+        except Exception as e:
+            self._error = e
+        self._alive = False
 
     def join(self, timeout=None):
         if not self._started:
             raise RuntimeError("cannot join thread before it is started")
-        if self._handle is not None:
-            try:
-                self._result = self._handle.join()
-            except RuntimeError as e:
-                self._error = e
-            self._alive = False
-            self._handle = None
         if self._error is not None:
             raise self._error
 
