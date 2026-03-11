@@ -557,7 +557,6 @@ req = requests.Request('GET', 'http://example.com', params={'q': 'test'})
 prepared = s.prepare_request(req)
 print(f"url={prepared.url}")
 `);
-    if (status !== 200) console.log("[DIAG requests]", text);
     expect(status).toBe(200);
     expect(text).toContain("ua=PyMode/1.0");
     expect(text).toContain("url=http://example.com/?q=test");

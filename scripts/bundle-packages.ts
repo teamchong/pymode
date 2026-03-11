@@ -234,6 +234,7 @@ const INCLUDE_EXTENSIONS = new Set([
   ".ini",
   ".json",
   ".toml",
+  ".pem",  // CA certificates (certifi)
 ]);
 
 function extractPyFromWheel(wheelData: Buffer): [string, Buffer][] {
