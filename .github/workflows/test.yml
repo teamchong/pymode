@@ -83,6 +83,8 @@ jobs:
             ./scripts/build-phase2.sh
           fi
           cp build/zig-wasi/python.wasm worker/src/python.wasm
+          # Copy generated sysconfigdata to cpython/Lib for generate-stdlib-fs.ts
+          cp build/zig-wasi/build/lib.wasi-wasm32-3.13/_sysconfigdata__wasi_wasm32-wasi.py cpython/Lib/ 2>/dev/null || true
 
       - name: Cache numpy build
         uses: actions/cache@v4
