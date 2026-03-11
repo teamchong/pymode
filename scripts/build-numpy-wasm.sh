@@ -130,7 +130,7 @@ cat > "$NUMPY_SRC/numpy/_core/src/common/npy_cpu_dispatch_config.h" << 'CONF'
 #define NPY_WITH_CPU_DISPATCH ""
 #define NPY_CPU_DISPATCH_DECLARE(DECL, ARGS) DECL ARGS;
 #define NPY_CPU_DISPATCH_CALL(CALL, ...) CALL
-#define NPY_CPU_DISPATCH_CALL_XB(CALL, ...) CALL
+#define NPY_CPU_DISPATCH_CALL_XB(CALL, ...) /* no SIMD on wasm32 */
 #define NPY_CPU_DISPATCH_CURFX(NAME) NAME
 #endif
 CONF
@@ -158,7 +158,7 @@ for name in _simd _umath_tests argfunc arithmetic \
 #undef NPY_CPU_DISPATCH_CALL
 #define NPY_CPU_DISPATCH_CALL(CALL, ...) CALL
 #undef NPY_CPU_DISPATCH_CALL_XB
-#define NPY_CPU_DISPATCH_CALL_XB(CALL, ...) CALL
+#define NPY_CPU_DISPATCH_CALL_XB(CALL, ...) /* no SIMD on wasm32 */
 #undef NPY_CPU_DISPATCH_CURFX
 #define NPY_CPU_DISPATCH_CURFX(NAME) NAME
 DISP
@@ -213,7 +213,7 @@ compile_c() {
 compile_cpp() {
     local src="$1" out="$2"
     local errfile="$BUILD_DIR/obj/${out}.err"
-    if zig c++ $CFLAGS -std=c++17 -Wno-missing-template-arg-list-after-template-kw -o "$BUILD_DIR/obj/$out" "$src" 2>"$errfile"; then
+    if zig c++ $CFLAGS -std=c++17 -fno-exceptions -Wno-missing-template-arg-list-after-template-kw -o "$BUILD_DIR/obj/$out" "$src" 2>"$errfile"; then
         SUCCESS=$((SUCCESS + 1))
         rm -f "$errfile"
     else
@@ -231,7 +231,7 @@ for src in alloc arrayobject array_coercion array_converter array_method \
   nditer_pywrap number refcount sequence scalarapi shape strfuncs \
   usertypes vdot npy_static_data fnv abstractdtypes dlpack \
   public_dtype_api legacy_dtype_implementation datetime datetime_strings \
-  datetime_busday datetime_busdaycal; do
+  datetime_busday datetime_busdaycal temp_elide; do
   [ -f "$NUMPY_SRC/numpy/_core/src/multiarray/${src}.c" ] && \
     compile_c "$NUMPY_SRC/numpy/_core/src/multiarray/${src}.c" "ma_${src}.o"
 done
@@ -243,7 +243,7 @@ done
 
 # Common utilities
 for src in array_assign mem_overlap npy_argparse npy_import npy_longdouble \
-  ufunc_override numpyos npy_cpu_features npy_cpu_dispatch gil_utils; do
+  ufunc_override numpyos npy_cpu_features npy_cpu_dispatch gil_utils blas_utils; do
   [ -f "$NUMPY_SRC/numpy/_core/src/common/${src}.c" ] && \
     compile_c "$NUMPY_SRC/numpy/_core/src/common/${src}.c" "cm_${src}.o"
 done
@@ -278,13 +278,10 @@ for src in "$BUILD_DIR"/processed/loops_*.dispatch.c; do
   compile_c "$src" "dp_${name}.o"
 done
 
-# C++ dispatch files (numpy 2.4+ moved some dispatch to C++)
-for src in loops_trigonometric.dispatch.cpp loops_logical.dispatch.cpp; do
-  if [ -f "$NUMPY_SRC/numpy/_core/src/umath/$src" ]; then
-    name=$(basename "$src" .cpp)
-    compile_cpp "$NUMPY_SRC/numpy/_core/src/umath/$src" "dp_${name}.o"
-  fi
-done
+# C++ dispatch files — skipped for wasm32-wasi:
+# loops_trigonometric.dispatch.cpp requires unprocessed loops.h.src templates
+# loops_logical.dispatch.cpp requires Google Highway SIMD (hwy/highway.h)
+# These are SIMD-optimized paths; the baseline scalar loops (loops.c) cover all ops.
 
 # C++ files (multiarray)
 compile_cpp "$NUMPY_SRC/numpy/_core/src/multiarray/einsum.cpp" "ma_einsum.o"
@@ -322,7 +319,7 @@ RANDOM_CFLAGS="-target wasm32-wasi -c -Os -DNDEBUG \
   -I$CPYTHON/Include -I$CPYTHON/Include/cpython -I$PYCONFIG_DIR \
   -I$NUMPY_SRC/numpy/_core/include -I$NUMPY_SRC/numpy/_core/src/common \
   -I$NUMPY_SRC/numpy/random/src -I$NUMPY_SRC/numpy/random \
-  -I$BUILD_DIR -Wno-macro-redefined"
+  -I$BUILD_DIR -I$BUILD_DIR/gen -Wno-macro-redefined"
 
 # Use compile_c for random sources too (with error visibility)
 SAVE_CFLAGS="$CFLAGS"
@@ -354,7 +351,7 @@ CYTHON_RANDOM_CFLAGS="-target wasm32-wasi -c -Os -DNDEBUG -DCYTHON_COMPRESS_STRI
   -I$CPYTHON/Include -I$CPYTHON/Include/cpython -I$PYCONFIG_DIR \
   -I$NUMPY_SRC/numpy/_core/include -I$NUMPY_SRC/numpy/_core/src/common \
   -I$NUMPY_SRC/numpy/random/src -I$NUMPY_SRC/numpy/random \
-  -I$BUILD_DIR -Wno-macro-redefined -Wno-implicit-function-declaration"
+  -I$BUILD_DIR -I$BUILD_DIR/gen -Wno-macro-redefined -Wno-implicit-function-declaration"
 
 CYTHON_CMD=""
 if command -v cython3 &>/dev/null; then
@@ -386,11 +383,11 @@ fi
 echo "  Compiling numpy.fft..."
 FFT_SRC="$NUMPY_SRC/numpy/fft/_pocketfft_umath.cpp"
 if [ -f "$FFT_SRC" ]; then
-  FFT_CFLAGS="-target wasm32-wasi -c -Os -DNDEBUG -std=c++17 \
+  FFT_CFLAGS="-target wasm32-wasi -c -Os -DNDEBUG -std=c++17 -fno-exceptions \
     -Drestrict=__restrict__ \
     -I$CPYTHON/Include -I$CPYTHON/Include/cpython -I$PYCONFIG_DIR \
     -I$NUMPY_SRC/numpy/_core/include -I$NUMPY_SRC/numpy/_core/src/common \
-    -I$NUMPY_SRC/numpy/fft -I$BUILD_DIR \
+    -I$NUMPY_SRC/numpy/fft -I$BUILD_DIR -I$BUILD_DIR/gen \
     -Wno-macro-redefined -Wno-missing-template-arg-list-after-template-kw"
   FFT_ERR="$BUILD_DIR/obj/fft_pocketfft_umath.o.err"
   if zig c++ $FFT_CFLAGS -o "$BUILD_DIR/obj/fft_pocketfft_umath.o" "$FFT_SRC" 2>"$FFT_ERR"; then
@@ -402,6 +399,80 @@ if [ -f "$FFT_SRC" ]; then
     FAIL=$((FAIL + 1))
   fi
 fi
+
+# Scalar implementations for ufunc loops that numpy's C++ SIMD dispatch files
+# (loops_trigonometric.dispatch.cpp, loops_logical.dispatch.cpp) would normally
+# provide. On wasm32-wasi there is no SIMD hardware, so we compile the baseline
+# scalar versions directly. These are the same algorithms as numpy's #else paths.
+cat > "$BUILD_DIR/obj/_wasm_scalar_loops.c" << 'SCALAR'
+#include "numpy/npy_common.h"
+#include "numpy/npy_math.h"
+
+/* Boolean ufunc loops (from loops_logical.dispatch.cpp scalar path) */
+void BOOL_logical_and(char **args, npy_intp const *dimensions, npy_intp const *steps, void *data) {
+    char *ip1=args[0], *ip2=args[1], *op=args[2];
+    npy_intp is1=steps[0], is2=steps[1], os=steps[2], n=dimensions[0];
+    for (npy_intp i=0; i<n; i++, ip1+=is1, ip2+=is2, op+=os)
+        *(npy_bool*)op = (*(npy_bool*)ip1 && *(npy_bool*)ip2);
+}
+void BOOL_logical_or(char **args, npy_intp const *dimensions, npy_intp const *steps, void *data) {
+    char *ip1=args[0], *ip2=args[1], *op=args[2];
+    npy_intp is1=steps[0], is2=steps[1], os=steps[2], n=dimensions[0];
+    for (npy_intp i=0; i<n; i++, ip1+=is1, ip2+=is2, op+=os)
+        *(npy_bool*)op = (*(npy_bool*)ip1 || *(npy_bool*)ip2);
+}
+void BOOL_logical_not(char **args, npy_intp const *dimensions, npy_intp const *steps, void *data) {
+    char *ip1=args[0], *op=args[1];
+    npy_intp is1=steps[0], os=steps[1], n=dimensions[0];
+    for (npy_intp i=0; i<n; i++, ip1+=is1, op+=os)
+        *(npy_bool*)op = !*(npy_bool*)ip1;
+}
+void BOOL_absolute(char **args, npy_intp const *dimensions, npy_intp const *steps, void *data) {
+    char *ip1=args[0], *op=args[1];
+    npy_intp is1=steps[0], os=steps[1], n=dimensions[0];
+    for (npy_intp i=0; i<n; i++, ip1+=is1, op+=os)
+        *(npy_bool*)op = (*(npy_bool*)ip1 != 0);
+}
+
+/* Trigonometric ufunc loops (from loops_trigonometric.dispatch.cpp scalar path) */
+void FLOAT_sin(char **args, npy_intp const *dimensions, npy_intp const *steps, void *data) {
+    npy_intp n=dimensions[0], is=steps[0], os=steps[1];
+    char *ip=args[0], *op=args[1];
+    for (npy_intp i=0; i<n; i++, ip+=is, op+=os)
+        *(float*)op = npy_sinf(*(const float*)ip);
+}
+void FLOAT_cos(char **args, npy_intp const *dimensions, npy_intp const *steps, void *data) {
+    npy_intp n=dimensions[0], is=steps[0], os=steps[1];
+    char *ip=args[0], *op=args[1];
+    for (npy_intp i=0; i<n; i++, ip+=is, op+=os)
+        *(float*)op = npy_cosf(*(const float*)ip);
+}
+void DOUBLE_sin(char **args, npy_intp const *dimensions, npy_intp const *steps, void *data) {
+    npy_intp n=dimensions[0], is=steps[0], os=steps[1];
+    char *ip=args[0], *op=args[1];
+    for (npy_intp i=0; i<n; i++, ip+=is, op+=os)
+        *(double*)op = npy_sin(*(const double*)ip);
+}
+void DOUBLE_cos(char **args, npy_intp const *dimensions, npy_intp const *steps, void *data) {
+    npy_intp n=dimensions[0], is=steps[0], os=steps[1];
+    char *ip=args[0], *op=args[1];
+    for (npy_intp i=0; i<n; i++, ip+=is, op+=os)
+        *(double*)op = npy_cos(*(const double*)ip);
+}
+void FLOAT_tanh(char **args, npy_intp const *dimensions, npy_intp const *steps, void *data) {
+    npy_intp n=dimensions[0], is=steps[0], os=steps[1];
+    char *ip=args[0], *op=args[1];
+    for (npy_intp i=0; i<n; i++, ip+=is, op+=os)
+        *(float*)op = npy_tanhf(*(const float*)ip);
+}
+void DOUBLE_tanh(char **args, npy_intp const *dimensions, npy_intp const *steps, void *data) {
+    npy_intp n=dimensions[0], is=steps[0], os=steps[1];
+    char *ip=args[0], *op=args[1];
+    for (npy_intp i=0; i<n; i++, ip+=is, op+=os)
+        *(double*)op = npy_tanh(*(const double*)ip);
+}
+SCALAR
+compile_c "$BUILD_DIR/obj/_wasm_scalar_loops.c" "_wasm_scalar_loops.o"
 
 echo "  Compiled: $SUCCESS files, Failed: $FAIL files"
 if [ $FAIL -gt 0 ]; then
