@@ -191,7 +191,8 @@ compile_c() {
     else
         FAIL=$((FAIL + 1))
         FAILED_FILES="$FAILED_FILES $out"
-        echo "    FAIL: $out ($(head -1 "$errfile"))"
+        echo "    FAIL: $out"
+        grep "error:" "$errfile" | head -3
     fi
 }
 
@@ -204,7 +205,8 @@ compile_cpp() {
     else
         FAIL=$((FAIL + 1))
         FAILED_FILES="$FAILED_FILES $out"
-        echo "    FAIL: $out ($(head -1 "$errfile"))"
+        echo "    FAIL: $out"
+        grep "error:" "$errfile" | head -3
     fi
 }
 
