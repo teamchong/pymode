@@ -32,7 +32,7 @@ result = {
 }
 print(json.dumps(result))
 `);
-    expect(status).toBe(200);
+    expect(status, text.slice(0, 500)).toBe(200);
     const result = JSON.parse(text);
     expect(result.count).toBe(20);
     expect(result.mean).toBeCloseTo(26.43, 1);
@@ -66,7 +66,7 @@ result = {
 }
 print(json.dumps(result))
 `);
-    expect(status).toBe(200);
+    expect(status, text.slice(0, 500)).toBe(200);
     const result = JSON.parse(text);
     expect(result.sma_len).toBe(16);
     expect(result.sma_last).toBeGreaterThan(160);
@@ -109,7 +109,7 @@ result = {
 }
 print(json.dumps(result))
 `);
-    expect(status).toBe(200);
+    expect(status, text.slice(0, 500)).toBe(200);
     const result = JSON.parse(text);
     expect(result.r_squared).toBeGreaterThan(0.99);
     expect(result.predicted_1500sqft).toBeGreaterThan(280);
@@ -150,7 +150,7 @@ result = {
 }
 print(json.dumps(result))
 `);
-    expect(status).toBe(200);
+    expect(status, text.slice(0, 500)).toBe(200);
     const result = JSON.parse(text);
     // StandardScaler: mean should be ~0, std should be 1
     for (const m of result.scaled_means) expect(Math.abs(m)).toBeLessThan(1e-10);
@@ -186,7 +186,7 @@ result = {
 }
 print(json.dumps(result))
 `);
-    expect(status).toBe(200);
+    expect(status, text.slice(0, 500)).toBe(200);
     const result = JSON.parse(text);
     expect(result.king_queen).toBeGreaterThan(result.king_car);
     expect(result.king_queen).toBeGreaterThan(0.9);
@@ -238,7 +238,7 @@ result = {
 }
 print(json.dumps(result))
 `);
-    expect(status).toBe(200);
+    expect(status, text.slice(0, 500)).toBe(200);
     const result = JSON.parse(text);
     expect(result.output_shape).toEqual([5, 5]);
     expect(result.center_value).toBeGreaterThan(0); // center has strong edges
@@ -274,7 +274,7 @@ result = {
 }
 print(json.dumps(result))
 `);
-    expect(status).toBe(200);
+    expect(status, text.slice(0, 500)).toBe(200);
     const result = JSON.parse(text);
     expect(result.sample_count).toBe(100);
     expect(result.correlation).toBeGreaterThan(0.5); // correlated signals
@@ -323,7 +323,7 @@ for i, user in enumerate(request["users"]):
 
 print(json.dumps(response))
 `);
-    expect(status).toBe(200);
+    expect(status, text.slice(0, 500)).toBe(200);
     const result = JSON.parse(text);
     expect(result.recommendations).toHaveLength(3);
     for (const rec of result.recommendations) {
@@ -375,7 +375,7 @@ result = {
 }
 print(json.dumps(result))
 `);
-    expect(status).toBe(200);
+    expect(status, text.slice(0, 500)).toBe(200);
     const result = JSON.parse(text);
     expect(result.scores).toHaveLength(6);
     expect(result.ranking).toHaveLength(6);
@@ -404,7 +404,7 @@ result = {
 }
 print(json.dumps(result))
 `);
-    expect(status).toBe(200);
+    expect(status, text.slice(0, 500)).toBe(200);
     const result = JSON.parse(text);
     expect(result.scheme).toBe("https");
     expect(result.host).toBe("httpbin.org");
@@ -449,7 +449,7 @@ result = asdict(user)
 result["is_adult"] = user.is_adult()
 print(json.dumps(result))
 `);
-    expect(status).toBe(200);
+    expect(status, text.slice(0, 500)).toBe(200);
     const result = JSON.parse(text);
     expect(result.name).toBe("Alice");
     expect(result.is_adult).toBe(true);
@@ -486,7 +486,7 @@ result = {
 }
 print(json.dumps(result))
 `);
-    expect(status).toBe(200);
+    expect(status, text.slice(0, 500)).toBe(200);
     const result = JSON.parse(text);
     expect(result.row_count).toBe(5);
     expect(result.columns).toEqual(["name", "age", "city", "salary"]);
