@@ -89,7 +89,9 @@ jobs:
             jinja2 markupsafe click pyyaml beautifulsoup4 soupsieve \
             h11 attrs starlette packaging pyparsing six certifi idna \
             charset-normalizer anyio sniffio annotated-types \
-            typing-extensions jsonpatch jsonpointer distro tblib httpcore
+            typing-extensions jsonpatch jsonpointer distro tblib httpcore \
+            tenacity requests httpx urllib3 \
+            xxhash regex msgpack
 
       - name: Run tests
         run: npm test

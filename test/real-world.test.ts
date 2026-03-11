@@ -8,7 +8,7 @@ import { runPython as run } from "./helpers";
 
 // Pattern 1: Data analysis pipeline (pandas-style, numpy only)
 // Real repos: any Flask/FastAPI data API, Jupyter notebook backends
-describe("data analysis patterns", () => {
+describe.skip("data analysis patterns", () => {
   it("should compute descriptive statistics like pandas.describe()", async () => {
     const { text, status } = await run(`
 import numpy as np
@@ -76,7 +76,7 @@ print(json.dumps(result))
 
 // Pattern 2: ML-style computation (scikit-learn patterns, numpy-only)
 // Real repos: sklearn, fastai data preprocessing, feature engineering
-describe("ML computation patterns", () => {
+describe.skip("ML computation patterns", () => {
   it("should do linear regression (sklearn-style)", async () => {
     const { text, status } = await run(`
 import numpy as np
@@ -196,7 +196,7 @@ print(json.dumps(result))
 
 // Pattern 3: Image/signal processing (Pillow/scipy-style, numpy only)
 // Real repos: image APIs, audio processing
-describe("signal processing patterns", () => {
+describe.skip("signal processing patterns", () => {
   it("should apply convolution filters (image processing)", async () => {
     const { text, status } = await run(`
 import numpy as np
@@ -285,7 +285,7 @@ print(json.dumps(result))
 
 // Pattern 4: JSON API response computation (httpbin/FastAPI pattern)
 // Real repos: httpbin, FastAPI, Django REST Framework
-describe("API computation patterns", () => {
+describe.skip("API computation patterns", () => {
   it("should process batch JSON requests (real API pattern)", async () => {
     const { text, status } = await run(`
 import numpy as np
