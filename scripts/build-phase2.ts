@@ -617,17 +617,13 @@ exec zig cc -target wasm32-wasi -E "\${ARGS[@]}"
       "pymode.r2_get,pymode.r2_put,pymode.d1_exec,pymode.d1_batch," +
       "pymode.thread_spawn,pymode.thread_join,pymode.dl_open";
 
-    // Use -O1 before --asyncify: enough optimization to prevent V8 stack overflow
-    // from deep unoptimized call chains, but less aggressive than -O2 which
-    // inlines functions and breaks asyncify's rewind instrumentation.
-    // IMPORTANT: No post-asyncify optimization — it invalidates saved stack data.
     info("Running wasm-opt --asyncify (async imports: tcp_recv, http_fetch, kv_*, r2_*, d1_exec)...");
     copyFileSync(pythonWasm, pythonWasm + ".pre-asyncify");
     const asyncified = pythonWasm + ".asyncified";
     const asyncifyResult = spawnSync(
       "wasm-opt",
       [
-        "-O1",
+        "-O2",
         "--asyncify",
         "--enable-simd",
         "--enable-nontrapping-float-to-int",

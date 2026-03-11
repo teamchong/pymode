@@ -111,24 +111,15 @@ export class AsyncifyRuntime {
       await this.pendingPromise;
       this.pendingPromise = null;
 
-      // Reset the asyncify data buffer for rewinding
-      const view = new DataView(this.memory!.buffer);
-      view.setInt32(this.dataAddr, this.dataAddr + 8, true);
-      view.setInt32(this.dataAddr + 4, this.dataAddr + ASYNCIFY_DATA_SIZE, true);
+      // DO NOT reset the data buffer pointers here. The rewind reads the
+      // saved call path backwards from where the unwind left the pointer.
+      // Resetting to dataAddr+8 would erase the read position.
 
       // Start rewinding — re-enter the function, it will fast-forward
       // to the point where it suspended
       this.exports.asyncify_start_rewind(this.dataAddr);
       this.state = AsyncifyState.REWINDING;
-      try {
-        result = fn(...args);
-      } catch (e: unknown) {
-        console.error(`[Asyncify] rewind #${iterations} exception:`, e);
-        throw e;
-      }
-      if (this.state === AsyncifyState.REWINDING) {
-        console.error(`[Asyncify] rewind #${iterations} FAILED: state still REWINDING after fn() returned`);
-      }
+      result = fn(...args);
     }
 
     return result;
