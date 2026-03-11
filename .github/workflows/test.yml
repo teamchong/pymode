@@ -40,8 +40,10 @@ jobs:
 
       - name: Install wasmtime
         run: |
-          curl https://wasmtime.dev/install.sh -sSf | bash
-          echo "$HOME/.wasmtime/bin" >> $GITHUB_PATH
+          WASMTIME_VERSION=29.0.1
+          curl -L "https://github.com/bytecodealliance/wasmtime/releases/download/v${WASMTIME_VERSION}/wasmtime-v${WASMTIME_VERSION}-x86_64-linux.tar.xz" | tar xJ
+          sudo mv wasmtime-v${WASMTIME_VERSION}-x86_64-linux/wasmtime /usr/local/bin/
+          wasmtime --version
 
       - name: Install binaryen (wasm-opt)
         run: |
