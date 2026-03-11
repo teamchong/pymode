@@ -99,7 +99,9 @@ export class AsyncifyRuntime {
     let result = fn(...args);
 
     // Loop: each iteration handles one async suspension
+    let iterations = 0;
     while (this.state === AsyncifyState.UNWINDING) {
+      iterations++;
       // Finalize the unwind — WASM stack has been saved
       this.exports.asyncify_stop_unwind();
       this.state = AsyncifyState.NONE;
@@ -118,7 +120,15 @@ export class AsyncifyRuntime {
       // to the point where it suspended
       this.exports.asyncify_start_rewind(this.dataAddr);
       this.state = AsyncifyState.REWINDING;
-      result = fn(...args);
+      try {
+        result = fn(...args);
+      } catch (e: unknown) {
+        console.error(`[Asyncify] rewind #${iterations} exception:`, e);
+        throw e;
+      }
+      if (this.state === AsyncifyState.REWINDING) {
+        console.error(`[Asyncify] rewind #${iterations} FAILED: state still REWINDING after fn() returned`);
+      }
     }
 
     return result;

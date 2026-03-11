@@ -666,6 +666,9 @@ export default {
         const doId = env.PYTHON_DO.idFromName("default");
         const pythonDO = env.PYTHON_DO.get(doId) as any;
         const result = await pythonDO.executeCode(code);
+        if (result.exitCode !== 0) {
+          console.error(`[PyMode] executeCode failed: exitCode=${result.exitCode} stdout=${JSON.stringify(result.stdout?.slice(0, 200))} stderr=${JSON.stringify(result.stderr?.slice(0, 500))}`);
+        }
 
         if (result.exitCode === 0) {
           return textResponse(result.stdout || "(empty output)\n");
