@@ -16,7 +16,7 @@ import langgraph
 print(f"version={langgraph.__version__}")
 print(f"has_version={len(langgraph.__version__) > 0}")
 `);
-    expect(status).toBe(200);
+    expect(status, text.slice(0, 500)).toBe(200);
     expect(text).toContain("has_version=True");
   });
 });
@@ -50,7 +50,7 @@ print(f"has_increment={'increment' in graph.nodes}")
 print(f"has_greet={'greet' in graph.nodes}")
 print(f"type={type(graph).__name__}")
 `);
-    expect(status).toBe(200);
+    expect(status, text.slice(0, 500)).toBe(200);
     expect(text).toContain("has_increment=True");
     expect(text).toContain("has_greet=True");
     expect(text).toContain("type=StateGraph");
@@ -85,7 +85,7 @@ result = app.invoke({"value": 10})
 print(f"result={result['value']}")
 print(f"type={type(app).__name__}")
 `);
-    expect(status).toBe(200);
+    expect(status, text.slice(0, 500)).toBe(200);
     expect(text).toContain("result=13");
     expect(text).toContain("type=CompiledStateGraph");
   });
@@ -134,7 +134,7 @@ print(f"success={r1['output']}")
 r2 = app.invoke({"input": "error occurred", "output": ""})
 print(f"error={r2['output']}")
 `);
-    expect(status).toBe(200);
+    expect(status, text.slice(0, 500)).toBe(200);
     expect(text).toContain("success=OK: all good");
     expect(text).toContain("error=ERROR: error occurred");
   });
@@ -154,7 +154,7 @@ print(f"checkpoint_type={type(cp).__name__}")
 print(f"has_id={'id' in cp}")
 print(f"has_ts={'ts' in cp}")
 `);
-    expect(status).toBe(200);
+    expect(status, text.slice(0, 500)).toBe(200);
     expect(text).toContain("saver_type=InMemorySaver");
     expect(text).toContain("has_id=True");
   });

@@ -16,7 +16,7 @@ print(f"has_from_openai={hasattr(instructor, 'from_openai')}")
 print(f"has_patch={hasattr(instructor, 'patch')}")
 print(f"has_mode={hasattr(instructor, 'Mode')}")
 `);
-    expect(status).toBe(200);
+    expect(status, text.slice(0, 500)).toBe(200);
     expect(text).toContain("has_from_openai=True");
     expect(text).toContain("has_mode=True");
   });

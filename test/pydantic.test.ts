@@ -93,7 +93,7 @@ print(f"routes={routes}")
 print(f"has_items={'items' in str(routes)}")
 print(f"app_type={type(app).__name__}")
 `);
-    expect(status).toBe(200);
+    expect(status, text.slice(0, 500)).toBe(200);
     expect(text).toContain("has_items=True");
     expect(text).toContain("app_type=FastAPI");
   });
