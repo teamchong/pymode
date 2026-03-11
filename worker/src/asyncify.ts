@@ -130,12 +130,32 @@ export class AsyncifyRuntime {
       view.setInt32(this.dataAddr, this.dataAddr + 8, true);
       view.setInt32(this.dataAddr + 4, this.dataAddr + ASYNCIFY_DATA_SIZE, true);
 
+      // Verify buffer integrity before rewind
+      const checkView = new DataView(this.memory!.buffer);
+      const bufStart = checkView.getInt32(this.dataAddr, true);
+      const bufEnd = checkView.getInt32(this.dataAddr + 4, true);
+      console.error(`[Asyncify] pre-rewind buffer: start=${bufStart} end=${bufEnd} expected_start=${this.dataAddr + 8}`);
+
+      // Dump first 32 bytes of saved data for comparison
+      const mem = new Uint8Array(this.memory!.buffer);
+      const preview = Array.from(mem.subarray(this.dataAddr + 8, this.dataAddr + 40))
+        .map(b => b.toString(16).padStart(2, '0')).join(' ');
+      console.error(`[Asyncify] saved data preview: ${preview}`);
+
       // Start rewinding — re-enter the function, it will fast-forward
       // to the point where it suspended
       this.exports.asyncify_start_rewind(this.dataAddr);
       console.error(`[Asyncify] after start_rewind: wasmState=${getWasmState?.()}`);
       this.state = AsyncifyState.REWINDING;
-      result = fn(...args);
+      try {
+        result = fn(...args);
+      } catch (rewindErr: unknown) {
+        console.error(`[Asyncify] REWIND EXCEPTION: ${rewindErr}`);
+        if (rewindErr instanceof Error) {
+          console.error(`[Asyncify] stack: ${rewindErr.stack}`);
+        }
+        throw rewindErr;
+      }
       console.error(`[Asyncify] after rewind fn: jsState=${this.state} wasmState=${getWasmState?.()}`);
     }
 
