@@ -450,6 +450,19 @@ export const stdlibFS: Record<string, string> = JSON.parse(
     console.log("Done:");
     console.log(`  ${OUTPUT_DAT} (${fileCount} files, ${datKb}KB)`);
     console.log(`  ${OUTPUT_TS} (${tsBytes} bytes — loader only)`);
+
+    // Ensure zip Data modules exist so static ESM imports in worker.ts
+    // and stdlib-bin.ts resolve at bundle time. Real content is written
+    // by scripts/bundle-packages.ts before tests or deploy.
+    for (const zipName of ["site-packages.zip", "extension-site-packages.zip"]) {
+        const zipPath = path.join(ROOT_DIR, "worker", "src", zipName);
+        if (!fs.existsSync(zipPath)) {
+            const eocd = Buffer.alloc(22);
+            eocd.writeUInt32LE(0x06054b50, 0); // End of Central Directory
+            fs.writeFileSync(zipPath, eocd);
+            console.log(`  ${zipPath} (empty zip — no packages bundled yet)`);
+        }
+    }
 }
 
 main();

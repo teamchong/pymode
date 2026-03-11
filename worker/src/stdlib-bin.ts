@@ -14,12 +14,9 @@ for (const [path, content] of Object.entries(stdlibFS)) {
 
 export const stdlibDirIndex = buildDirIndex(stdlibBin);
 
-// Optional: extension site-packages (e.g. numpy Python layer).
-// Loaded once at module scope, shared across all consumers.
-export let extensionPackagesBin: Uint8Array | undefined;
-try {
-  // @ts-ignore — conditional import, only present for extension variants
-  extensionPackagesBin = new Uint8Array(require("./extension-site-packages.zip"));
-} catch {
-  // No extension packages
-}
+// Extension site-packages (e.g. numpy Python layer).
+// Loaded as Data module; generate-stdlib-fs.ts creates an empty zip if absent.
+// @ts-ignore — Data module import (ArrayBuffer)
+import extensionZip from "./extension-site-packages.zip";
+export const extensionPackagesBin: Uint8Array | undefined =
+  extensionZip.byteLength > 22 ? new Uint8Array(extensionZip) : undefined;

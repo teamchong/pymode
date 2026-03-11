@@ -27,7 +27,6 @@ result = t.render(users=[
 ])
 print(result)
 `);
-    if (status !== 200) console.log("[DIAG jinja2]", text);
     expect(status).toBe(200);
     expect(text).toBe("ALICE: 95;BOB: 87;");
   });
