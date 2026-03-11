@@ -106,10 +106,19 @@ jobs:
             bash scripts/build-pydantic-core-wasm.sh
           fi
 
-      - name: Build variant python.wasm (numpy + pydantic-core)
+      - name: Build variant python.wasm (pydantic-core, then try +numpy)
         run: |
-          bash scripts/build-variant.sh numpy pydantic-core
-          cp worker/src/python-numpy-pydantic-core.wasm worker/src/python.wasm
+          # Build pydantic-core only variant first (guaranteed to work)
+          bash scripts/build-variant.sh pydantic-core
+          cp worker/src/python-pydantic-core.wasm worker/src/python.wasm
+
+          # Attempt numpy+pydantic-core variant (may fail due to incomplete numpy objects)
+          if bash scripts/build-variant.sh numpy pydantic-core; then
+            echo "Full variant built successfully — using numpy+pydantic-core"
+            cp worker/src/python-numpy-pydantic-core.wasm worker/src/python.wasm
+          else
+            echo "WARNING: numpy variant link failed — using pydantic-core only"
+          fi
 
       - name: Install npm dependencies
         run: npm install

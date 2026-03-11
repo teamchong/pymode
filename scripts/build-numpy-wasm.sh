@@ -67,7 +67,7 @@ python3 numpy/_core/code_generators/generate_umath_doc.py -o "$BUILD_DIR/gen/_um
 # Step 2: Process .c.src templates
 echo "  Processing templates..."
 mkdir -p "$BUILD_DIR/processed"
-for f in $(find numpy/_core/src -name "*.c.src" -o -name "*.h.src"); do
+for f in $(find numpy/_core/src -name "*.c.src" -o -name "*.h.src" -o -name "*.inc.src"); do
     outname=$(basename "$f" .src)
     python3 numpy/_build_utils/process_src_template.py "$f" -o "$BUILD_DIR/processed/$outname" 2>/dev/null
 done
@@ -181,21 +181,30 @@ SUCCESS=0
 FAIL=0
 mkdir -p "$BUILD_DIR/obj"
 
+FAILED_FILES=""
 compile_c() {
     local src="$1" out="$2"
-    if zig cc $CFLAGS -o "$BUILD_DIR/obj/$out" "$src" 2>/dev/null; then
+    local errfile="$BUILD_DIR/obj/${out}.err"
+    if zig cc $CFLAGS -o "$BUILD_DIR/obj/$out" "$src" 2>"$errfile"; then
         SUCCESS=$((SUCCESS + 1))
+        rm -f "$errfile"
     else
         FAIL=$((FAIL + 1))
+        FAILED_FILES="$FAILED_FILES $out"
+        echo "    FAIL: $out ($(head -1 "$errfile"))"
     fi
 }
 
 compile_cpp() {
     local src="$1" out="$2"
-    if zig c++ $CFLAGS -std=c++17 -Wno-missing-template-arg-list-after-template-kw -o "$BUILD_DIR/obj/$out" "$src" 2>/dev/null; then
+    local errfile="$BUILD_DIR/obj/${out}.err"
+    if zig c++ $CFLAGS -std=c++17 -Wno-missing-template-arg-list-after-template-kw -o "$BUILD_DIR/obj/$out" "$src" 2>"$errfile"; then
         SUCCESS=$((SUCCESS + 1))
+        rm -f "$errfile"
     else
         FAIL=$((FAIL + 1))
+        FAILED_FILES="$FAILED_FILES $out"
+        echo "    FAIL: $out ($(head -1 "$errfile"))"
     fi
 }
 
@@ -233,10 +242,16 @@ for src in ufunc_type_resolution extobj legacy_array_method override \
 done
 
 # npymath (numpy's internal math library)
-for src in npy_math halffloat; do
-  compile_c "$NUMPY_SRC/numpy/_core/src/npymath/${src}.c" "nm_${src}.o"
-done
-compile_c "$BUILD_DIR/processed/ieee754.c" "nm_ieee754.o"
+compile_c "$NUMPY_SRC/numpy/_core/src/npymath/npy_math.c" "nm_npy_math.o"
+# halffloat is C++ in numpy 2.4+
+compile_cpp "$NUMPY_SRC/numpy/_core/src/npymath/halffloat.cpp" "nm_halffloat.o"
+# ieee754 may exist as .c (processed template) or .cpp (numpy 2.4+)
+if [ -f "$BUILD_DIR/processed/ieee754.c" ]; then
+  compile_c "$BUILD_DIR/processed/ieee754.c" "nm_ieee754.o"
+fi
+if [ -f "$NUMPY_SRC/numpy/_core/src/npymath/ieee754.cpp" ] && [ ! -f "$BUILD_DIR/obj/nm_ieee754.o" ]; then
+  compile_cpp "$NUMPY_SRC/numpy/_core/src/npymath/ieee754.cpp" "nm_ieee754.o"
+fi
 compile_c "$BUILD_DIR/processed/npy_math_complex.c" "nm_npy_math_complex.o"
 compile_c "$NUMPY_SRC/numpy/_core/src/npymath/arm64_exports.c" "nm_arm64.o"
 
@@ -250,8 +265,17 @@ for src in "$BUILD_DIR"/processed/loops_*.dispatch.c; do
   compile_c "$src" "dp_${name}.o"
 done
 
+# C++ dispatch files (numpy 2.4+ moved some dispatch to C++)
+for src in loops_trigonometric.dispatch.cpp loops_logical.dispatch.cpp; do
+  if [ -f "$NUMPY_SRC/numpy/_core/src/umath/$src" ]; then
+    name=$(basename "$src" .cpp)
+    compile_cpp "$NUMPY_SRC/numpy/_core/src/umath/$src" "dp_${name}.o"
+  fi
+done
+
 # C++ files (multiarray)
 compile_cpp "$NUMPY_SRC/numpy/_core/src/multiarray/einsum.cpp" "ma_einsum.o"
+compile_cpp "$NUMPY_SRC/numpy/_core/src/multiarray/unique.cpp" "ma_unique.o"
 compile_cpp "$NUMPY_SRC/numpy/_core/src/multiarray/stringdtype/casts.cpp" "sd_casts.o"
 
 # C++ files (umath)
@@ -286,50 +310,29 @@ RANDOM_CFLAGS="-target wasm32-wasi -c -Os -DNDEBUG \
   -I$NUMPY_SRC/numpy/random/src -I$NUMPY_SRC/numpy/random \
   -I$BUILD_DIR -Wno-macro-redefined"
 
-# Pure C random sources
+# Use compile_c for random sources too (with error visibility)
+SAVE_CFLAGS="$CFLAGS"
+CFLAGS="$RANDOM_CFLAGS"
+
 for src in mt19937 pcg64 philox sfc64 randomkit; do
-  if [ -f "$NUMPY_SRC/numpy/random/src/${src}/${src}.c" ]; then
-    if zig cc $RANDOM_CFLAGS -o "$BUILD_DIR/obj/random_${src}.o" \
-        "$NUMPY_SRC/numpy/random/src/${src}/${src}.c" 2>/dev/null; then
-      SUCCESS=$((SUCCESS + 1))
-    else
-      FAIL=$((FAIL + 1))
-    fi
-  fi
+  [ -f "$NUMPY_SRC/numpy/random/src/${src}/${src}.c" ] && \
+    compile_c "$NUMPY_SRC/numpy/random/src/${src}/${src}.c" "random_${src}.o"
 done
 
-# MT19937 jump table
-if [ -f "$NUMPY_SRC/numpy/random/src/mt19937/mt19937-jump.c" ]; then
-  if zig cc $RANDOM_CFLAGS -o "$BUILD_DIR/obj/random_mt19937_jump.o" \
-      "$NUMPY_SRC/numpy/random/src/mt19937/mt19937-jump.c" 2>/dev/null; then
-    SUCCESS=$((SUCCESS + 1))
-  else
-    FAIL=$((FAIL + 1))
-  fi
-fi
+[ -f "$NUMPY_SRC/numpy/random/src/mt19937/mt19937-jump.c" ] && \
+  compile_c "$NUMPY_SRC/numpy/random/src/mt19937/mt19937-jump.c" "random_mt19937_jump.o"
 
-# Distribution C files
 for src in distributions logfactorial random_hypergeometric random_mvhg_count random_mvhg_marginals; do
-  if [ -f "$NUMPY_SRC/numpy/random/src/distributions/${src}.c" ]; then
-    if zig cc $RANDOM_CFLAGS -o "$BUILD_DIR/obj/random_dist_${src}.o" \
-        "$NUMPY_SRC/numpy/random/src/distributions/${src}.c" 2>/dev/null; then
-      SUCCESS=$((SUCCESS + 1))
-    else
-      FAIL=$((FAIL + 1))
-    fi
-  fi
+  [ -f "$NUMPY_SRC/numpy/random/src/distributions/${src}.c" ] && \
+    compile_c "$NUMPY_SRC/numpy/random/src/distributions/${src}.c" "random_dist_${src}.o"
 done
 
-# Legacy distributions
 if [ -f "$NUMPY_SRC/numpy/random/src/legacy/legacy-distributions.c" ]; then
-  if zig cc $RANDOM_CFLAGS -I"$NUMPY_SRC/numpy/random/src/legacy" \
-      -o "$BUILD_DIR/obj/random_legacy_distributions.o" \
-      "$NUMPY_SRC/numpy/random/src/legacy/legacy-distributions.c" 2>/dev/null; then
-    SUCCESS=$((SUCCESS + 1))
-  else
-    FAIL=$((FAIL + 1))
-  fi
+  CFLAGS="$RANDOM_CFLAGS -I$NUMPY_SRC/numpy/random/src/legacy"
+  compile_c "$NUMPY_SRC/numpy/random/src/legacy/legacy-distributions.c" "random_legacy_distributions.o"
 fi
+
+CFLAGS="$SAVE_CFLAGS"
 
 # Cython random modules — need cython to generate .c from .pyx
 CYTHON_RANDOM_CFLAGS="-target wasm32-wasi -c -Os -DNDEBUG -DCYTHON_COMPRESS_STRINGS=0 \
@@ -349,20 +352,17 @@ fi
 
 if [ -n "$CYTHON_CMD" ]; then
   echo "  Cythonizing random modules (using $CYTHON_CMD)..."
+  SAVE_CFLAGS="$CFLAGS"
+  CFLAGS="$CYTHON_RANDOM_CFLAGS"
   for pyx in bit_generator _common _bounded_integers _generator _mt19937 _pcg64 _sfc64 _philox mtrand; do
     PYX_FILE="$NUMPY_SRC/numpy/random/${pyx}.pyx"
     C_FILE="$NUMPY_SRC/numpy/random/${pyx}.c"
     if [ -f "$PYX_FILE" ] && [ ! -f "$C_FILE" ]; then
       $CYTHON_CMD "$PYX_FILE" -o "$C_FILE" 2>/dev/null || true
     fi
-    if [ -f "$C_FILE" ]; then
-      if zig cc $CYTHON_RANDOM_CFLAGS -o "$BUILD_DIR/obj/random_cython_${pyx}.o" "$C_FILE" 2>/dev/null; then
-        SUCCESS=$((SUCCESS + 1))
-      else
-        FAIL=$((FAIL + 1))
-      fi
-    fi
+    [ -f "$C_FILE" ] && compile_c "$C_FILE" "random_cython_${pyx}.o"
   done
+  CFLAGS="$SAVE_CFLAGS"
 else
   echo "  WARNING: Cython not found, skipping random Cython modules"
 fi
@@ -376,16 +376,21 @@ if [ -f "$FFT_SRC" ]; then
     -I$NUMPY_SRC/numpy/_core/include -I$NUMPY_SRC/numpy/_core/src/common \
     -I$NUMPY_SRC/numpy/fft -I$BUILD_DIR \
     -Wno-macro-redefined -Wno-missing-template-arg-list-after-template-kw"
-  if zig c++ $FFT_CFLAGS -o "$BUILD_DIR/obj/fft_pocketfft_umath.o" "$FFT_SRC" 2>/dev/null; then
+  FFT_ERR="$BUILD_DIR/obj/fft_pocketfft_umath.o.err"
+  if zig c++ $FFT_CFLAGS -o "$BUILD_DIR/obj/fft_pocketfft_umath.o" "$FFT_SRC" 2>"$FFT_ERR"; then
     SUCCESS=$((SUCCESS + 1))
-    echo "  pocketfft compiled ok"
+    echo "    pocketfft compiled ok"
+    rm -f "$FFT_ERR"
   else
-    echo "  WARNING: pocketfft failed to compile"
+    echo "    FAIL: pocketfft ($(head -1 "$FFT_ERR"))"
     FAIL=$((FAIL + 1))
   fi
 fi
 
 echo "  Compiled: $SUCCESS files, Failed: $FAIL files"
+if [ $FAIL -gt 0 ]; then
+  echo "  Failed files:$FAILED_FILES"
+fi
 
 # Step 5: Link into _multiarray_umath.wasm (optional — variant builder can link instead)
 if [ "$HAS_WASM_LD" = true ]; then
