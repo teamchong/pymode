@@ -242,8 +242,9 @@ function extractPyFromWheel(wheelData: Buffer): [string, Buffer][] {
   const entries = readZip(wheelData);
 
   for (const { name, data } of entries) {
-    // Skip .dist-info metadata
-    if (name.includes(".dist-info/")) continue;
+    // Keep .dist-info/METADATA for importlib.metadata (pydantic needs it)
+    // Skip other dist-info files (RECORD, WHEEL, top_level.txt, etc.)
+    if (name.includes(".dist-info/") && !name.endsWith("/METADATA")) continue;
     // Skip compiled extensions
     if (
       name.endsWith(".so") ||
