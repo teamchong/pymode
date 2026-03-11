@@ -352,6 +352,10 @@ else
     warn "  _markupsafe_speedups sources not found, skipping"
 fi
 
+# Update config.c.base with all registered modules (for variant builds)
+cp "$CONFIG_C" "$BUILD_DIR/Modules/config.c.base"
+info "  Updated config.c.base with all native module registrations"
+
 # Step 4: Build
 info "Building CPython with zig cc (ReleaseSmall)..."
 NCPU="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"

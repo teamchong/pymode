@@ -182,6 +182,22 @@ FAIL=0
 mkdir -p "$BUILD_DIR/obj"
 
 FAILED_FILES=""
+FIRST_FAIL_SHOWN=false
+show_fail() {
+    local out="$1" errfile="$2"
+    FAIL=$((FAIL + 1))
+    FAILED_FILES="$FAILED_FILES $out"
+    echo "    FAIL: $out"
+    grep "error:" "$errfile" | head -3
+    # Show full error output for first failure to aid debugging
+    if [ "$FIRST_FAIL_SHOWN" = false ]; then
+        FIRST_FAIL_SHOWN=true
+        echo "    --- Full error output for first failure ($out) ---"
+        cat "$errfile" | head -30
+        echo "    --- End of error output ---"
+    fi
+}
+
 compile_c() {
     local src="$1" out="$2"
     local errfile="$BUILD_DIR/obj/${out}.err"
@@ -189,10 +205,7 @@ compile_c() {
         SUCCESS=$((SUCCESS + 1))
         rm -f "$errfile"
     else
-        FAIL=$((FAIL + 1))
-        FAILED_FILES="$FAILED_FILES $out"
-        echo "    FAIL: $out"
-        grep "error:" "$errfile" | head -3
+        show_fail "$out" "$errfile"
     fi
 }
 
@@ -203,10 +216,7 @@ compile_cpp() {
         SUCCESS=$((SUCCESS + 1))
         rm -f "$errfile"
     else
-        FAIL=$((FAIL + 1))
-        FAILED_FILES="$FAILED_FILES $out"
-        echo "    FAIL: $out"
-        grep "error:" "$errfile" | head -3
+        show_fail "$out" "$errfile"
     fi
 }
 
