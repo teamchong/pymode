@@ -213,7 +213,7 @@ compile_c() {
 compile_cpp() {
     local src="$1" out="$2"
     local errfile="$BUILD_DIR/obj/${out}.err"
-    if zig c++ $CFLAGS -std=c++17 -fno-exceptions -Wno-missing-template-arg-list-after-template-kw -o "$BUILD_DIR/obj/$out" "$src" 2>"$errfile"; then
+    if zig c++ $CFLAGS -std=c++17 -Wno-missing-template-arg-list-after-template-kw -o "$BUILD_DIR/obj/$out" "$src" 2>"$errfile"; then
         SUCCESS=$((SUCCESS + 1))
         rm -f "$errfile"
     else
@@ -231,7 +231,7 @@ for src in alloc arrayobject array_coercion array_converter array_method \
   nditer_pywrap number refcount sequence scalarapi shape strfuncs \
   usertypes vdot npy_static_data fnv abstractdtypes dlpack \
   public_dtype_api legacy_dtype_implementation datetime datetime_strings \
-  datetime_busday datetime_busdaycal temp_elide; do
+  datetime_busday datetime_busdaycal; do
   [ -f "$NUMPY_SRC/numpy/_core/src/multiarray/${src}.c" ] && \
     compile_c "$NUMPY_SRC/numpy/_core/src/multiarray/${src}.c" "ma_${src}.o"
 done
@@ -243,7 +243,7 @@ done
 
 # Common utilities
 for src in array_assign mem_overlap npy_argparse npy_import npy_longdouble \
-  ufunc_override numpyos npy_cpu_features npy_cpu_dispatch gil_utils blas_utils; do
+  ufunc_override numpyos npy_cpu_features npy_cpu_dispatch gil_utils; do
   [ -f "$NUMPY_SRC/numpy/_core/src/common/${src}.c" ] && \
     compile_c "$NUMPY_SRC/numpy/_core/src/common/${src}.c" "cm_${src}.o"
 done
@@ -314,7 +314,7 @@ done
 
 # numpy.random — C source files (bit generators, distributions)
 echo "  Compiling numpy.random..."
-RANDOM_CFLAGS="-target wasm32-wasi -c -Os -DNDEBUG \
+RANDOM_CFLAGS="-target wasm32-wasi -c -fPIC -Os -DNDEBUG \
   -Drestrict=__restrict__ \
   -I$CPYTHON/Include -I$CPYTHON/Include/cpython -I$PYCONFIG_DIR \
   -I$NUMPY_SRC/numpy/_core/include -I$NUMPY_SRC/numpy/_core/src/common \
@@ -346,7 +346,7 @@ fi
 CFLAGS="$SAVE_CFLAGS"
 
 # Cython random modules — need cython to generate .c from .pyx
-CYTHON_RANDOM_CFLAGS="-target wasm32-wasi -c -Os -DNDEBUG -DCYTHON_COMPRESS_STRINGS=0 \
+CYTHON_RANDOM_CFLAGS="-target wasm32-wasi -c -fPIC -Os -DNDEBUG -DCYTHON_COMPRESS_STRINGS=0 \
   -Drestrict=__restrict__ \
   -I$CPYTHON/Include -I$CPYTHON/Include/cpython -I$PYCONFIG_DIR \
   -I$NUMPY_SRC/numpy/_core/include -I$NUMPY_SRC/numpy/_core/src/common \
@@ -383,7 +383,7 @@ fi
 echo "  Compiling numpy.fft..."
 FFT_SRC="$NUMPY_SRC/numpy/fft/_pocketfft_umath.cpp"
 if [ -f "$FFT_SRC" ]; then
-  FFT_CFLAGS="-target wasm32-wasi -c -Os -DNDEBUG -std=c++17 -fno-exceptions \
+  FFT_CFLAGS="-target wasm32-wasi -c -Os -DNDEBUG -std=c++17 \
     -Drestrict=__restrict__ \
     -I$CPYTHON/Include -I$CPYTHON/Include/cpython -I$PYCONFIG_DIR \
     -I$NUMPY_SRC/numpy/_core/include -I$NUMPY_SRC/numpy/_core/src/common \
@@ -395,7 +395,8 @@ if [ -f "$FFT_SRC" ]; then
     echo "    pocketfft compiled ok"
     rm -f "$FFT_ERR"
   else
-    echo "    FAIL: pocketfft ($(head -1 "$FFT_ERR"))"
+    echo "    FAIL: pocketfft"
+    grep "error:" "$FFT_ERR" | head -5
     FAIL=$((FAIL + 1))
   fi
 fi
@@ -405,6 +406,8 @@ fi
 # provide. On wasm32-wasi there is no SIMD hardware, so we compile the baseline
 # scalar versions directly. These are the same algorithms as numpy's #else paths.
 cat > "$BUILD_DIR/obj/_wasm_scalar_loops.c" << 'SCALAR'
+#include "Python.h"
+#include "numpy/ndarraytypes.h"
 #include "numpy/npy_common.h"
 #include "numpy/npy_math.h"
 
@@ -471,6 +474,29 @@ void DOUBLE_tanh(char **args, npy_intp const *dimensions, npy_intp const *steps,
     for (npy_intp i=0; i<n; i++, ip+=is, op+=os)
         *(double*)op = npy_tanh(*(const double*)ip);
 }
+
+/*
+ * temp_elide: On platforms with shared libraries, numpy uses dladdr() to check
+ * if temporary arrays can be elided. On wasm32-wasi (no shared libraries),
+ * elision never applies. Return 0 = "don't elide".
+ */
+int try_binary_elide(PyArrayObject *m1, PyArrayObject *m2,
+                     PyArrayObject *(*op)(PyArrayObject *, PyArrayObject *, PyArrayObject *),
+                     PyArrayObject **res, int commutative) {
+    return 0;
+}
+int can_elide_temp_unary(PyArrayObject *m1) {
+    return 0;
+}
+
+/*
+ * blas_utils: BLAS floating-point exception support detection.
+ * Not relevant on wasm32-wasi (no BLAS library linked).
+ */
+static int _blas_supports_fpe = 0;
+int npy_blas_supports_fpe(void) { return _blas_supports_fpe; }
+void npy_set_blas_supports_fpe(int val) { _blas_supports_fpe = val; }
+
 SCALAR
 compile_c "$BUILD_DIR/obj/_wasm_scalar_loops.c" "_wasm_scalar_loops.o"
 

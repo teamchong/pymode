@@ -8,6 +8,6 @@
     "numpy._core._multiarray_umath": "PyInit__multiarray_umath"
   },
   "python_packages": ["numpy/"],
-  "extra_link_flags": ["-lc++"],
+  "extra_link_flags": ["-lc++", "-lc++abi"],
   "depends": []
 }
