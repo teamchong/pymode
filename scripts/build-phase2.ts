@@ -617,16 +617,17 @@ exec zig cc -target wasm32-wasi -E "\${ARGS[@]}"
       "pymode.r2_get,pymode.r2_put,pymode.d1_exec,pymode.d1_batch," +
       "pymode.thread_spawn,pymode.thread_join,pymode.dl_open";
 
-    // IMPORTANT: Run --asyncify FIRST on unoptimized binary so it sees the full
-    // call graph. Then run -O2 as a separate pass to optimize the instrumented code.
-    // Running -O2 before --asyncify inlines functions and breaks asyncify's
-    // call graph analysis, causing rewind failures.
+    // Use -O1 before --asyncify: enough optimization to prevent V8 stack overflow
+    // from deep unoptimized call chains, but less aggressive than -O2 which
+    // inlines functions and breaks asyncify's rewind instrumentation.
+    // IMPORTANT: No post-asyncify optimization — it invalidates saved stack data.
     info("Running wasm-opt --asyncify (async imports: tcp_recv, http_fetch, kv_*, r2_*, d1_exec)...");
     copyFileSync(pythonWasm, pythonWasm + ".pre-asyncify");
     const asyncified = pythonWasm + ".asyncified";
     const asyncifyResult = spawnSync(
       "wasm-opt",
       [
+        "-O1",
         "--asyncify",
         "--enable-simd",
         "--enable-nontrapping-float-to-int",
@@ -645,33 +646,8 @@ exec zig cc -target wasm32-wasi -E "\${ARGS[@]}"
     }
     renameSync(asyncified, pythonWasm);
 
-    const asyncifiedSize = statSync(pythonWasm).size;
-    info(`asyncify: ${origSize} -> ${asyncifiedSize} bytes`);
-
-    info("Running wasm-opt -O2 (post-asyncify optimization)...");
-    const optimized = pythonWasm + ".opt";
-    const optResult = spawnSync(
-      "wasm-opt",
-      [
-        "-O2",
-        "--enable-simd",
-        "--enable-nontrapping-float-to-int",
-        "--enable-bulk-memory",
-        "--enable-sign-ext",
-        "--enable-mutable-globals",
-        pythonWasm,
-        "-o",
-        optimized,
-      ],
-      { stdio: "inherit" },
-    );
-    if (optResult.status !== 0) {
-      error("wasm-opt -O2 post-asyncify failed");
-    }
-    renameSync(optimized, pythonWasm);
-
     const newSize = statSync(pythonWasm).size;
-    info(`asyncify + optimize: ${origSize} -> ${asyncifiedSize} -> ${newSize} bytes`);
+    info(`asyncify + optimize: ${origSize} -> ${newSize} bytes`);
   } else {
     warn("wasm-opt not found. Skipping asyncify -- trampoline fallback will be used at runtime.");
     warn("Install binaryen: brew install binaryen (or apt install binaryen)");

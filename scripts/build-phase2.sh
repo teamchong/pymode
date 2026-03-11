@@ -300,11 +300,11 @@ if command -v wasm-opt >/dev/null 2>&1; then
     ASYNC_IMPORTS="pymode.tcp_recv,pymode.http_fetch_full,pymode.kv_get,pymode.kv_put,pymode.kv_delete,pymode.kv_multi_get,pymode.kv_multi_put,pymode.r2_get,pymode.r2_put,pymode.d1_exec,pymode.d1_batch,pymode.thread_spawn,pymode.thread_join,pymode.dl_open"
 
     info "Running wasm-opt --asyncify (async imports: tcp_recv, http_fetch, kv_*, r2_*, d1_exec)..."
-    # IMPORTANT: Run --asyncify FIRST on unoptimized binary so it sees the full
-    # call graph. Then run -O2 as a separate pass to optimize the instrumented code.
-    # Running -O2 before --asyncify inlines functions and breaks asyncify's
-    # call graph analysis, causing rewind failures.
-    wasm-opt --asyncify \
+    # Use -O1 before --asyncify: enough optimization to prevent V8 stack overflow
+    # from deep unoptimized call chains, but less aggressive than -O2 which
+    # inlines functions and breaks asyncify's rewind instrumentation.
+    # IMPORTANT: No post-asyncify optimization — it invalidates saved stack data.
+    wasm-opt -O1 --asyncify \
         --enable-simd \
         --enable-nontrapping-float-to-int \
         --enable-bulk-memory \
@@ -314,21 +314,8 @@ if command -v wasm-opt >/dev/null 2>&1; then
         "$BUILD_DIR/python.wasm" -o "$BUILD_DIR/python.wasm.asyncified"
     mv "$BUILD_DIR/python.wasm.asyncified" "$BUILD_DIR/python.wasm"
 
-    ASYNCIFIED_SIZE=$(stat -f%z "$BUILD_DIR/python.wasm" 2>/dev/null || stat -c%s "$BUILD_DIR/python.wasm")
-    info "asyncify: ${ORIG_SIZE} -> ${ASYNCIFIED_SIZE} bytes"
-
-    info "Running wasm-opt -O2 (post-asyncify optimization)..."
-    wasm-opt -O2 \
-        --enable-simd \
-        --enable-nontrapping-float-to-int \
-        --enable-bulk-memory \
-        --enable-sign-ext \
-        --enable-mutable-globals \
-        "$BUILD_DIR/python.wasm" -o "$BUILD_DIR/python.wasm.opt"
-    mv "$BUILD_DIR/python.wasm.opt" "$BUILD_DIR/python.wasm"
-
     NEW_SIZE=$(stat -f%z "$BUILD_DIR/python.wasm" 2>/dev/null || stat -c%s "$BUILD_DIR/python.wasm")
-    info "asyncify + optimize: ${ORIG_SIZE} -> ${ASYNCIFIED_SIZE} -> ${NEW_SIZE} bytes"
+    info "asyncify + optimize: ${ORIG_SIZE} -> ${NEW_SIZE} bytes"
 else
     warn "wasm-opt not found. Skipping asyncify — trampoline fallback will be used at runtime."
     warn "Install binaryen: brew install binaryen (or apt install binaryen)"
