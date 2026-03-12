@@ -133,9 +133,11 @@ jobs:
             typing-extensions typing-inspection jsonpatch jsonpointer distro tblib httpcore \
             tenacity requests httpx urllib3 \
             xxhash regex msgpack \
-            pydantic==2.11.5 fastapi langchain-core langsmith langgraph \
+            pydantic==2.11.5 fastapi annotated-doc langchain-core langsmith \
+            langgraph langgraph-checkpoint langgraph-prebuilt langgraph-sdk \
             instructor openai dspy \
-            orjson httptools
+            orjson httptools \
+            docstring-parser rich typer requests-toolbelt
 
       - name: Run tests
         run: npm test

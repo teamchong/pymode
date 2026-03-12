@@ -382,6 +382,110 @@ async function main() {
     }
   }
 
+  // Inject pure-Python shims for native extensions not compiled into WASM
+  const pureShims: Record<string, string> = {
+    // jiter is a Rust extension (pydantic/jiter) — provide pure-Python fallback using json
+    "jiter/__init__.py": [
+      "import json as _json",
+      "def from_json(data, *, partial_mode='off', catch_duplicate_keys=False, float_mode='float'):",
+      "    if isinstance(data, (bytes, bytearray)): data = data.decode('utf-8')",
+      "    return _json.loads(data)",
+      "def cache_clear(): pass",
+      "def cache_usage(): return 0",
+      "__version__ = '0.0.0'",
+    ].join("\n"),
+    // uuid_utils is a Rust extension — shim with stdlib uuid
+    "uuid_utils/__init__.py": [
+      "from uuid import *",
+      "from uuid import uuid1, uuid3, uuid4, uuid5, getnode, UUID, NAMESPACE_DNS, NAMESPACE_URL, NAMESPACE_OID, NAMESPACE_X500",
+      "import uuid as _uuid",
+      "NIL = UUID(int=0)",
+      "MAX = UUID(int=(1 << 128) - 1)",
+      "RESERVED_NCS = 'reserved for NCS compatibility'",
+      "RESERVED_FUTURE = 'reserved for future definition'",
+      "RESERVED_MICROSOFT = 'reserved for Microsoft compatibility'",
+      "RFC_4122 = 'specified in RFC 4122'",
+      "def uuid6(*args, **kwargs): return uuid4()",
+      "def uuid7(*args, **kwargs): return uuid4()",
+      "def uuid8(*args, **kwargs): return uuid4()",
+      "def reseed_rng(): pass",
+      "__version__ = '0.0.0'",
+    ].join("\n"),
+    "uuid_utils/compat/__init__.py": "from uuid_utils import *\n",
+    // ormsgpack is a Rust extension — shim with msgpack
+    "ormsgpack/__init__.py": [
+      "import msgpack as _msgpack",
+      "OPT_NON_STR_KEYS = 1",
+      "OPT_SERIALIZE_NUMPY = 2",
+      "OPT_PASSTHROUGH_DATETIME = 4",
+      "OPT_PASSTHROUGH_DATACLASS = 8",
+      "OPT_PASSTHROUGH_ENUM = 16",
+      "OPT_PASSTHROUGH_UUID = 32",
+      "OPT_REPLACE_SURROGATES = 64",
+      "OPT_SORT_KEYS = 128",
+      "def packb(obj, *, default=None, option=None):",
+      "    return _msgpack.packb(obj, default=default)",
+      "def unpackb(data, *, option=None):",
+      "    return _msgpack.unpackb(data, raw=False)",
+      "MsgpackEncodeError = ValueError",
+      "MsgpackDecodeError = ValueError",
+    ].join("\n"),
+    // orjson is a Rust extension — shim with json
+    "orjson/__init__.py": [
+      "import json as _json",
+      "OPT_NON_STR_KEYS = 1",
+      "OPT_SERIALIZE_NUMPY = 2",
+      "OPT_INDENT_2 = 4",
+      "OPT_SORT_KEYS = 8",
+      "OPT_APPEND_NEWLINE = 16",
+      "OPT_NAIVE_UTC = 32",
+      "OPT_PASSTHROUGH_DATETIME = 64",
+      "OPT_SERIALIZE_DATACLASS = 128",
+      "OPT_SERIALIZE_UUID = 256",
+      "OPT_UTC_Z = 512",
+      "OPT_OMIT_MICROSECONDS = 1024",
+      "OPT_PASSTHROUGH_SUBCLASS = 2048",
+      "class JSONDecodeError(ValueError): pass",
+      "class JSONEncodeError(TypeError): pass",
+      "def dumps(obj, *, default=None, option=None):",
+      "    return _json.dumps(obj, default=default).encode('utf-8')",
+      "def loads(data):",
+      "    if isinstance(data, (bytes, bytearray, memoryview)): data = bytes(data).decode('utf-8')",
+      "    return _json.loads(data)",
+      "Fragment = bytes",
+    ].join("\n"),
+  };
+  for (const [shimPath, shimCode] of Object.entries(pureShims)) {
+    allFiles.set(shimPath, Buffer.from(shimCode, "utf-8"));
+    console.log(`  Injected pure-Python shim: ${shimPath}`);
+  }
+
+  // Auto-inject __init__.py for namespace packages (zipimport requires it)
+  // Collect ALL directory paths that contain .py files at any depth
+  const packageDirs = new Set<string>();
+  for (const filePath of allFiles.keys()) {
+    const parts = filePath.split("/");
+    if (parts.length >= 2 && parts[parts.length - 1].endsWith(".py")) {
+      // Add every parent directory as a package dir
+      for (let depth = 1; depth < parts.length; depth++) {
+        packageDirs.add(parts.slice(0, depth).join("/"));
+      }
+    }
+  }
+  for (const pkg of packageDirs) {
+    const initPath = `${pkg}/__init__.py`;
+    if (!allFiles.has(initPath)) {
+      // If top-level package has version.py, re-export __version__
+      const isTopLevel = !pkg.includes("/");
+      const hasVersion = isTopLevel && allFiles.has(`${pkg}/version.py`);
+      const initCode = hasVersion
+        ? "from .version import __version__\n"
+        : "";
+      allFiles.set(initPath, Buffer.from(initCode, "utf-8"));
+      console.log(`  Injected __init__.py for namespace package: ${pkg}`);
+    }
+  }
+
   // Create the output zip (ZIP_STORED)
   fs.mkdirSync(path.dirname(output), { recursive: true });
   const sortedFiles: [string, Buffer][] = [...allFiles.entries()].sort(
