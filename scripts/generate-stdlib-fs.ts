@@ -152,10 +152,10 @@ const BOOT_FILES = [
     "pathlib/_abc.py",
     "pathlib/_local.py",
     // compression
+    "_compression.py",
     "bz2.py",
     "lzma.py",
-    // ctypes
-    "ctypes/__init__.py",
+    // ctypes — provided as polyfill (stdlib version depends on real _ctypes C extension)
     // subprocess
     "subprocess.py",
     // pprint
@@ -386,6 +386,7 @@ const POLYFILL_FILES = [
     "_bz2.py",
     "_lzma.py",
     "_ctypes.py",
+    "ctypes/__init__.py",
     "curses/__init__.py",
     "dbm/__init__.py",
     "tkinter/__init__.py",

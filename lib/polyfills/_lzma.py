@@ -47,3 +47,9 @@ class LZMADecompressor:
 
 def is_check_supported(check):
     return False
+
+def _encode_filter_properties(filter):
+    raise LZMAError("lzma filter encoding not available in WASM")
+
+def _decode_filter_properties(filter_id, encoded_props):
+    raise LZMAError("lzma filter decoding not available in WASM")
