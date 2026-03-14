@@ -197,33 +197,16 @@ def _get_zerobuf_exchange_ptr():
         return 0
 
 
-def _get_wasm_mem_size():
-    """Get current WASM memory size for diagnostics."""
-    try:
-        import _zerobuf
-        # Use tag() to probe — if it doesn't crash, memory is accessible
-        return "unknown"
-    except Exception:
-        return "n/a"
-
-
 def _run_zerobuf(module_name, exchange_ptr):
     """Handle request via zerobuf — zero-copy through WASM linear memory."""
     import _zerobuf
 
     # Read request fields from WASM memory (zero-copy — no JSON parsing)
     req_base = exchange_ptr + _ZB_REQUEST_BASE
-    import sys as _sys
-    try:
-        method = _zerobuf.schema_read_field(req_base, 0) or "GET"
-    except Exception as e:
-        print(f"[zerobuf] schema_read_field failed: {e}", file=_sys.stderr)
-        _error_response(500, f"zerobuf read failed: {e}")
-        return
+    method = _zerobuf.schema_read_field(req_base, 0) or "GET"
     url = _zerobuf.schema_read_field(req_base, 1) or ""
     headers_json = _zerobuf.schema_read_field(req_base, 2) or "{}"
     body = _zerobuf.schema_read_field(req_base, 3) or ""
-    print(f"[zerobuf] method={method!r} url={url!r} body_len={len(body)} tag0={_zerobuf.tag(req_base)}", file=_sys.stderr)
 
     headers = json.loads(headers_json) if headers_json != "{}" else {}
 
@@ -273,7 +256,6 @@ def _run_zerobuf(module_name, exchange_ptr):
     resp_status = resp_data.get("status", 200)
     body_is_binary = resp_data.get("bodyIsBinary", False)
 
-    print(f"[zerobuf] resp_status={resp_status} resp_body_len={len(resp_body)}", file=_sys.stderr)
     _write_zerobuf_response(exchange_ptr, resp_status, resp_body, resp_headers, body_is_binary)
 
 
