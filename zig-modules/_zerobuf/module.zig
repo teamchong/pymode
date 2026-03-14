@@ -369,7 +369,18 @@ fn py_schema_read_field(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py
 
     const offset = base + index * zb.VALUE_SLOT;
     const mem = get_mem();
-    const tag: zb.Tag = @enumFromInt(mem[offset]);
+    const raw_tag = mem[offset];
+
+    // Safety check: tag must be a valid zerobuf Tag (0-8)
+    if (raw_tag > 8) {
+        // Return an error string with diagnostic info so we can debug
+        var buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "zerobuf: invalid tag {d} at offset {d} (base={d}, idx={d})", .{ raw_tag, offset, base, index }) catch "zerobuf: invalid tag";
+        py.PyErr_SetString(py.PyExc_ValueError, @ptrCast(msg.ptr));
+        return null;
+    }
+
+    const tag: zb.Tag = @enumFromInt(raw_tag);
 
     return switch (tag) {
         .null => blk: {
