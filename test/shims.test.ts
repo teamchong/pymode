@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { runPython } from "./helpers";
 
 /**
- * Tests for compatibility shim modules: socket, threading, logging.
+ * Tests for polyfill modules that make standard Python imports work in WASM.
  * These allow packages that depend on OS features to import and work
  * in PyMode's single-threaded WASM runtime.
  */
@@ -260,5 +260,147 @@ except ImportError as e:
 `);
     // queue may not be bundled yet, but at least threading won't block it
     expect(r.status).toBe(200);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// All disabled C extensions must import successfully
+// ---------------------------------------------------------------------------
+describe("all stdlib modules importable", () => {
+  it("imports faulthandler", async () => {
+    const r = await runPython(`
+import faulthandler
+faulthandler.enable()
+faulthandler.disable()
+print(f"enabled={faulthandler.is_enabled()}")
+`);
+    expect(r.text).toContain("enabled=False");
+  });
+
+  it("imports resource", async () => {
+    const r = await runPython(`
+import resource
+soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+print(f"pagesize={resource.getpagesize()}")
+print(f"limits={soft},{hard}")
+`);
+    expect(r.text).toContain("pagesize=65536");
+  });
+
+  it("imports grp", async () => {
+    const r = await runPython(`
+import grp
+groups = grp.getgrall()
+print(f"groups={len(groups)}")
+`);
+    expect(r.text).toContain("groups=0");
+  });
+
+  it("imports pwd", async () => {
+    const r = await runPython(`
+import pwd
+root = pwd.getpwuid(0)
+print(f"name={root.pw_name}")
+`);
+    expect(r.text).toContain("name=root");
+  });
+
+  it("imports fcntl", async () => {
+    const r = await runPython(`
+import fcntl
+print(f"LOCK_EX={fcntl.LOCK_EX}")
+`);
+    expect(r.text).toContain("LOCK_EX=2");
+  });
+
+  it("imports mmap", async () => {
+    const r = await runPython(`
+import mmap
+m = mmap.mmap(-1, 1024)
+m.write(b"hello")
+m.seek(0)
+data = m.read(5)
+m.close()
+print(f"data={data}")
+`);
+    expect(r.text).toContain("data=b'hello'");
+  });
+
+  it("imports termios", async () => {
+    const r = await runPython(`
+import termios
+print(f"ECHO={termios.ECHO}")
+`);
+    expect(r.text).toContain("ECHO=");
+  });
+
+  it("imports syslog", async () => {
+    const r = await runPython(`
+import syslog
+syslog.openlog("test")
+syslog.syslog(syslog.LOG_INFO, "hello")
+syslog.closelog()
+print("OK")
+`);
+    expect(r.text).toContain("OK");
+  });
+
+  it("imports bz2", async () => {
+    const r = await runPython(`
+import bz2
+print(f"module={bz2.__name__}")
+`);
+    expect(r.text).toContain("module=bz2");
+  });
+
+  it("imports lzma", async () => {
+    const r = await runPython(`
+import lzma
+print(f"module={lzma.__name__}")
+`);
+    expect(r.text).toContain("module=lzma");
+  });
+
+  it("imports ctypes", async () => {
+    const r = await runPython(`
+import ctypes
+print(f"module={ctypes.__name__}")
+`);
+    expect(r.text).toContain("module=ctypes");
+  });
+
+  it("imports curses", async () => {
+    const r = await runPython(`
+import curses
+print(f"COLOR_RED={curses.COLOR_RED}")
+`);
+    expect(r.text).toContain("COLOR_RED=1");
+  });
+
+  it("imports dbm", async () => {
+    const r = await runPython(`
+import dbm
+db = dbm.open("test", "c")
+db["key"] = "value"
+print(f"got={db['key']}")
+db.close()
+`);
+    expect(r.text).toContain("got=b'value'");
+  });
+
+  it("imports tkinter", async () => {
+    const r = await runPython(`
+import tkinter
+print(f"END={tkinter.END}")
+`);
+    expect(r.text).toContain("END=end");
+  });
+
+  it("imports subprocess", async () => {
+    const r = await runPython(`
+import subprocess
+print(f"module={subprocess.__name__}")
+`);
+    expect(r.text).toContain("module=subprocess");
   });
 });

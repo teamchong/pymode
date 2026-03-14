@@ -368,6 +368,20 @@ const POLYFILL_FILES = [
     "_wasi_compat.py",
     "multiprocessing/__init__.py",
     "ormsgpack.py",
+    "faulthandler.py",
+    "resource.py",
+    "grp.py",
+    "pwd.py",
+    "fcntl.py",
+    "mmap.py",
+    "termios.py",
+    "syslog.py",
+    "_bz2.py",
+    "_lzma.py",
+    "_ctypes.py",
+    "curses/__init__.py",
+    "dbm/__init__.py",
+    "tkinter/__init__.py",
 ];
 
 function collectFiles(): Record<string, string> {
