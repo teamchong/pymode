@@ -350,6 +350,8 @@ const PYMODE_FILES = [
     "pymode/workflows.py",
     "pymode/importer.py",
     "pymode/compute.py",
+    "pymode/simd.py",
+    "pymode/zerobuf.py",
 ];
 
 // Pure-Python polyfills for C extension modules unavailable in WASM.

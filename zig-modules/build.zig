@@ -22,6 +22,8 @@ pub fn build(b: *std.Build) void {
         .{ .name = "_collections", .root = "_collections/module.zig", .extra_include = null },
         .{ .name = "_functools", .root = "_functools/module.zig", .extra_include = null },
         .{ .name = "_xxhash", .root = "xxhash/module.zig", .extra_include = "xxhash" },
+        .{ .name = "_simd", .root = "_simd/module.zig", .extra_include = null },
+        .{ .name = "_zerobuf", .root = "_zerobuf/module.zig", .extra_include = null },
         // .{ .name = "_sre", .root = "_sre/module.zig", .extra_include = null },
         // .{ .name = "math", .root = "_math/module.zig", .extra_include = null },
         // .{ .name = "_datetime", .root = "_datetime/module.zig", .extra_include = null },

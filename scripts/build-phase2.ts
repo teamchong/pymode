@@ -455,6 +455,14 @@ exec zig cc -target wasm32-wasi -E "\${ARGS[@]}"
       name: "_markupsafe_speedups",
       c_srcs: [join(cModulesDir, "markupsafe", "_speedups.c")],
     },
+    {
+      name: "_simd",
+      zig_src: join(zigModulesDir, "_simd", "module.zig"),
+    },
+    {
+      name: "_zerobuf",
+      zig_src: join(zigModulesDir, "_zerobuf", "module.zig"),
+    },
   ];
 
   const builtModules: NativeModule[] = [];
