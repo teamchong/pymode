@@ -28,7 +28,7 @@ const PartialObject = extern struct {
     kwargs: ?*c.PyObject, // dict of keyword args
 };
 
-fn partial_init(self_raw: ?*c.PyObject, args: ?*c.PyObject, kwargs: ?*c.PyObject) callconv(.C) c_int {
+fn partial_init(self_raw: ?*c.PyObject, args: ?*c.PyObject, kwargs: ?*c.PyObject) callconv(.c) c_int {
     const self: *PartialObject = @ptrCast(@alignCast(self_raw));
 
     const nargs = c.PyTuple_Size(args);
@@ -65,7 +65,7 @@ fn partial_init(self_raw: ?*c.PyObject, args: ?*c.PyObject, kwargs: ?*c.PyObject
     return 0;
 }
 
-fn partial_call(self_raw: ?*c.PyObject, args: ?*c.PyObject, kwargs: ?*c.PyObject) callconv(.C) ?*c.PyObject {
+fn partial_call(self_raw: ?*c.PyObject, args: ?*c.PyObject, kwargs: ?*c.PyObject) callconv(.c) ?*c.PyObject {
     const self: *PartialObject = @ptrCast(@alignCast(self_raw));
 
     // Combine partial args with call args
@@ -119,7 +119,7 @@ fn partial_call(self_raw: ?*c.PyObject, args: ?*c.PyObject, kwargs: ?*c.PyObject
     return result;
 }
 
-fn partial_repr(self_raw: ?*c.PyObject) callconv(.C) ?*c.PyObject {
+fn partial_repr(self_raw: ?*c.PyObject) callconv(.c) ?*c.PyObject {
     const self: *PartialObject = @ptrCast(@alignCast(self_raw));
     const fn_repr = c.PyObject_Repr(self.fn_obj.?);
     if (fn_repr == null) return null;
@@ -139,17 +139,17 @@ fn partial_repr(self_raw: ?*c.PyObject) callconv(.C) ?*c.PyObject {
     return c.PyUnicode_FromFormat("functools.partial(%U, *%U)", fn_repr, args_repr);
 }
 
-fn partial_get_func(self_raw: ?*c.PyObject, _: ?*anyopaque) callconv(.C) ?*c.PyObject {
+fn partial_get_func(self_raw: ?*c.PyObject, _: ?*anyopaque) callconv(.c) ?*c.PyObject {
     const self: *PartialObject = @ptrCast(@alignCast(self_raw));
     if (self.fn_obj) |f| {
         c.Py_IncRef(f);
         return f;
     }
-    c.Py_IncRef(c.Py_None);
-    return c.Py_None;
+    c.Py_IncRef(c.Py_None());
+    return c.Py_None();
 }
 
-fn partial_get_args(self_raw: ?*c.PyObject, _: ?*anyopaque) callconv(.C) ?*c.PyObject {
+fn partial_get_args(self_raw: ?*c.PyObject, _: ?*anyopaque) callconv(.c) ?*c.PyObject {
     const self: *PartialObject = @ptrCast(@alignCast(self_raw));
     if (self.args) |a| {
         c.Py_IncRef(a);
@@ -158,7 +158,7 @@ fn partial_get_args(self_raw: ?*c.PyObject, _: ?*anyopaque) callconv(.C) ?*c.PyO
     return c.PyTuple_New(0);
 }
 
-fn partial_get_keywords(self_raw: ?*c.PyObject, _: ?*anyopaque) callconv(.C) ?*c.PyObject {
+fn partial_get_keywords(self_raw: ?*c.PyObject, _: ?*anyopaque) callconv(.c) ?*c.PyObject {
     const self: *PartialObject = @ptrCast(@alignCast(self_raw));
     if (self.kwargs) |k| {
         c.Py_IncRef(k);
@@ -167,7 +167,7 @@ fn partial_get_keywords(self_raw: ?*c.PyObject, _: ?*anyopaque) callconv(.C) ?*c
     return c.PyDict_New();
 }
 
-fn partial_dealloc(self_raw: ?*c.PyObject) callconv(.C) void {
+fn partial_dealloc(self_raw: ?*c.PyObject) callconv(.c) void {
     const self: *PartialObject = @ptrCast(@alignCast(self_raw));
     if (self.fn_obj) |f| c.Py_DecRef(f);
     if (self.args) |a| c.Py_DecRef(a);
@@ -201,7 +201,7 @@ var partial_type: c.PyTypeObject = blk: {
 // REDUCE - Apply function cumulatively to sequence items
 // ============================================================================
 
-fn py_reduce(_: ?*c.PyObject, args: ?*c.PyObject) callconv(.C) ?*c.PyObject {
+fn py_reduce(_: ?*c.PyObject, args: ?*c.PyObject) callconv(.c) ?*c.PyObject {
     var func: ?*c.PyObject = null;
     var seq: ?*c.PyObject = null;
     var initial: ?*c.PyObject = null;
@@ -264,7 +264,7 @@ const CmpToKeyObject = extern struct {
     obj: ?*c.PyObject,
 };
 
-fn cmp_to_key_richcompare(self_raw: ?*c.PyObject, other_raw: ?*c.PyObject, op: c_int) callconv(.C) ?*c.PyObject {
+fn cmp_to_key_richcompare(self_raw: ?*c.PyObject, other_raw: ?*c.PyObject, op: c_int) callconv(.c) ?*c.PyObject {
     const self: *CmpToKeyObject = @ptrCast(@alignCast(self_raw));
     const other: *CmpToKeyObject = @ptrCast(@alignCast(other_raw));
 
@@ -291,14 +291,14 @@ fn cmp_to_key_richcompare(self_raw: ?*c.PyObject, other_raw: ?*c.PyObject, op: c
     return cmp_val;
 }
 
-fn cmp_to_key_dealloc(self_raw: ?*c.PyObject) callconv(.C) void {
+fn cmp_to_key_dealloc(self_raw: ?*c.PyObject) callconv(.c) void {
     const self: *CmpToKeyObject = @ptrCast(@alignCast(self_raw));
     if (self.cmp_func) |f_val| c.Py_DecRef(f_val);
     if (self.obj) |o| c.Py_DecRef(o);
     c.PyObject_Free(self_raw);
 }
 
-fn cmp_to_key_hash(_: ?*c.PyObject) callconv(.C) c.Py_hash_t {
+fn cmp_to_key_hash(_: ?*c.PyObject) callconv(.c) c.Py_hash_t {
     c.PyErr_SetString(c.PyExc_TypeError, "unhashable type: 'cmp_to_key'");
     return -1;
 }
@@ -322,7 +322,7 @@ const CmpToKeyFactoryObject = extern struct {
     cmp_func: ?*c.PyObject,
 };
 
-fn cmp_to_key_factory_call(self_raw: ?*c.PyObject, args: ?*c.PyObject, _: ?*c.PyObject) callconv(.C) ?*c.PyObject {
+fn cmp_to_key_factory_call(self_raw: ?*c.PyObject, args: ?*c.PyObject, _: ?*c.PyObject) callconv(.c) ?*c.PyObject {
     const self: *CmpToKeyFactoryObject = @ptrCast(@alignCast(self_raw));
     var obj: ?*c.PyObject = null;
     if (c.PyArg_ParseTuple(args, "O", &obj) == 0) return null;
@@ -339,7 +339,7 @@ fn cmp_to_key_factory_call(self_raw: ?*c.PyObject, args: ?*c.PyObject, _: ?*c.Py
     return wrapper;
 }
 
-fn cmp_to_key_factory_dealloc(self_raw: ?*c.PyObject) callconv(.C) void {
+fn cmp_to_key_factory_dealloc(self_raw: ?*c.PyObject) callconv(.c) void {
     const self: *CmpToKeyFactoryObject = @ptrCast(@alignCast(self_raw));
     if (self.cmp_func) |f_val| c.Py_DecRef(f_val);
     c.PyObject_Free(self_raw);
@@ -359,7 +359,7 @@ var cmp_to_key_factory_type: c.PyTypeObject = blk: {
 
 /// cmp_to_key(mycmp) -> key function
 /// Convert a cmp= function into a key= function
-fn py_cmp_to_key(_: ?*c.PyObject, args: ?*c.PyObject, kwargs: ?*c.PyObject) callconv(.C) ?*c.PyObject {
+fn py_cmp_to_key(_: ?*c.PyObject, args: ?*c.PyObject, kwargs: ?*c.PyObject) callconv(.c) ?*c.PyObject {
     var cmp_func: ?*c.PyObject = null;
     var kwlist = [_:null]?[*:0]const u8{ "mycmp", null };
     if (c.PyArg_ParseTupleAndKeywords(args, kwargs, "O", @ptrCast(&kwlist), &cmp_func) == 0) return null;
@@ -395,7 +395,7 @@ const LruCacheObject = extern struct {
 // _CacheInfo namedtuple type, created at module init via collections.namedtuple
 var cache_info_type: ?*c.PyObject = null;
 
-fn lru_cache_init(self_raw: ?*c.PyObject, args: ?*c.PyObject, kwargs: ?*c.PyObject) callconv(.C) c_int {
+fn lru_cache_init(self_raw: ?*c.PyObject, args: ?*c.PyObject, kwargs: ?*c.PyObject) callconv(.c) c_int {
     const self: *LruCacheObject = @ptrCast(@alignCast(self_raw));
     var func: ?*c.PyObject = null;
     var maxsize_obj: ?*c.PyObject = null;
@@ -412,7 +412,7 @@ fn lru_cache_init(self_raw: ?*c.PyObject, args: ?*c.PyObject, kwargs: ?*c.PyObje
     c.Py_IncRef(func.?);
     self.func = func;
 
-    if (maxsize_obj != null and maxsize_obj != @as(?*c.PyObject, c.Py_None)) {
+    if (maxsize_obj != null and maxsize_obj != @as(?*c.PyObject, c.Py_None())) {
         self.maxsize = c.PyLong_AsSsize_t(maxsize_obj.?);
     } else {
         self.maxsize = -1; // unbounded
@@ -428,7 +428,7 @@ fn lru_cache_init(self_raw: ?*c.PyObject, args: ?*c.PyObject, kwargs: ?*c.PyObje
     return 0;
 }
 
-fn lru_cache_call(self_raw: ?*c.PyObject, args: ?*c.PyObject, kwargs: ?*c.PyObject) callconv(.C) ?*c.PyObject {
+fn lru_cache_call(self_raw: ?*c.PyObject, args: ?*c.PyObject, kwargs: ?*c.PyObject) callconv(.c) ?*c.PyObject {
     const self: *LruCacheObject = @ptrCast(@alignCast(self_raw));
 
     // Build cache key from args + kwargs
@@ -490,13 +490,13 @@ fn lru_cache_call(self_raw: ?*c.PyObject, args: ?*c.PyObject, kwargs: ?*c.PyObje
     return result;
 }
 
-fn py_lru_cache_info(self_raw: ?*c.PyObject, _: ?*c.PyObject) callconv(.C) ?*c.PyObject {
+fn py_lru_cache_info(self_raw: ?*c.PyObject, _: ?*c.PyObject) callconv(.c) ?*c.PyObject {
     const self: *LruCacheObject = @ptrCast(@alignCast(self_raw));
 
     const maxsize_obj: ?*c.PyObject = if (self.maxsize < 0)
         blk: {
-            c.Py_IncRef(c.Py_None);
-            break :blk c.Py_None;
+            c.Py_IncRef(c.Py_None());
+            break :blk c.Py_None();
         }
     else
         c.PyLong_FromSsize_t(self.maxsize);
@@ -524,16 +524,16 @@ fn py_lru_cache_info(self_raw: ?*c.PyObject, _: ?*c.PyObject) callconv(.C) ?*c.P
     return info;
 }
 
-fn py_lru_cache_clear(self_raw: ?*c.PyObject, _: ?*c.PyObject) callconv(.C) ?*c.PyObject {
+fn py_lru_cache_clear(self_raw: ?*c.PyObject, _: ?*c.PyObject) callconv(.c) ?*c.PyObject {
     const self: *LruCacheObject = @ptrCast(@alignCast(self_raw));
     c.PyDict_Clear(self.cache.?);
     self.hits = 0;
     self.misses = 0;
-    c.Py_IncRef(c.Py_None);
-    return c.Py_None;
+    c.Py_IncRef(c.Py_None());
+    return c.Py_None();
 }
 
-fn lru_cache_dealloc(self_raw: ?*c.PyObject) callconv(.C) void {
+fn lru_cache_dealloc(self_raw: ?*c.PyObject) callconv(.c) void {
     const self: *LruCacheObject = @ptrCast(@alignCast(self_raw));
     if (self.func) |f_val| c.Py_DecRef(f_val);
     if (self.cache) |ca| c.Py_DecRef(ca);

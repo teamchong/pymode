@@ -228,7 +228,7 @@ fn parse_algorithm_name(name_ptr: [*]const u8, name_len: usize) ?HashAlgorithm {
 // HASH OBJECT METHODS
 // ============================================================================
 
-fn hash_init(self_raw: ?*c.PyObject, args: ?*c.PyObject, kwargs: ?*c.PyObject) callconv(.C) c_int {
+fn hash_init(self_raw: ?*c.PyObject, args: ?*c.PyObject, kwargs: ?*c.PyObject) callconv(.c) c_int {
     const self: *HashObject = @ptrCast(@alignCast(self_raw));
 
     var name_obj: ?*c.PyObject = null;
@@ -252,22 +252,14 @@ fn hash_init(self_raw: ?*c.PyObject, args: ?*c.PyObject, kwargs: ?*c.PyObject) c
 
     // If initial data provided, update
     if (data_obj) |data| {
-        if (data != @as(?*c.PyObject, c.Py_None)) {
-            var buf: [*c]u8 = undefined;
-            var buf_len: c.Py_ssize_t = undefined;
-            if (c.PyObject_AsReadBuffer(data, @ptrCast(&buf), &buf_len) == 0) {
-                update_hasher(algo, &self.state_buf, buf[0..@intCast(buf_len)]);
+        if (data != @as(?*c.PyObject, c.Py_None())) {
+            var view: c.Py_buffer = undefined;
+            if (c.PyObject_GetBuffer(data, &view, c.PyBUF_SIMPLE) == 0) {
+                const ptr: [*]const u8 = @ptrCast(view.buf);
+                update_hasher(algo, &self.state_buf, ptr[0..@intCast(view.len)]);
+                c.PyBuffer_Release(&view);
             } else {
-                _ = c.PyErr_Clear();
-                // Try bytes protocol
-                var view: c.Py_buffer = undefined;
-                if (c.PyObject_GetBuffer(data, &view, c.PyBUF_SIMPLE) == 0) {
-                    const ptr: [*]const u8 = @ptrCast(view.buf);
-                    update_hasher(algo, &self.state_buf, ptr[0..@intCast(view.len)]);
-                    c.PyBuffer_Release(&view);
-                } else {
-                    return -1;
-                }
+                return -1;
             }
         }
     }
@@ -275,7 +267,7 @@ fn hash_init(self_raw: ?*c.PyObject, args: ?*c.PyObject, kwargs: ?*c.PyObject) c
     return 0;
 }
 
-fn hash_update(self_raw: ?*c.PyObject, args: ?*c.PyObject) callconv(.C) ?*c.PyObject {
+fn hash_update(self_raw: ?*c.PyObject, args: ?*c.PyObject) callconv(.c) ?*c.PyObject {
     const self: *HashObject = @ptrCast(@alignCast(self_raw));
     var data_obj: ?*c.PyObject = null;
     if (c.PyArg_ParseTuple(args, "O", &data_obj) == 0) return null;
@@ -287,11 +279,11 @@ fn hash_update(self_raw: ?*c.PyObject, args: ?*c.PyObject) callconv(.C) ?*c.PyOb
     const ptr: [*]const u8 = @ptrCast(view.buf);
     update_hasher(self.algorithm, &self.state_buf, ptr[0..@intCast(view.len)]);
 
-    c.Py_IncRef(c.Py_None);
-    return c.Py_None;
+    c.Py_IncRef(c.Py_None());
+    return c.Py_None();
 }
 
-fn hash_digest(self_raw: ?*c.PyObject, _: ?*c.PyObject) callconv(.C) ?*c.PyObject {
+fn hash_digest(self_raw: ?*c.PyObject, _: ?*c.PyObject) callconv(.c) ?*c.PyObject {
     const self: *HashObject = @ptrCast(@alignCast(self_raw));
     const digest_size = get_digest_size(self.algorithm);
     var digest_buf: [64]u8 = undefined; // max digest is 64 bytes (sha512/blake2b)
@@ -301,7 +293,7 @@ fn hash_digest(self_raw: ?*c.PyObject, _: ?*c.PyObject) callconv(.C) ?*c.PyObjec
     return c.PyBytes_FromStringAndSize(@ptrCast(&digest_buf), @intCast(digest_size));
 }
 
-fn hash_hexdigest(self_raw: ?*c.PyObject, _: ?*c.PyObject) callconv(.C) ?*c.PyObject {
+fn hash_hexdigest(self_raw: ?*c.PyObject, _: ?*c.PyObject) callconv(.c) ?*c.PyObject {
     const self: *HashObject = @ptrCast(@alignCast(self_raw));
     const digest_size = get_digest_size(self.algorithm);
     var digest_buf: [64]u8 = undefined;
@@ -318,7 +310,7 @@ fn hash_hexdigest(self_raw: ?*c.PyObject, _: ?*c.PyObject) callconv(.C) ?*c.PyOb
     return c.PyUnicode_FromStringAndSize(@ptrCast(&hex_buf), @intCast(digest_size * 2));
 }
 
-fn hash_copy(self_raw: ?*c.PyObject, _: ?*c.PyObject) callconv(.C) ?*c.PyObject {
+fn hash_copy(self_raw: ?*c.PyObject, _: ?*c.PyObject) callconv(.c) ?*c.PyObject {
     const self: *HashObject = @ptrCast(@alignCast(self_raw));
 
     const new_obj: *HashObject = @ptrCast(@alignCast(c.PyObject_New(@ptrCast(&hash_type))));
@@ -330,22 +322,22 @@ fn hash_copy(self_raw: ?*c.PyObject, _: ?*c.PyObject) callconv(.C) ?*c.PyObject 
     return @ptrCast(new_obj);
 }
 
-fn hash_get_digest_size(self_raw: ?*c.PyObject, _: ?*anyopaque) callconv(.C) ?*c.PyObject {
+fn hash_get_digest_size(self_raw: ?*c.PyObject, _: ?*anyopaque) callconv(.c) ?*c.PyObject {
     const self: *HashObject = @ptrCast(@alignCast(self_raw));
     return c.PyLong_FromSize_t(get_digest_size(self.algorithm));
 }
 
-fn hash_get_block_size(self_raw: ?*c.PyObject, _: ?*anyopaque) callconv(.C) ?*c.PyObject {
+fn hash_get_block_size(self_raw: ?*c.PyObject, _: ?*anyopaque) callconv(.c) ?*c.PyObject {
     const self: *HashObject = @ptrCast(@alignCast(self_raw));
     return c.PyLong_FromSize_t(get_block_size(self.algorithm));
 }
 
-fn hash_get_name(self_raw: ?*c.PyObject, _: ?*anyopaque) callconv(.C) ?*c.PyObject {
+fn hash_get_name(self_raw: ?*c.PyObject, _: ?*anyopaque) callconv(.c) ?*c.PyObject {
     const self: *HashObject = @ptrCast(@alignCast(self_raw));
     return c.PyUnicode_FromString(get_name_str(self.algorithm));
 }
 
-fn hash_dealloc(self_raw: ?*c.PyObject) callconv(.C) void {
+fn hash_dealloc(self_raw: ?*c.PyObject) callconv(.c) void {
     c.PyObject_Free(self_raw);
 }
 
@@ -423,7 +415,7 @@ var hash_type: c.PyTypeObject = blk: {
 // ============================================================================
 
 /// _hashlib.new(name, data=b"") -> HASH object
-fn py_new(_: ?*c.PyObject, args: ?*c.PyObject, kwargs: ?*c.PyObject) callconv(.C) ?*c.PyObject {
+fn py_new(_: ?*c.PyObject, args: ?*c.PyObject, kwargs: ?*c.PyObject) callconv(.c) ?*c.PyObject {
     var name_obj: ?*c.PyObject = null;
     var data_obj: ?*c.PyObject = null;
 
@@ -463,7 +455,7 @@ fn create_hash_from_args(name_obj: ?*c.PyObject, data_obj: ?*c.PyObject) ?*c.PyO
 
     // If initial data provided, update
     if (data_obj) |data| {
-        if (data != @as(?*c.PyObject, c.Py_None)) {
+        if (data != @as(?*c.PyObject, c.Py_None())) {
             var view: c.Py_buffer = undefined;
             if (c.PyObject_GetBuffer(data, &view, c.PyBUF_SIMPLE) == 0) {
                 const ptr: [*]const u8 = @ptrCast(view.buf);
@@ -493,7 +485,7 @@ fn make_openssl_hash(algo: HashAlgorithm, _: ?*c.PyObject, args: ?*c.PyObject, k
     init_hasher_state(algo, &self.state_buf);
 
     if (data_obj) |data| {
-        if (data != @as(?*c.PyObject, c.Py_None)) {
+        if (data != @as(?*c.PyObject, c.Py_None())) {
             var view: c.Py_buffer = undefined;
             if (c.PyObject_GetBuffer(data, &view, c.PyBUF_SIMPLE) == 0) {
                 const ptr: [*]const u8 = @ptrCast(view.buf);
@@ -508,28 +500,28 @@ fn make_openssl_hash(algo: HashAlgorithm, _: ?*c.PyObject, args: ?*c.PyObject, k
     return obj_raw;
 }
 
-fn py_openssl_md5(self: ?*c.PyObject, args: ?*c.PyObject, kwargs: ?*c.PyObject) callconv(.C) ?*c.PyObject {
+fn py_openssl_md5(self: ?*c.PyObject, args: ?*c.PyObject, kwargs: ?*c.PyObject) callconv(.c) ?*c.PyObject {
     return make_openssl_hash(.md5, self, args, kwargs);
 }
-fn py_openssl_sha1(self: ?*c.PyObject, args: ?*c.PyObject, kwargs: ?*c.PyObject) callconv(.C) ?*c.PyObject {
+fn py_openssl_sha1(self: ?*c.PyObject, args: ?*c.PyObject, kwargs: ?*c.PyObject) callconv(.c) ?*c.PyObject {
     return make_openssl_hash(.sha1, self, args, kwargs);
 }
-fn py_openssl_sha224(self: ?*c.PyObject, args: ?*c.PyObject, kwargs: ?*c.PyObject) callconv(.C) ?*c.PyObject {
+fn py_openssl_sha224(self: ?*c.PyObject, args: ?*c.PyObject, kwargs: ?*c.PyObject) callconv(.c) ?*c.PyObject {
     return make_openssl_hash(.sha224, self, args, kwargs);
 }
-fn py_openssl_sha256(self: ?*c.PyObject, args: ?*c.PyObject, kwargs: ?*c.PyObject) callconv(.C) ?*c.PyObject {
+fn py_openssl_sha256(self: ?*c.PyObject, args: ?*c.PyObject, kwargs: ?*c.PyObject) callconv(.c) ?*c.PyObject {
     return make_openssl_hash(.sha256, self, args, kwargs);
 }
-fn py_openssl_sha384(self: ?*c.PyObject, args: ?*c.PyObject, kwargs: ?*c.PyObject) callconv(.C) ?*c.PyObject {
+fn py_openssl_sha384(self: ?*c.PyObject, args: ?*c.PyObject, kwargs: ?*c.PyObject) callconv(.c) ?*c.PyObject {
     return make_openssl_hash(.sha384, self, args, kwargs);
 }
-fn py_openssl_sha512(self: ?*c.PyObject, args: ?*c.PyObject, kwargs: ?*c.PyObject) callconv(.C) ?*c.PyObject {
+fn py_openssl_sha512(self: ?*c.PyObject, args: ?*c.PyObject, kwargs: ?*c.PyObject) callconv(.c) ?*c.PyObject {
     return make_openssl_hash(.sha512, self, args, kwargs);
 }
 
 /// compare_digest(a, b) -> bool
 /// Constant-time comparison to prevent timing attacks
-fn py_compare_digest(_: ?*c.PyObject, args: ?*c.PyObject) callconv(.C) ?*c.PyObject {
+fn py_compare_digest(_: ?*c.PyObject, args: ?*c.PyObject) callconv(.c) ?*c.PyObject {
     var a_obj: ?*c.PyObject = null;
     var b_obj: ?*c.PyObject = null;
     if (c.PyArg_ParseTuple(args, "OO", &a_obj, &b_obj) == 0) return null;
@@ -542,8 +534,8 @@ fn py_compare_digest(_: ?*c.PyObject, args: ?*c.PyObject) callconv(.C) ?*c.PyObj
         const b_ptr: [*]const u8 = @ptrCast(c.PyBytes_AsString(b_obj.?));
 
         if (a_len != b_len) {
-            c.Py_IncRef(c.Py_False);
-            return c.Py_False;
+            c.Py_IncRef(c.Py_False());
+            return c.Py_False();
         }
 
         // Constant-time comparison
@@ -554,11 +546,11 @@ fn py_compare_digest(_: ?*c.PyObject, args: ?*c.PyObject) callconv(.C) ?*c.PyObj
         }
 
         if (result == 0) {
-            c.Py_IncRef(c.Py_True);
-            return c.Py_True;
+            c.Py_IncRef(c.Py_True());
+            return c.Py_True();
         } else {
-            c.Py_IncRef(c.Py_False);
-            return c.Py_False;
+            c.Py_IncRef(c.Py_False());
+            return c.Py_False();
         }
     }
 
@@ -571,8 +563,8 @@ fn py_compare_digest(_: ?*c.PyObject, args: ?*c.PyObject) callconv(.C) ?*c.PyObj
 
         if (a_ptr == null or b_ptr == null) return null;
         if (a_len != b_len) {
-            c.Py_IncRef(c.Py_False);
-            return c.Py_False;
+            c.Py_IncRef(c.Py_False());
+            return c.Py_False();
         }
 
         var result: u8 = 0;
@@ -582,11 +574,11 @@ fn py_compare_digest(_: ?*c.PyObject, args: ?*c.PyObject) callconv(.C) ?*c.PyObj
         }
 
         if (result == 0) {
-            c.Py_IncRef(c.Py_True);
-            return c.Py_True;
+            c.Py_IncRef(c.Py_True());
+            return c.Py_True();
         } else {
-            c.Py_IncRef(c.Py_False);
-            return c.Py_False;
+            c.Py_IncRef(c.Py_False());
+            return c.Py_False();
         }
     }
 
@@ -595,7 +587,7 @@ fn py_compare_digest(_: ?*c.PyObject, args: ?*c.PyObject) callconv(.C) ?*c.PyObj
 }
 
 /// pbkdf2_hmac(hash_name, password, salt, iterations, dklen=None) -> bytes
-fn py_pbkdf2_hmac(_: ?*c.PyObject, args: ?*c.PyObject, kwargs: ?*c.PyObject) callconv(.C) ?*c.PyObject {
+fn py_pbkdf2_hmac(_: ?*c.PyObject, args: ?*c.PyObject, kwargs: ?*c.PyObject) callconv(.c) ?*c.PyObject {
     var hash_name: ?[*:0]const u8 = null;
     var password: c.Py_buffer = undefined;
     var salt: c.Py_buffer = undefined;
@@ -629,7 +621,7 @@ fn py_pbkdf2_hmac(_: ?*c.PyObject, args: ?*c.PyObject, kwargs: ?*c.PyObject) cal
         return null;
     }
 
-    const dk_size: usize = if (dklen_obj != null and dklen_obj != @as(?*c.PyObject, c.Py_None))
+    const dk_size: usize = if (dklen_obj != null and dklen_obj != @as(?*c.PyObject, c.Py_None()))
         @intCast(c.PyLong_AsSize_t(dklen_obj.?))
     else
         Sha256.digest_length;
@@ -674,7 +666,7 @@ fn py_pbkdf2_hmac(_: ?*c.PyObject, args: ?*c.PyObject, kwargs: ?*c.PyObject) cal
 }
 
 /// hmac_digest(key, msg, digest) -> bytes
-fn py_hmac_digest(_: ?*c.PyObject, args: ?*c.PyObject) callconv(.C) ?*c.PyObject {
+fn py_hmac_digest(_: ?*c.PyObject, args: ?*c.PyObject) callconv(.c) ?*c.PyObject {
     var key: c.Py_buffer = undefined;
     var msg: c.Py_buffer = undefined;
     var digest_name: ?[*:0]const u8 = null;
@@ -703,7 +695,7 @@ fn py_hmac_digest(_: ?*c.PyObject, args: ?*c.PyObject) callconv(.C) ?*c.PyObject
 }
 
 /// get_fips_mode() -> int (always 0, FIPS not supported)
-fn py_get_fips_mode(_: ?*c.PyObject, _: ?*c.PyObject) callconv(.C) ?*c.PyObject {
+fn py_get_fips_mode(_: ?*c.PyObject, _: ?*c.PyObject) callconv(.c) ?*c.PyObject {
     return c.PyLong_FromLong(0);
 }
 

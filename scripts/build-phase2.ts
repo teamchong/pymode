@@ -463,6 +463,30 @@ exec zig cc -target wasm32-wasi -E "\${ARGS[@]}"
       name: "_zerobuf",
       zig_src: join(zigModulesDir, "_zerobuf", "module.zig"),
     },
+    {
+      name: "_hashlib",
+      zig_src: join(zigModulesDir, "_hashlib", "module.zig"),
+    },
+    {
+      name: "_json",
+      zig_src: join(zigModulesDir, "_json", "module.zig"),
+    },
+    {
+      name: "_collections",
+      zig_src: join(zigModulesDir, "_collections", "module.zig"),
+    },
+    {
+      name: "_functools",
+      zig_src: join(zigModulesDir, "_functools", "module.zig"),
+    },
+    {
+      name: "binascii",
+      zig_src: join(zigModulesDir, "binascii", "module.zig"),
+    },
+    {
+      name: "zlib",
+      zig_src: join(zigModulesDir, "zlib", "module.zig"),
+    },
   ];
 
   const builtModules: NativeModule[] = [];

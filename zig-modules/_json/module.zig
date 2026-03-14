@@ -32,7 +32,7 @@ const ScannerObject = extern struct {
     memo: ?*c.PyObject,
 };
 
-fn scanner_init(self_raw: ?*c.PyObject, args: ?*c.PyObject, _: ?*c.PyObject) callconv(.C) c_int {
+fn scanner_init(self_raw: ?*c.PyObject, args: ?*c.PyObject, _: ?*c.PyObject) callconv(.c) c_int {
     const self: *ScannerObject = @ptrCast(@alignCast(self_raw));
     var ctx: ?*c.PyObject = null;
     if (c.PyArg_ParseTuple(args, "O", &ctx) == 0) return -1;
@@ -41,14 +41,14 @@ fn scanner_init(self_raw: ?*c.PyObject, args: ?*c.PyObject, _: ?*c.PyObject) cal
 
     self.strict = 1;
     self.object_hook = c.PyObject_GetAttrString(context, "object_hook");
-    if (self.object_hook != null and self.object_hook == c.Py_None) {
+    if (self.object_hook != null and self.object_hook == c.Py_None()) {
         c.Py_DecRef(self.object_hook);
         self.object_hook = null;
     }
     _ = c.PyErr_Clear();
 
     self.object_pairs_hook = c.PyObject_GetAttrString(context, "object_pairs_hook");
-    if (self.object_pairs_hook != null and self.object_pairs_hook == c.Py_None) {
+    if (self.object_pairs_hook != null and self.object_pairs_hook == c.Py_None()) {
         c.Py_DecRef(self.object_pairs_hook);
         self.object_pairs_hook = null;
     }
@@ -72,7 +72,7 @@ fn scanner_init(self_raw: ?*c.PyObject, args: ?*c.PyObject, _: ?*c.PyObject) cal
     return 0;
 }
 
-fn scanner_call(self_raw: ?*c.PyObject, args: ?*c.PyObject, _: ?*c.PyObject) callconv(.C) ?*c.PyObject {
+fn scanner_call(self_raw: ?*c.PyObject, args: ?*c.PyObject, _: ?*c.PyObject) callconv(.c) ?*c.PyObject {
     _ = @as(*ScannerObject, @ptrCast(@alignCast(self_raw)));
     var string: ?*c.PyObject = null;
     var idx: c.Py_ssize_t = 0;
@@ -102,17 +102,17 @@ fn scan_string_value(pystr: *c.PyObject, idx: c.Py_ssize_t) ?*c.PyObject {
         '"' => return parse_json_string(str_ptr, str_len, idx),
         'n' => {
             if (data.len >= 4 and std.mem.eql(u8, data[0..4], "null")) {
-                return make_pair(c.Py_None, idx + 4);
+                return make_pair(c.Py_None(), idx + 4);
             }
         },
         't' => {
             if (data.len >= 4 and std.mem.eql(u8, data[0..4], "true")) {
-                return make_pair(c.Py_True, idx + 4);
+                return make_pair(c.Py_True(), idx + 4);
             }
         },
         'f' => {
             if (data.len >= 5 and std.mem.eql(u8, data[0..5], "false")) {
-                return make_pair(c.Py_False, idx + 5);
+                return make_pair(c.Py_False(), idx + 5);
             }
         },
         '-', '0'...'9' => return parse_json_number(str_ptr, str_len, idx),
@@ -315,7 +315,7 @@ fn parse_json_number(str_ptr: [*]const u8, str_len: c.Py_ssize_t, start_idx: c.P
     return make_pair(value, @intCast(pos));
 }
 
-fn scanner_dealloc(self_raw: ?*c.PyObject) callconv(.C) void {
+fn scanner_dealloc(self_raw: ?*c.PyObject) callconv(.c) void {
     const self: *ScannerObject = @ptrCast(@alignCast(self_raw));
     if (self.object_hook) |h| c.Py_DecRef(h);
     if (self.object_pairs_hook) |h| c.Py_DecRef(h);
@@ -343,7 +343,7 @@ const EncoderObject = extern struct {
     allow_nan: c_int,
 };
 
-fn encoder_init(self_raw: ?*c.PyObject, args: ?*c.PyObject, _: ?*c.PyObject) callconv(.C) c_int {
+fn encoder_init(self_raw: ?*c.PyObject, args: ?*c.PyObject, _: ?*c.PyObject) callconv(.c) c_int {
     const self: *EncoderObject = @ptrCast(@alignCast(self_raw));
     var markers: ?*c.PyObject = null;
     var default_fn: ?*c.PyObject = null;
@@ -388,7 +388,7 @@ fn encoder_init(self_raw: ?*c.PyObject, args: ?*c.PyObject, _: ?*c.PyObject) cal
     return 0;
 }
 
-fn encoder_call(self_raw: ?*c.PyObject, args: ?*c.PyObject, _: ?*c.PyObject) callconv(.C) ?*c.PyObject {
+fn encoder_call(self_raw: ?*c.PyObject, args: ?*c.PyObject, _: ?*c.PyObject) callconv(.c) ?*c.PyObject {
     const self: *EncoderObject = @ptrCast(@alignCast(self_raw));
     var obj: ?*c.PyObject = null;
     var current_indent_level: c.Py_ssize_t = 0;
@@ -407,17 +407,17 @@ fn encoder_call(self_raw: ?*c.PyObject, args: ?*c.PyObject, _: ?*c.PyObject) cal
 
 fn encode_obj(self: *EncoderObject, chunks: *c.PyObject, obj: *c.PyObject, _: c.Py_ssize_t) c_int {
     // None
-    if (obj == c.Py_None) {
+    if (obj == c.Py_None()) {
         return append_chunk(chunks, "null");
     }
 
     // True
-    if (obj == c.Py_True) {
+    if (obj == c.Py_True()) {
         return append_chunk(chunks, "true");
     }
 
     // False
-    if (obj == c.Py_False) {
+    if (obj == c.Py_False()) {
         return append_chunk(chunks, "false");
     }
 
@@ -564,7 +564,7 @@ fn encode_float(self: *EncoderObject, chunks: *c.PyObject, obj: *c.PyObject) c_i
     return 0;
 }
 
-fn encoder_dealloc(self_raw: ?*c.PyObject) callconv(.C) void {
+fn encoder_dealloc(self_raw: ?*c.PyObject) callconv(.c) void {
     const self: *EncoderObject = @ptrCast(@alignCast(self_raw));
     if (self.markers) |m| c.Py_DecRef(m);
     if (self.default_fn) |d| c.Py_DecRef(d);
@@ -581,7 +581,7 @@ fn encoder_dealloc(self_raw: ?*c.PyObject) callconv(.C) void {
 
 /// encode_basestring(string) -> string
 /// Escape a string for JSON embedding. Returns the escaped string with quotes.
-fn py_encode_basestring(_: ?*c.PyObject, args: ?*c.PyObject) callconv(.C) ?*c.PyObject {
+fn py_encode_basestring(_: ?*c.PyObject, args: ?*c.PyObject) callconv(.c) ?*c.PyObject {
     var obj: ?*c.PyObject = null;
     if (c.PyArg_ParseTuple(args, "O", &obj) == 0) return null;
 
@@ -661,7 +661,7 @@ fn py_encode_basestring(_: ?*c.PyObject, args: ?*c.PyObject) callconv(.C) ?*c.Py
 
 /// encode_basestring_ascii(string) -> string
 /// Same as encode_basestring but escapes all non-ASCII characters too.
-fn py_encode_basestring_ascii(_: ?*c.PyObject, args: ?*c.PyObject) callconv(.C) ?*c.PyObject {
+fn py_encode_basestring_ascii(_: ?*c.PyObject, args: ?*c.PyObject) callconv(.c) ?*c.PyObject {
     var obj: ?*c.PyObject = null;
     if (c.PyArg_ParseTuple(args, "O", &obj) == 0) return null;
 

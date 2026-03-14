@@ -37,7 +37,7 @@ const DequeObject = extern struct {
     maxlen: c.Py_ssize_t, // -1 means unbounded
 };
 
-fn deque_init(self_raw: ?*c.PyObject, args: ?*c.PyObject, kwargs: ?*c.PyObject) callconv(.C) c_int {
+fn deque_init(self_raw: ?*c.PyObject, args: ?*c.PyObject, kwargs: ?*c.PyObject) callconv(.c) c_int {
     const self: *DequeObject = @ptrCast(@alignCast(self_raw));
     var iterable: ?*c.PyObject = null;
     var maxlen_obj: ?*c.PyObject = null;
@@ -50,7 +50,7 @@ fn deque_init(self_raw: ?*c.PyObject, args: ?*c.PyObject, kwargs: ?*c.PyObject) 
     self.len = 0;
     self.maxlen = -1;
 
-    if (maxlen_obj != null and maxlen_obj != @as(?*c.PyObject, c.Py_None)) {
+    if (maxlen_obj != null and maxlen_obj != @as(?*c.PyObject, c.Py_None())) {
         self.maxlen = c.PyLong_AsSsize_t(maxlen_obj.?);
         if (self.maxlen < 0) {
             c.PyErr_SetString(c.PyExc_ValueError, "maxlen must be non-negative");
@@ -59,7 +59,7 @@ fn deque_init(self_raw: ?*c.PyObject, args: ?*c.PyObject, kwargs: ?*c.PyObject) 
     }
 
     // Populate from iterable
-    if (iterable != null and iterable != @as(?*c.PyObject, c.Py_None)) {
+    if (iterable != null and iterable != @as(?*c.PyObject, c.Py_None())) {
         const iter = c.PyObject_GetIter(iterable.?);
         if (iter == null) return -1;
         defer c.Py_DecRef(iter);
@@ -179,25 +179,25 @@ fn deque_clear_internal(self: *DequeObject) void {
 
 // Python-facing methods
 
-fn py_deque_append(self_raw: ?*c.PyObject, args: ?*c.PyObject) callconv(.C) ?*c.PyObject {
+fn py_deque_append(self_raw: ?*c.PyObject, args: ?*c.PyObject) callconv(.c) ?*c.PyObject {
     const self: *DequeObject = @ptrCast(@alignCast(self_raw));
     var value: ?*c.PyObject = null;
     if (c.PyArg_ParseTuple(args, "O", &value) == 0) return null;
     if (deque_append_right(self, value.?) != 0) return null;
-    c.Py_IncRef(c.Py_None);
-    return c.Py_None;
+    c.Py_IncRef(c.Py_None());
+    return c.Py_None();
 }
 
-fn py_deque_appendleft(self_raw: ?*c.PyObject, args: ?*c.PyObject) callconv(.C) ?*c.PyObject {
+fn py_deque_appendleft(self_raw: ?*c.PyObject, args: ?*c.PyObject) callconv(.c) ?*c.PyObject {
     const self: *DequeObject = @ptrCast(@alignCast(self_raw));
     var value: ?*c.PyObject = null;
     if (c.PyArg_ParseTuple(args, "O", &value) == 0) return null;
     if (deque_append_left(self, value.?) != 0) return null;
-    c.Py_IncRef(c.Py_None);
-    return c.Py_None;
+    c.Py_IncRef(c.Py_None());
+    return c.Py_None();
 }
 
-fn py_deque_pop(self_raw: ?*c.PyObject, _: ?*c.PyObject) callconv(.C) ?*c.PyObject {
+fn py_deque_pop(self_raw: ?*c.PyObject, _: ?*c.PyObject) callconv(.c) ?*c.PyObject {
     const self: *DequeObject = @ptrCast(@alignCast(self_raw));
     const val = deque_popright_internal(self) orelse {
         c.PyErr_SetString(c.PyExc_IndexError, "pop from an empty deque");
@@ -206,7 +206,7 @@ fn py_deque_pop(self_raw: ?*c.PyObject, _: ?*c.PyObject) callconv(.C) ?*c.PyObje
     return val; // Already has a reference
 }
 
-fn py_deque_popleft(self_raw: ?*c.PyObject, _: ?*c.PyObject) callconv(.C) ?*c.PyObject {
+fn py_deque_popleft(self_raw: ?*c.PyObject, _: ?*c.PyObject) callconv(.c) ?*c.PyObject {
     const self: *DequeObject = @ptrCast(@alignCast(self_raw));
     const val = deque_popleft_internal(self) orelse {
         c.PyErr_SetString(c.PyExc_IndexError, "pop from an empty deque");
@@ -215,7 +215,7 @@ fn py_deque_popleft(self_raw: ?*c.PyObject, _: ?*c.PyObject) callconv(.C) ?*c.Py
     return val;
 }
 
-fn py_deque_extend(self_raw: ?*c.PyObject, args: ?*c.PyObject) callconv(.C) ?*c.PyObject {
+fn py_deque_extend(self_raw: ?*c.PyObject, args: ?*c.PyObject) callconv(.c) ?*c.PyObject {
     const self: *DequeObject = @ptrCast(@alignCast(self_raw));
     var iterable: ?*c.PyObject = null;
     if (c.PyArg_ParseTuple(args, "O", &iterable) == 0) return null;
@@ -237,11 +237,11 @@ fn py_deque_extend(self_raw: ?*c.PyObject, args: ?*c.PyObject) callconv(.C) ?*c.
         c.Py_DecRef(item); // deque_append_right already incref'd
     }
 
-    c.Py_IncRef(c.Py_None);
-    return c.Py_None;
+    c.Py_IncRef(c.Py_None());
+    return c.Py_None();
 }
 
-fn py_deque_extendleft(self_raw: ?*c.PyObject, args: ?*c.PyObject) callconv(.C) ?*c.PyObject {
+fn py_deque_extendleft(self_raw: ?*c.PyObject, args: ?*c.PyObject) callconv(.c) ?*c.PyObject {
     const self: *DequeObject = @ptrCast(@alignCast(self_raw));
     var iterable: ?*c.PyObject = null;
     if (c.PyArg_ParseTuple(args, "O", &iterable) == 0) return null;
@@ -263,26 +263,26 @@ fn py_deque_extendleft(self_raw: ?*c.PyObject, args: ?*c.PyObject) callconv(.C) 
         c.Py_DecRef(item);
     }
 
-    c.Py_IncRef(c.Py_None);
-    return c.Py_None;
+    c.Py_IncRef(c.Py_None());
+    return c.Py_None();
 }
 
-fn py_deque_rotate(self_raw: ?*c.PyObject, args: ?*c.PyObject) callconv(.C) ?*c.PyObject {
+fn py_deque_rotate(self_raw: ?*c.PyObject, args: ?*c.PyObject) callconv(.c) ?*c.PyObject {
     const self: *DequeObject = @ptrCast(@alignCast(self_raw));
     var n: c.Py_ssize_t = 1;
     if (c.PyArg_ParseTuple(args, "|n", &n) == 0) return null;
 
     if (self.len <= 1 or n == 0) {
-        c.Py_IncRef(c.Py_None);
-        return c.Py_None;
+        c.Py_IncRef(c.Py_None());
+        return c.Py_None();
     }
 
     // Normalize n
     const len_i: c.Py_ssize_t = self.len;
     n = @mod(n, len_i);
     if (n == 0) {
-        c.Py_IncRef(c.Py_None);
-        return c.Py_None;
+        c.Py_IncRef(c.Py_None());
+        return c.Py_None();
     }
 
     if (n > 0) {
@@ -307,18 +307,18 @@ fn py_deque_rotate(self_raw: ?*c.PyObject, args: ?*c.PyObject) callconv(.C) ?*c.
         }
     }
 
-    c.Py_IncRef(c.Py_None);
-    return c.Py_None;
+    c.Py_IncRef(c.Py_None());
+    return c.Py_None();
 }
 
-fn py_deque_clear(self_raw: ?*c.PyObject, _: ?*c.PyObject) callconv(.C) ?*c.PyObject {
+fn py_deque_clear(self_raw: ?*c.PyObject, _: ?*c.PyObject) callconv(.c) ?*c.PyObject {
     const self: *DequeObject = @ptrCast(@alignCast(self_raw));
     deque_clear_internal(self);
-    c.Py_IncRef(c.Py_None);
-    return c.Py_None;
+    c.Py_IncRef(c.Py_None());
+    return c.Py_None();
 }
 
-fn py_deque_copy(self_raw: ?*c.PyObject, _: ?*c.PyObject) callconv(.C) ?*c.PyObject {
+fn py_deque_copy(self_raw: ?*c.PyObject, _: ?*c.PyObject) callconv(.c) ?*c.PyObject {
     const self: *DequeObject = @ptrCast(@alignCast(self_raw));
 
     const new_obj = c.PyType_GenericNew(&deque_type, null, null);
@@ -343,7 +343,7 @@ fn py_deque_copy(self_raw: ?*c.PyObject, _: ?*c.PyObject) callconv(.C) ?*c.PyObj
     return new_obj;
 }
 
-fn py_deque_count(self_raw: ?*c.PyObject, args: ?*c.PyObject) callconv(.C) ?*c.PyObject {
+fn py_deque_count(self_raw: ?*c.PyObject, args: ?*c.PyObject) callconv(.c) ?*c.PyObject {
     const self: *DequeObject = @ptrCast(@alignCast(self_raw));
     var value: ?*c.PyObject = null;
     if (c.PyArg_ParseTuple(args, "O", &value) == 0) return null;
@@ -361,7 +361,7 @@ fn py_deque_count(self_raw: ?*c.PyObject, args: ?*c.PyObject) callconv(.C) ?*c.P
     return c.PyLong_FromSsize_t(count);
 }
 
-fn py_deque_reverse(self_raw: ?*c.PyObject, _: ?*c.PyObject) callconv(.C) ?*c.PyObject {
+fn py_deque_reverse(self_raw: ?*c.PyObject, _: ?*c.PyObject) callconv(.c) ?*c.PyObject {
     const self: *DequeObject = @ptrCast(@alignCast(self_raw));
 
     var node_raw = self.head;
@@ -376,16 +376,16 @@ fn py_deque_reverse(self_raw: ?*c.PyObject, _: ?*c.PyObject) callconv(.C) ?*c.Py
     self.head = self.tail;
     self.tail = tmp;
 
-    c.Py_IncRef(c.Py_None);
-    return c.Py_None;
+    c.Py_IncRef(c.Py_None());
+    return c.Py_None();
 }
 
-fn deque_len(self_raw: ?*c.PyObject) callconv(.C) c.Py_ssize_t {
+fn deque_len(self_raw: ?*c.PyObject) callconv(.c) c.Py_ssize_t {
     const self: *DequeObject = @ptrCast(@alignCast(self_raw));
     return self.len;
 }
 
-fn deque_getitem(self_raw: ?*c.PyObject, index: c.Py_ssize_t) callconv(.C) ?*c.PyObject {
+fn deque_getitem(self_raw: ?*c.PyObject, index: c.Py_ssize_t) callconv(.c) ?*c.PyObject {
     const self: *DequeObject = @ptrCast(@alignCast(self_raw));
 
     var actual_idx = index;
@@ -411,7 +411,7 @@ fn deque_getitem(self_raw: ?*c.PyObject, index: c.Py_ssize_t) callconv(.C) ?*c.P
     return null;
 }
 
-fn py_deque_index(self_raw: ?*c.PyObject, args: ?*c.PyObject) callconv(.C) ?*c.PyObject {
+fn py_deque_index(self_raw: ?*c.PyObject, args: ?*c.PyObject) callconv(.c) ?*c.PyObject {
     const self: *DequeObject = @ptrCast(@alignCast(self_raw));
     var value: ?*c.PyObject = null;
     var start: c.Py_ssize_t = 0;
@@ -441,7 +441,7 @@ fn py_deque_index(self_raw: ?*c.PyObject, args: ?*c.PyObject) callconv(.C) ?*c.P
     return null;
 }
 
-fn py_deque_remove(self_raw: ?*c.PyObject, args: ?*c.PyObject) callconv(.C) ?*c.PyObject {
+fn py_deque_remove(self_raw: ?*c.PyObject, args: ?*c.PyObject) callconv(.c) ?*c.PyObject {
     const self: *DequeObject = @ptrCast(@alignCast(self_raw));
     var value: ?*c.PyObject = null;
     if (c.PyArg_ParseTuple(args, "O", &value) == 0) return null;
@@ -467,8 +467,8 @@ fn py_deque_remove(self_raw: ?*c.PyObject, args: ?*c.PyObject) callconv(.C) ?*c.
             allocator.destroy(node);
             self.len -= 1;
 
-            c.Py_IncRef(c.Py_None);
-            return c.Py_None;
+            c.Py_IncRef(c.Py_None());
+            return c.Py_None();
         }
         node_raw = node.next;
     }
@@ -477,12 +477,12 @@ fn py_deque_remove(self_raw: ?*c.PyObject, args: ?*c.PyObject) callconv(.C) ?*c.
     return null;
 }
 
-fn deque_bool(self_raw: ?*c.PyObject) callconv(.C) c_int {
+fn deque_bool(self_raw: ?*c.PyObject) callconv(.c) c_int {
     const self: *DequeObject = @ptrCast(@alignCast(self_raw));
     return if (self.len > 0) 1 else 0;
 }
 
-fn deque_iter(self_raw: ?*c.PyObject) callconv(.C) ?*c.PyObject {
+fn deque_iter(self_raw: ?*c.PyObject) callconv(.c) ?*c.PyObject {
     const self: *DequeObject = @ptrCast(@alignCast(self_raw));
     // Build a list and return its iterator - this matches CPython's behavior
     // of providing a snapshot iterator that is not invalidated by mutations
@@ -504,7 +504,7 @@ fn deque_iter(self_raw: ?*c.PyObject) callconv(.C) ?*c.PyObject {
     return iter;
 }
 
-fn deque_repr(self_raw: ?*c.PyObject) callconv(.C) ?*c.PyObject {
+fn deque_repr(self_raw: ?*c.PyObject) callconv(.c) ?*c.PyObject {
     const self: *DequeObject = @ptrCast(@alignCast(self_raw));
 
     // Build list repr
@@ -533,17 +533,17 @@ fn deque_repr(self_raw: ?*c.PyObject) callconv(.C) ?*c.PyObject {
     }
 }
 
-fn deque_dealloc(self_raw: ?*c.PyObject) callconv(.C) void {
+fn deque_dealloc(self_raw: ?*c.PyObject) callconv(.c) void {
     const self: *DequeObject = @ptrCast(@alignCast(self_raw));
     deque_clear_internal(self);
     c.PyObject_Free(self_raw);
 }
 
-fn py_deque_maxlen_get(self_raw: ?*c.PyObject, _: ?*anyopaque) callconv(.C) ?*c.PyObject {
+fn py_deque_maxlen_get(self_raw: ?*c.PyObject, _: ?*anyopaque) callconv(.c) ?*c.PyObject {
     const self: *DequeObject = @ptrCast(@alignCast(self_raw));
     if (self.maxlen < 0) {
-        c.Py_IncRef(c.Py_None);
-        return c.Py_None;
+        c.Py_IncRef(c.Py_None());
+        return c.Py_None();
     }
     return c.PyLong_FromSsize_t(self.maxlen);
 }
@@ -611,14 +611,14 @@ const DefaultDictObject = extern struct {
     default_factory: ?*c.PyObject,
 };
 
-fn defaultdict_init(self_raw: ?*c.PyObject, args: ?*c.PyObject, kwargs: ?*c.PyObject) callconv(.C) c_int {
+fn defaultdict_init(self_raw: ?*c.PyObject, args: ?*c.PyObject, kwargs: ?*c.PyObject) callconv(.c) c_int {
     // Extract first positional arg as default_factory, pass rest to dict.__init__
     var factory: ?*c.PyObject = null;
 
     const nargs = if (args != null) c.PyTuple_Size(args) else 0;
     if (nargs > 0) {
         factory = c.PyTuple_GetItem(args, 0);
-        if (factory != null and factory == c.Py_None) {
+        if (factory != null and factory == c.Py_None()) {
             factory = null;
         }
     }
@@ -645,12 +645,12 @@ fn defaultdict_init(self_raw: ?*c.PyObject, args: ?*c.PyObject, kwargs: ?*c.PyOb
     return 0;
 }
 
-fn defaultdict_missing(self_raw: ?*c.PyObject, args: ?*c.PyObject) callconv(.C) ?*c.PyObject {
+fn defaultdict_missing(self_raw: ?*c.PyObject, args: ?*c.PyObject) callconv(.c) ?*c.PyObject {
     var key: ?*c.PyObject = null;
     if (c.PyArg_ParseTuple(args, "O", &key) == 0) return null;
 
     const factory = c.PyObject_GetAttrString(self_raw, "_default_factory_attr");
-    if (factory == null or factory == c.Py_None) {
+    if (factory == null or factory == c.Py_None()) {
         _ = c.PyErr_Clear();
         c.PyErr_SetObject(c.PyExc_KeyError, key.?);
         return null;
@@ -668,7 +668,7 @@ fn defaultdict_missing(self_raw: ?*c.PyObject, args: ?*c.PyObject) callconv(.C) 
     return value;
 }
 
-fn defaultdict_repr(self_raw: ?*c.PyObject) callconv(.C) ?*c.PyObject {
+fn defaultdict_repr(self_raw: ?*c.PyObject) callconv(.c) ?*c.PyObject {
     const factory = c.PyObject_GetAttrString(self_raw, "_default_factory_attr");
     const factory_repr = if (factory != null) c.PyObject_Repr(factory) else c.PyUnicode_FromString("None");
     if (factory) |f| c.Py_DecRef(f);
@@ -706,7 +706,7 @@ var defaultdict_type: c.PyTypeObject = blk: {
 // _count_elements helper (used internally by collections.Counter)
 // ============================================================================
 
-fn py_count_elements(_: ?*c.PyObject, args: ?*c.PyObject) callconv(.C) ?*c.PyObject {
+fn py_count_elements(_: ?*c.PyObject, args: ?*c.PyObject) callconv(.c) ?*c.PyObject {
     var mapping: ?*c.PyObject = null;
     var iterable: ?*c.PyObject = null;
     if (c.PyArg_ParseTuple(args, "OO", &mapping, &iterable) == 0) return null;
@@ -750,8 +750,8 @@ fn py_count_elements(_: ?*c.PyObject, args: ?*c.PyObject) callconv(.C) ?*c.PyObj
         c.Py_DecRef(new_count);
     }
 
-    c.Py_IncRef(c.Py_None);
-    return c.Py_None;
+    c.Py_IncRef(c.Py_None());
+    return c.Py_None();
 }
 
 // ============================================================================
