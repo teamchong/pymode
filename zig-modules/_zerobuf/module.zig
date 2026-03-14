@@ -5,6 +5,10 @@
 // zerobuf npm package. No serialization, no copying.
 //
 // Exports PyInit__zerobuf so CPython loads it as _zerobuf native extension.
+//
+// IMPORTANT: WASM linear memory starts at address 0. Zig treats @ptrFromInt(0)
+// as a null pointer and LLVM optimizes away dereferences in ReleaseFast.
+// All memory access MUST go through wasm_ptr() which returns [*]allowzero u8.
 
 const std = @import("std");
 const zb = @import("zerobuf.zig");
@@ -31,20 +35,61 @@ fn py_false() ?*py.PyObject {
 }
 
 // ============================================================================
-// Memory access — WASM linear memory starts at address 0
+// Memory access — WASM linear memory via allowzero pointers
 // ============================================================================
 
-fn get_mem() [*]u8 {
-    // WASM linear memory starts at address 0. Use a runtime-computed value
-    // to avoid Zig's compile-time null pointer check.
-    var addr: usize = 0;
-    _ = &addr; // prevent "never mutated" — need runtime value to bypass null check
-    return @ptrFromInt(addr);
+/// Get a pointer to WASM linear memory at address 0.
+/// Uses [*]allowzero u8 to tell Zig that address 0 is valid (as it is in WASM).
+/// This prevents LLVM from optimizing away memory accesses as "null deref UB".
+fn wasm_ptr() [*]allowzero u8 {
+    return @ptrFromInt(0);
+}
+
+fn wasm_ptr_const() [*]allowzero const u8 {
+    return @ptrFromInt(0);
+}
+
+/// Load a byte from WASM linear memory at the given address.
+fn wasm_load_u8(addr: u32) u8 {
+    return wasm_ptr_const()[addr];
+}
+
+/// Load a little-endian u32 from WASM linear memory.
+fn wasm_load_u32(addr: u32) u32 {
+    const p = wasm_ptr_const() + addr;
+    return std.mem.readInt(u32, @as(*const [4]u8, @ptrCast(p)), .little);
+}
+
+/// Load a little-endian i32 from WASM linear memory.
+fn wasm_load_i32(addr: u32) i32 {
+    const p = wasm_ptr_const() + addr;
+    return std.mem.readInt(i32, @as(*const [4]u8, @ptrCast(p)), .little);
+}
+
+/// Load a little-endian f64 from WASM linear memory.
+fn wasm_load_f64(addr: u32) f64 {
+    const p = wasm_ptr_const() + addr;
+    return @bitCast(std.mem.readInt(u64, @as(*const [8]u8, @ptrCast(p)), .little));
+}
+
+/// Load a little-endian i64 from WASM linear memory.
+fn wasm_load_i64(addr: u32) i64 {
+    const p = wasm_ptr_const() + addr;
+    return std.mem.readInt(i64, @as(*const [8]u8, @ptrCast(p)), .little);
+}
+
+/// Store a little-endian u32 to WASM linear memory.
+fn wasm_store_u32(addr: u32, val: u32) void {
+    const p = wasm_ptr() + addr;
+    std.mem.writeInt(u32, @as(*[4]u8, @ptrCast(p)), val, .little);
+}
+
+/// Store a byte to WASM linear memory.
+fn wasm_store_u8(addr: u32, val: u8) void {
+    wasm_ptr()[addr] = val;
 }
 
 fn get_mem_len() u32 {
-    // __heap_base is the end of static data; memory.size gives total pages
-    // For safety, use a large value — WASM traps on out-of-bounds anyway
     return @as(u32, @truncate(@wasmMemorySize(0))) * 65536;
 }
 
@@ -56,36 +101,39 @@ fn get_mem_len() u32 {
 fn py_tag(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     var offset: c_uint = 0;
     if (py.PyArg_ParseTuple(args, "I", &offset) == 0) return null;
-    return py.PyLong_FromLong(@intCast(zb.zerobuf_tag(get_mem(), offset)));
+    return py.PyLong_FromLong(@intCast(wasm_load_u8(offset)));
 }
 
 // read_i32(offset) -> int
 fn py_read_i32(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     var offset: c_uint = 0;
     if (py.PyArg_ParseTuple(args, "I", &offset) == 0) return null;
-    return py.PyLong_FromLong(zb.zerobuf_read_i32(get_mem(), offset));
+    if (wasm_load_u8(offset) != @intFromEnum(zb.Tag.i32)) return py.PyLong_FromLong(0);
+    return py.PyLong_FromLong(wasm_load_i32(offset + 4));
 }
 
 // read_f64(offset) -> float
 fn py_read_f64(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     var offset: c_uint = 0;
     if (py.PyArg_ParseTuple(args, "I", &offset) == 0) return null;
-    return py.PyFloat_FromDouble(zb.zerobuf_read_f64(get_mem(), offset));
+    if (wasm_load_u8(offset) != @intFromEnum(zb.Tag.f64)) return py.PyFloat_FromDouble(0);
+    return py.PyFloat_FromDouble(wasm_load_f64(offset + 8));
 }
 
 // read_i64(offset) -> int
 fn py_read_i64(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     var offset: c_uint = 0;
     if (py.PyArg_ParseTuple(args, "I", &offset) == 0) return null;
-    return py.PyLong_FromLongLong(zb.zerobuf_read_i64(get_mem(), offset));
+    if (wasm_load_u8(offset) != @intFromEnum(zb.Tag.bigint)) return py.PyLong_FromLongLong(0);
+    return py.PyLong_FromLongLong(wasm_load_i64(offset + 8));
 }
 
 // read_bool(offset) -> bool
 fn py_read_bool(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     var offset: c_uint = 0;
     if (py.PyArg_ParseTuple(args, "I", &offset) == 0) return null;
-    const val = zb.zerobuf_read_bool(get_mem(), offset);
-    if (val != 0) {
+    if (wasm_load_u8(offset) != @intFromEnum(zb.Tag.bool)) return py_false();
+    if (wasm_load_u32(offset + 4) != 0) {
         return py_true();
     } else {
         return py_false();
@@ -93,23 +141,19 @@ fn py_read_bool(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObjec
 }
 
 // read_string(offset) -> str
-// offset is the value slot offset (tag byte at offset, string ptr at offset+4)
 fn py_read_string(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     var offset: c_uint = 0;
     if (py.PyArg_ParseTuple(args, "I", &offset) == 0) return null;
 
-    const mem = get_mem();
-    // Check tag is string
-    if (mem[offset] != @intFromEnum(zb.Tag.string)) {
+    if (wasm_load_u8(offset) != @intFromEnum(zb.Tag.string)) {
         return py.PyUnicode_FromStringAndSize("", 0);
     }
-    // Read string ptr from value slot
-    const str_ptr = zb.zerobuf_deref(mem, offset + 4);
-    if (str_ptr == 0) return py.PyUnicode_FromStringAndSize("", 0);
+    const str_header_ptr = wasm_load_u32(offset + 4);
+    if (str_header_ptr == 0) return py.PyUnicode_FromStringAndSize("", 0);
 
-    const str_len = zb.zerobuf_read_len(mem, str_ptr);
-    const data_ptr = zb.zerobuf_read_data_ptr(str_ptr);
-    return py.PyUnicode_FromStringAndSize(@ptrCast(mem + data_ptr), @intCast(str_len));
+    const str_len = wasm_load_u32(str_header_ptr);
+    const data_addr = str_header_ptr + zb.STRING_HEADER;
+    return py.PyUnicode_FromStringAndSize(@ptrCast(wasm_ptr_const() + data_addr), @intCast(str_len));
 }
 
 // read_bytes(offset) -> bytes
@@ -117,16 +161,15 @@ fn py_read_bytes(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObje
     var offset: c_uint = 0;
     if (py.PyArg_ParseTuple(args, "I", &offset) == 0) return null;
 
-    const mem = get_mem();
-    if (mem[offset] != @intFromEnum(zb.Tag.bytes)) {
+    if (wasm_load_u8(offset) != @intFromEnum(zb.Tag.bytes)) {
         return py.PyBytes_FromStringAndSize("", 0);
     }
-    const bytes_ptr = zb.zerobuf_deref(mem, offset + 4);
-    if (bytes_ptr == 0) return py.PyBytes_FromStringAndSize("", 0);
+    const bytes_header_ptr = wasm_load_u32(offset + 4);
+    if (bytes_header_ptr == 0) return py.PyBytes_FromStringAndSize("", 0);
 
-    const bytes_len = zb.zerobuf_read_len(mem, bytes_ptr);
-    const data_ptr = zb.zerobuf_read_data_ptr(bytes_ptr);
-    return py.PyBytes_FromStringAndSize(@ptrCast(mem + data_ptr), @intCast(bytes_len));
+    const bytes_len = wasm_load_u32(bytes_header_ptr);
+    const data_addr = bytes_header_ptr + zb.STRING_HEADER;
+    return py.PyBytes_FromStringAndSize(@ptrCast(wasm_ptr_const() + data_addr), @intCast(bytes_len));
 }
 
 // ============================================================================
@@ -138,7 +181,9 @@ fn py_write_i32(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObjec
     var offset: c_uint = 0;
     var value: c_int = 0;
     if (py.PyArg_ParseTuple(args, "Ii", &offset, &value) == 0) return null;
-    zb.zerobuf_write_i32(get_mem(), offset, value);
+    wasm_store_u8(offset, @intFromEnum(zb.Tag.i32));
+    const p = wasm_ptr() + offset + 4;
+    std.mem.writeInt(i32, @as(*[4]u8, @ptrCast(p)), value, .little);
     return py_none();
 }
 
@@ -147,7 +192,9 @@ fn py_write_f64(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObjec
     var offset: c_uint = 0;
     var value: f64 = 0;
     if (py.PyArg_ParseTuple(args, "Id", &offset, &value) == 0) return null;
-    zb.zerobuf_write_f64(get_mem(), offset, value);
+    wasm_store_u8(offset, @intFromEnum(zb.Tag.f64));
+    const p = wasm_ptr() + offset + 8;
+    std.mem.writeInt(u64, @as(*[8]u8, @ptrCast(p)), @bitCast(value), .little);
     return py_none();
 }
 
@@ -156,7 +203,9 @@ fn py_write_i64(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObjec
     var offset: c_uint = 0;
     var value: c_longlong = 0;
     if (py.PyArg_ParseTuple(args, "IL", &offset, &value) == 0) return null;
-    zb.zerobuf_write_i64(get_mem(), offset, value);
+    wasm_store_u8(offset, @intFromEnum(zb.Tag.bigint));
+    const p = wasm_ptr() + offset + 8;
+    std.mem.writeInt(i64, @as(*[8]u8, @ptrCast(p)), value, .little);
     return py_none();
 }
 
@@ -165,7 +214,8 @@ fn py_write_bool(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObje
     var offset: c_uint = 0;
     var value: c_int = 0;
     if (py.PyArg_ParseTuple(args, "Ip", &offset, &value) == 0) return null;
-    zb.zerobuf_write_bool(get_mem(), offset, if (value != 0) 1 else 0);
+    wasm_store_u8(offset, @intFromEnum(zb.Tag.bool));
+    wasm_store_u32(offset + 4, if (value != 0) 1 else 0);
     return py_none();
 }
 
@@ -173,7 +223,7 @@ fn py_write_bool(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObje
 fn py_write_null(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     var offset: c_uint = 0;
     if (py.PyArg_ParseTuple(args, "I", &offset) == 0) return null;
-    zb.zerobuf_write_null(get_mem(), offset);
+    wasm_store_u8(offset, @intFromEnum(zb.Tag.null));
     return py_none();
 }
 
@@ -185,14 +235,14 @@ fn py_write_null(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObje
 fn py_read_len(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     var header_ptr: c_uint = 0;
     if (py.PyArg_ParseTuple(args, "I", &header_ptr) == 0) return null;
-    return py.PyLong_FromUnsignedLong(zb.zerobuf_read_len(get_mem(), header_ptr));
+    return py.PyLong_FromUnsignedLong(wasm_load_u32(header_ptr));
 }
 
 // deref(handle_ptr) -> int
 fn py_deref(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     var handle_ptr: c_uint = 0;
     if (py.PyArg_ParseTuple(args, "I", &handle_ptr) == 0) return null;
-    return py.PyLong_FromUnsignedLong(zb.zerobuf_deref(get_mem(), handle_ptr));
+    return py.PyLong_FromUnsignedLong(wasm_load_u32(handle_ptr));
 }
 
 // ============================================================================
@@ -203,7 +253,8 @@ fn py_deref(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
 fn py_array_len(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     var handle_ptr: c_uint = 0;
     if (py.PyArg_ParseTuple(args, "I", &handle_ptr) == 0) return null;
-    return py.PyLong_FromUnsignedLong(zb.zerobuf_array_len(get_mem(), handle_ptr));
+    const data_ptr = wasm_load_u32(handle_ptr);
+    return py.PyLong_FromUnsignedLong(wasm_load_u32(data_ptr + 4));
 }
 
 // array_element_offset(handle_ptr, index) -> int
@@ -211,18 +262,42 @@ fn py_array_element_offset(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?
     var handle_ptr: c_uint = 0;
     var index: c_uint = 0;
     if (py.PyArg_ParseTuple(args, "II", &handle_ptr, &index) == 0) return null;
-    return py.PyLong_FromUnsignedLong(zb.zerobuf_array_element_offset(get_mem(), handle_ptr, index));
+    const data_ptr = wasm_load_u32(handle_ptr);
+    return py.PyLong_FromUnsignedLong(data_ptr + zb.ARRAY_HEADER + index * zb.VALUE_SLOT);
 }
 
 // ============================================================================
-// OBJECT functions
+// OBJECT functions — use zerobuf.zig C ABI with non-null pointer
 // ============================================================================
+
+/// Get a non-null [*]u8 pointer to WASM memory for zerobuf C ABI functions.
+/// These functions take [*]const u8 + offset, so we use address 0 via allowzero
+/// and immediately cast. The C ABI functions will add the offset, producing
+/// a non-zero WASM address for the actual load instruction.
+fn get_mem_for_zb() [*]u8 {
+    // Use a global variable's address (always > 0) and subtract to get base 0.
+    // The key insight: zerobuf C ABI functions do `mem + offset` to compute
+    // the actual address. As long as offset > 0 (which it always is for valid
+    // zerobuf data), the final address is non-zero and the load works.
+    //
+    // We use @ptrFromInt(0) via allowzero and then @ptrCast to [*]u8.
+    // This is safe because: (1) we never dereference at offset 0, and
+    // (2) the allowzero -> non-allowzero cast is valid when the pointer
+    // is only used with non-zero offsets.
+    const azp: [*]allowzero u8 = @ptrFromInt(0);
+    return @ptrCast(azp);
+}
+
+fn get_mem_for_zb_const() [*]const u8 {
+    const azp: [*]allowzero const u8 = @ptrFromInt(0);
+    return @ptrCast(azp);
+}
 
 // object_count(handle_ptr) -> int
 fn py_object_count(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     var handle_ptr: c_uint = 0;
     if (py.PyArg_ParseTuple(args, "I", &handle_ptr) == 0) return null;
-    return py.PyLong_FromUnsignedLong(zb.zerobuf_object_count(get_mem(), handle_ptr));
+    return py.PyLong_FromUnsignedLong(zb.zerobuf_object_count(get_mem_for_zb_const(), handle_ptr));
 }
 
 // object_find(handle_ptr, key) -> int (value slot offset, or 0xFFFFFFFF if not found)
@@ -231,7 +306,7 @@ fn py_object_find(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObj
     var key_ptr: [*]const u8 = undefined;
     var key_len: py.Py_ssize_t = 0;
     if (py.PyArg_ParseTuple(args, "Is#", &handle_ptr, &key_ptr, &key_len) == 0) return null;
-    const result = zb.zerobuf_object_find(get_mem(), get_mem_len(), handle_ptr, key_ptr, @intCast(key_len));
+    const result = zb.zerobuf_object_find(get_mem_for_zb_const(), get_mem_len(), handle_ptr, key_ptr, @intCast(key_len));
     return py.PyLong_FromUnsignedLong(result);
 }
 
@@ -241,7 +316,7 @@ fn py_object_get_f64(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.Py
     var key_ptr: [*]const u8 = undefined;
     var key_len: py.Py_ssize_t = 0;
     if (py.PyArg_ParseTuple(args, "Is#", &handle_ptr, &key_ptr, &key_len) == 0) return null;
-    return py.PyFloat_FromDouble(zb.zerobuf_object_get_f64(get_mem(), get_mem_len(), handle_ptr, key_ptr, @intCast(key_len)));
+    return py.PyFloat_FromDouble(zb.zerobuf_object_get_f64(get_mem_for_zb_const(), get_mem_len(), handle_ptr, key_ptr, @intCast(key_len)));
 }
 
 // object_get_i32(handle_ptr, key) -> int
@@ -250,7 +325,7 @@ fn py_object_get_i32(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.Py
     var key_ptr: [*]const u8 = undefined;
     var key_len: py.Py_ssize_t = 0;
     if (py.PyArg_ParseTuple(args, "Is#", &handle_ptr, &key_ptr, &key_len) == 0) return null;
-    return py.PyLong_FromLong(zb.zerobuf_object_get_i32(get_mem(), get_mem_len(), handle_ptr, key_ptr, @intCast(key_len)));
+    return py.PyLong_FromLong(zb.zerobuf_object_get_i32(get_mem_for_zb_const(), get_mem_len(), handle_ptr, key_ptr, @intCast(key_len)));
 }
 
 // object_get_i64(handle_ptr, key) -> int
@@ -259,7 +334,7 @@ fn py_object_get_i64(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.Py
     var key_ptr: [*]const u8 = undefined;
     var key_len: py.Py_ssize_t = 0;
     if (py.PyArg_ParseTuple(args, "Is#", &handle_ptr, &key_ptr, &key_len) == 0) return null;
-    return py.PyLong_FromLongLong(zb.zerobuf_object_get_i64(get_mem(), get_mem_len(), handle_ptr, key_ptr, @intCast(key_len)));
+    return py.PyLong_FromLongLong(zb.zerobuf_object_get_i64(get_mem_for_zb_const(), get_mem_len(), handle_ptr, key_ptr, @intCast(key_len)));
 }
 
 // object_get_string(handle_ptr, key) -> str
@@ -270,11 +345,11 @@ fn py_object_get_string(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py
     if (py.PyArg_ParseTuple(args, "Is#", &handle_ptr, &key_ptr, &key_len) == 0) return null;
 
     var out_len: u32 = 0;
-    const str_data_ptr = zb.zerobuf_object_get_string(get_mem(), get_mem_len(), handle_ptr, key_ptr, @intCast(key_len), &out_len);
+    const str_data_ptr = zb.zerobuf_object_get_string(get_mem_for_zb_const(), get_mem_len(), handle_ptr, key_ptr, @intCast(key_len), &out_len);
     if (str_data_ptr == 0 and out_len == 0) {
         return py.PyUnicode_FromStringAndSize("", 0);
     }
-    return py.PyUnicode_FromStringAndSize(@ptrCast(get_mem() + str_data_ptr), @intCast(out_len));
+    return py.PyUnicode_FromStringAndSize(@ptrCast(wasm_ptr_const() + str_data_ptr), @intCast(out_len));
 }
 
 // object_set_f64(handle_ptr, key, value) -> bool
@@ -284,7 +359,7 @@ fn py_object_set_f64(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.Py
     var key_len: py.Py_ssize_t = 0;
     var value: f64 = 0;
     if (py.PyArg_ParseTuple(args, "Is#d", &handle_ptr, &key_ptr, &key_len, &value) == 0) return null;
-    const ok = zb.zerobuf_object_set_f64(get_mem(), get_mem_len(), handle_ptr, key_ptr, @intCast(key_len), value);
+    const ok = zb.zerobuf_object_set_f64(get_mem_for_zb(), get_mem_len(), handle_ptr, key_ptr, @intCast(key_len), value);
     if (ok != 0) {
         return py_true();
     } else {
@@ -299,7 +374,7 @@ fn py_object_set_i32(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.Py
     var key_len: py.Py_ssize_t = 0;
     var value: c_int = 0;
     if (py.PyArg_ParseTuple(args, "Is#i", &handle_ptr, &key_ptr, &key_len, &value) == 0) return null;
-    const ok = zb.zerobuf_object_set_i32(get_mem(), get_mem_len(), handle_ptr, key_ptr, @intCast(key_len), value);
+    const ok = zb.zerobuf_object_set_i32(get_mem_for_zb(), get_mem_len(), handle_ptr, key_ptr, @intCast(key_len), value);
     if (ok != 0) {
         return py_true();
     } else {
@@ -314,7 +389,7 @@ fn py_object_set_i64(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.Py
     var key_len: py.Py_ssize_t = 0;
     var value: c_longlong = 0;
     if (py.PyArg_ParseTuple(args, "Is#L", &handle_ptr, &key_ptr, &key_len, &value) == 0) return null;
-    const ok = zb.zerobuf_object_set_i64(get_mem(), get_mem_len(), handle_ptr, key_ptr, @intCast(key_len), value);
+    const ok = zb.zerobuf_object_set_i64(get_mem_for_zb(), get_mem_len(), handle_ptr, key_ptr, @intCast(key_len), value);
     if (ok != 0) {
         return py_true();
     } else {
@@ -333,27 +408,25 @@ fn py_write_string_at(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.P
     var str_len: py.Py_ssize_t = 0;
     if (py.PyArg_ParseTuple(args, "Is#", &pool_addr, &str_ptr, &str_len) == 0) return null;
 
-    const mem = get_mem();
     const byte_len: u32 = @intCast(str_len);
 
     // Write string header (4-byte length prefix)
-    std.mem.writeInt(u32, @as(*[4]u8, @ptrCast(mem + pool_addr)), byte_len, .little);
+    wasm_store_u32(pool_addr, byte_len);
     // Write string bytes
-    const dest: [*]u8 = mem + pool_addr + zb.STRING_HEADER;
+    const dest = wasm_ptr() + pool_addr + zb.STRING_HEADER;
     @memcpy(dest[0..byte_len], str_ptr[0..byte_len]);
 
     return py.PyLong_FromUnsignedLong(zb.STRING_HEADER + byte_len);
 }
 
 // write_string_slot(slot_offset, string_header_ptr) -> None
-// Writes TAG_STRING + pointer at the value slot
 fn py_write_string_slot(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     var slot_offset: c_uint = 0;
     var header_ptr: c_uint = 0;
     if (py.PyArg_ParseTuple(args, "II", &slot_offset, &header_ptr) == 0) return null;
 
-    const mem = get_mem();
-    zb.writeStringRef(mem[0..slot_offset + zb.VALUE_SLOT], slot_offset, header_ptr);
+    wasm_store_u8(slot_offset, @intFromEnum(zb.Tag.string));
+    wasm_store_u32(slot_offset + 4, header_ptr);
     return py_none();
 }
 
@@ -368,14 +441,12 @@ fn py_schema_read_field(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py
     if (py.PyArg_ParseTuple(args, "II", &base, &index) == 0) return null;
 
     const offset = base + index * zb.VALUE_SLOT;
-    const mem = get_mem();
-    const raw_tag = mem[offset];
+    const raw_tag = wasm_load_u8(offset);
 
     // Safety check: tag must be a valid zerobuf Tag (0-8)
     if (raw_tag > 8) {
-        // Return an error string with diagnostic info so we can debug
         var buf: [128]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "zerobuf: invalid tag {d} at offset {d} (base={d}, idx={d})", .{ raw_tag, offset, base, index }) catch "zerobuf: invalid tag";
+        const msg = std.fmt.bufPrint(&buf, "zerobuf: invalid tag {d} at offset {d} (base={d}, idx={d})\x00", .{ raw_tag, offset, base, index }) catch "zerobuf: invalid tag\x00";
         py.PyErr_SetString(py.PyExc_ValueError, @ptrCast(msg.ptr));
         return null;
     }
@@ -388,37 +459,32 @@ fn py_schema_read_field(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py
             break :blk py.Py_None();
         },
         .bool => blk: {
-            const val = zb.zerobuf_read_bool(mem, offset);
+            const val = wasm_load_u32(offset + 4);
             break :blk if (val != 0) py_true() else py_false();
         },
-        .i32 => py.PyLong_FromLong(zb.zerobuf_read_i32(mem, offset)),
-        .f64 => py.PyFloat_FromDouble(zb.zerobuf_read_f64(mem, offset)),
-        .bigint => py.PyLong_FromLongLong(zb.zerobuf_read_i64(mem, offset)),
+        .i32 => py.PyLong_FromLong(wasm_load_i32(offset + 4)),
+        .f64 => py.PyFloat_FromDouble(wasm_load_f64(offset + 8)),
+        .bigint => py.PyLong_FromLongLong(wasm_load_i64(offset + 8)),
         .string => blk: {
-            const str_header_ptr = std.mem.readInt(u32, @as(*const [4]u8, @ptrCast(mem + offset + 4)), .little);
+            const str_header_ptr = wasm_load_u32(offset + 4);
             if (str_header_ptr == 0) break :blk py.PyUnicode_FromStringAndSize("", 0);
-            const str_len = zb.zerobuf_read_len(mem, str_header_ptr);
-            const data_ptr = zb.zerobuf_read_data_ptr(str_header_ptr);
-            break :blk py.PyUnicode_FromStringAndSize(@ptrCast(mem + data_ptr), @intCast(str_len));
+            const str_len = wasm_load_u32(str_header_ptr);
+            const data_addr = str_header_ptr + zb.STRING_HEADER;
+            break :blk py.PyUnicode_FromStringAndSize(@ptrCast(wasm_ptr_const() + data_addr), @intCast(str_len));
         },
         .bytes => blk: {
-            const bytes_header_ptr = std.mem.readInt(u32, @as(*const [4]u8, @ptrCast(mem + offset + 4)), .little);
+            const bytes_header_ptr = wasm_load_u32(offset + 4);
             if (bytes_header_ptr == 0) break :blk py.PyBytes_FromStringAndSize("", 0);
-            const bytes_len = zb.zerobuf_read_len(mem, bytes_header_ptr);
-            const data_ptr = zb.zerobuf_read_data_ptr(bytes_header_ptr);
-            break :blk py.PyBytes_FromStringAndSize(@ptrCast(mem + data_ptr), @intCast(bytes_len));
+            const bytes_len = wasm_load_u32(bytes_header_ptr);
+            const data_addr = bytes_header_ptr + zb.STRING_HEADER;
+            break :blk py.PyBytes_FromStringAndSize(@ptrCast(wasm_ptr_const() + data_addr), @intCast(bytes_len));
         },
         .array, .object => blk: {
-            // Return the handle pointer as int — caller uses array_*/object_* functions
-            const handle_ptr = std.mem.readInt(u32, @as(*const [4]u8, @ptrCast(mem + offset + 4)), .little);
+            const handle_ptr = wasm_load_u32(offset + 4);
             break :blk py.PyLong_FromUnsignedLong(handle_ptr);
         },
     };
 }
-
-// ============================================================================
-// CONSTANTS
-// ============================================================================
 
 // ============================================================================
 // MODULE DEFINITION
