@@ -463,10 +463,8 @@ exec zig cc -target wasm32-wasi -E "\${ARGS[@]}"
       name: "_zerobuf",
       zig_src: join(zigModulesDir, "_zerobuf", "module.zig"),
     },
-    {
-      name: "_hashlib",
-      zig_src: join(zigModulesDir, "_hashlib", "module.zig"),
-    },
+    // _hashlib disabled — requires std.crypto API fixes for Zig 0.15.
+    // CPython's built-in _md5, _sha1, _sha2, _sha3, _blake2 already provide hashing.
     {
       name: "_json",
       zig_src: join(zigModulesDir, "_json", "module.zig"),

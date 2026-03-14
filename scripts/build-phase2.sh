@@ -378,18 +378,10 @@ else
     warn "  _zerobuf sources not found, skipping"
 fi
 
-# _hashlib (Zig only)
-if [ -f "$ZIG_MODULES_DIR/_hashlib/module.zig" ]; then
-    info "Compiling native module _hashlib..."
-    (cd "$BUILD_DIR/Modules" && zig build-obj -target wasm32-wasi -OReleaseFast -lc \
-        -I"$BUILD_DIR" -I"$CPYTHON_DIR/Include" -I"$CPYTHON_DIR/Include/internal" \
-        "$ZIG_MODULES_DIR/_hashlib/module.zig" --name _hashlib)
-    register_builtin_module "_hashlib"
-    NATIVE_MODULE_OBJS="$NATIVE_MODULE_OBJS Modules/_hashlib.o"
-    info "  Built _hashlib"
-else
-    warn "  _hashlib sources not found, skipping"
-fi
+# _hashlib — requires std.crypto API fixes (HmacSha256 renamed in Zig 0.15)
+# CPython's _hashlib requires OpenSSL which is unavailable in WASI.
+# The Zig std.crypto hash functions (md5, sha1, sha256, etc.) are already
+# available via CPython's built-in _md5, _sha1, _sha2, _sha3, _blake2 modules.
 
 # binascii (Zig replacement for CPython's C binascii)
 if [ -f "$ZIG_MODULES_DIR/binascii/module.zig" ]; then
