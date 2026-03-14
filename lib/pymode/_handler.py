@@ -48,8 +48,11 @@ def _run():
     # Check for zerobuf exchange mode — zero-copy via shared WASM memory
     exchange_ptr = _get_zerobuf_exchange_ptr()
     if exchange_ptr > 0:
-        _run_zerobuf(module_name, exchange_ptr)
-        return
+        try:
+            _run_zerobuf(module_name, exchange_ptr)
+            return
+        except ImportError:
+            pass  # _zerobuf not compiled into this WASM binary, fall back to JSON
 
     # Fallback: JSON stdin/stdout mode
     try:
