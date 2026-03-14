@@ -50,43 +50,66 @@ fn wasm_ptr_const() [*]allowzero const u8 {
 }
 
 /// Load a byte from WASM linear memory at the given address.
+/// Uses direct allowzero indexing — no cast to non-allowzero pointer.
 fn wasm_load_u8(addr: u32) u8 {
     return wasm_ptr_const()[addr];
 }
 
 /// Load a little-endian u32 from WASM linear memory.
+/// Reads 4 bytes individually via allowzero indexing to avoid @ptrCast to
+/// non-allowzero (*const [4]u8), which LLVM can optimize away as null UB.
 fn wasm_load_u32(addr: u32) u32 {
-    const p = wasm_ptr_const() + addr;
-    return std.mem.readInt(u32, @as(*const [4]u8, @ptrCast(p)), .little);
+    const m = wasm_ptr_const();
+    const b0: u32 = m[addr];
+    const b1: u32 = m[addr + 1];
+    const b2: u32 = m[addr + 2];
+    const b3: u32 = m[addr + 3];
+    return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
 }
 
 /// Load a little-endian i32 from WASM linear memory.
 fn wasm_load_i32(addr: u32) i32 {
-    const p = wasm_ptr_const() + addr;
-    return std.mem.readInt(i32, @as(*const [4]u8, @ptrCast(p)), .little);
+    return @bitCast(wasm_load_u32(addr));
 }
 
 /// Load a little-endian f64 from WASM linear memory.
 fn wasm_load_f64(addr: u32) f64 {
-    const p = wasm_ptr_const() + addr;
-    return @bitCast(std.mem.readInt(u64, @as(*const [8]u8, @ptrCast(p)), .little));
+    const lo: u64 = wasm_load_u32(addr);
+    const hi: u64 = wasm_load_u32(addr + 4);
+    return @bitCast(lo | (hi << 32));
 }
 
 /// Load a little-endian i64 from WASM linear memory.
 fn wasm_load_i64(addr: u32) i64 {
-    const p = wasm_ptr_const() + addr;
-    return std.mem.readInt(i64, @as(*const [8]u8, @ptrCast(p)), .little);
-}
-
-/// Store a little-endian u32 to WASM linear memory.
-fn wasm_store_u32(addr: u32, val: u32) void {
-    const p = wasm_ptr() + addr;
-    std.mem.writeInt(u32, @as(*[4]u8, @ptrCast(p)), val, .little);
+    const lo: u64 = wasm_load_u32(addr);
+    const hi: u64 = wasm_load_u32(addr + 4);
+    return @bitCast(lo | (hi << 32));
 }
 
 /// Store a byte to WASM linear memory.
 fn wasm_store_u8(addr: u32, val: u8) void {
     wasm_ptr()[addr] = val;
+}
+
+/// Store a little-endian u32 to WASM linear memory.
+/// Writes 4 bytes individually via allowzero indexing.
+fn wasm_store_u32(addr: u32, val: u32) void {
+    const m = wasm_ptr();
+    m[addr] = @truncate(val);
+    m[addr + 1] = @truncate(val >> 8);
+    m[addr + 2] = @truncate(val >> 16);
+    m[addr + 3] = @truncate(val >> 24);
+}
+
+/// Store a little-endian i32 to WASM linear memory.
+fn wasm_store_i32(addr: u32, val: i32) void {
+    wasm_store_u32(addr, @bitCast(val));
+}
+
+/// Store a little-endian u64 to WASM linear memory.
+fn wasm_store_u64(addr: u32, val: u64) void {
+    wasm_store_u32(addr, @truncate(val));
+    wasm_store_u32(addr + 4, @truncate(val >> 32));
 }
 
 fn get_mem_len() u32 {
@@ -182,8 +205,7 @@ fn py_write_i32(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObjec
     var value: c_int = 0;
     if (py.PyArg_ParseTuple(args, "Ii", &offset, &value) == 0) return null;
     wasm_store_u8(offset, @intFromEnum(zb.Tag.i32));
-    const p = wasm_ptr() + offset + 4;
-    std.mem.writeInt(i32, @as(*[4]u8, @ptrCast(p)), value, .little);
+    wasm_store_i32(offset + 4, value);
     return py_none();
 }
 
@@ -193,8 +215,7 @@ fn py_write_f64(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObjec
     var value: f64 = 0;
     if (py.PyArg_ParseTuple(args, "Id", &offset, &value) == 0) return null;
     wasm_store_u8(offset, @intFromEnum(zb.Tag.f64));
-    const p = wasm_ptr() + offset + 8;
-    std.mem.writeInt(u64, @as(*[8]u8, @ptrCast(p)), @bitCast(value), .little);
+    wasm_store_u64(offset + 8, @bitCast(value));
     return py_none();
 }
 
@@ -204,8 +225,7 @@ fn py_write_i64(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObjec
     var value: c_longlong = 0;
     if (py.PyArg_ParseTuple(args, "IL", &offset, &value) == 0) return null;
     wasm_store_u8(offset, @intFromEnum(zb.Tag.bigint));
-    const p = wasm_ptr() + offset + 8;
-    std.mem.writeInt(i64, @as(*[8]u8, @ptrCast(p)), value, .little);
+    wasm_store_u64(offset + 8, @bitCast(@as(i64, value)));
     return py_none();
 }
 
@@ -387,8 +407,7 @@ fn py_object_set_f64(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.Py
     if (entry == 0xFFFFFFFF) return py_false();
     const val_offset = entry + 8;
     wasm_store_u8(val_offset, @intFromEnum(zb.Tag.f64));
-    const p = wasm_ptr() + val_offset + 8;
-    std.mem.writeInt(u64, @as(*[8]u8, @ptrCast(p)), @bitCast(value), .little);
+    wasm_store_u64(val_offset + 8, @bitCast(value));
     return py_true();
 }
 
@@ -403,8 +422,7 @@ fn py_object_set_i32(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.Py
     if (entry == 0xFFFFFFFF) return py_false();
     const val_offset = entry + 8;
     wasm_store_u8(val_offset, @intFromEnum(zb.Tag.i32));
-    const p = wasm_ptr() + val_offset + 4;
-    std.mem.writeInt(i32, @as(*[4]u8, @ptrCast(p)), value, .little);
+    wasm_store_i32(val_offset + 4, value);
     return py_true();
 }
 
@@ -419,8 +437,7 @@ fn py_object_set_i64(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.Py
     if (entry == 0xFFFFFFFF) return py_false();
     const val_offset = entry + 8;
     wasm_store_u8(val_offset, @intFromEnum(zb.Tag.bigint));
-    const p = wasm_ptr() + val_offset + 8;
-    std.mem.writeInt(i64, @as(*[8]u8, @ptrCast(p)), value, .little);
+    wasm_store_u64(val_offset + 8, @bitCast(@as(i64, value)));
     return py_true();
 }
 
@@ -439,9 +456,12 @@ fn py_write_string_at(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.P
 
     // Write string header (4-byte length prefix)
     wasm_store_u32(pool_addr, byte_len);
-    // Write string bytes
-    const dest = wasm_ptr() + pool_addr + zb.STRING_HEADER;
-    @memcpy(dest[0..byte_len], str_ptr[0..byte_len]);
+    // Write string bytes via allowzero indexing
+    const data_start = pool_addr + zb.STRING_HEADER;
+    const m = wasm_ptr();
+    for (0..byte_len) |i| {
+        m[data_start + @as(u32, @intCast(i))] = str_ptr[i];
+    }
 
     return py.PyLong_FromUnsignedLong(zb.STRING_HEADER + byte_len);
 }
