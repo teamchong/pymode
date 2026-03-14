@@ -167,6 +167,7 @@ async function runWasm(
     r2_get: () => -1, r2_put: () => {},
     d1_exec: () => -1, d1_batch: () => -1,
     env_get: () => -1, console_log: () => {},
+    zerobuf_exchange_ptr: () => 0,
   };
   const asyncify: Record<string, Function> = {
     start_unwind: () => {}, stop_unwind: () => {},

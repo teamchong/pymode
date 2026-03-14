@@ -84,6 +84,8 @@ object_get_string = _zerobuf.object_get_string
 object_set_f64 = _zerobuf.object_set_f64
 object_set_i32 = _zerobuf.object_set_i32
 object_set_i64 = _zerobuf.object_set_i64
+write_string_at = _zerobuf.write_string_at
+write_string_slot = _zerobuf.write_string_slot
 schema_read_field = _zerobuf.schema_read_field
 
 NOT_FOUND = 0xFFFFFFFF
@@ -139,3 +141,9 @@ class Schema:
 
     def write_null(self, base, field):
         _zerobuf.write_null(self.offset(base, field))
+
+    def write_string(self, base, field, value, pool_addr):
+        """Write a string field. Returns bytes written to pool."""
+        written = _zerobuf.write_string_at(pool_addr, value)
+        _zerobuf.write_string_slot(self.offset(base, field), pool_addr)
+        return written

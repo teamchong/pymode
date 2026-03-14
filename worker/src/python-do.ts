@@ -15,7 +15,7 @@ import { AsyncifyRuntime } from "./asyncify";
 import pythonWasm from "./python.wasm";
 import { ProcExit, createWasi } from "./wasi";
 import { encoder as _encoder, decoder as _decoder, stdlibBin, stdlibDirIndex, extensionPackagesBin } from "./stdlib-bin";
-import { buildHostImports, ASYNC_IMPORTS } from "./host-imports";
+import { buildHostImports, ASYNC_IMPORTS, zbWriteRequest, zbReadResponse } from "./host-imports";
 import type { MemoryAccessor } from "./host-imports";
 
 interface PythonDOEnv {
@@ -87,6 +87,7 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
     userFiles?: Record<string, string>,
     stdinData?: Uint8Array,
     sitePackagesData?: ArrayBuffer,
+    preStart?: (memory: WebAssembly.Memory) => number,
   ): Promise<{
     stdout: string;
     stderr: string;
@@ -120,9 +121,13 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
     const wasi = createWasi(args, wasmEnv, files, () => this.wasmMemory!, stdinData, stdlibDirIndex);
     const self = this;
 
+    // zerobufExchangePtr is set by preStart callback after instantiation
+    let zerobufExchangePtr: number | undefined;
+
     const pymodeImports = buildHostImports({
       mem: this.buildMemoryAccessor(),
       env: this.env,
+      get zerobufExchangePtr() { return zerobufExchangePtr; },
       threading: this.env.THREAD_DO ? {
         spawn: async (code: string, input: Uint8Array): Promise<number> => {
           const threadId = self.nextThreadId++;
@@ -220,6 +225,11 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
     // Initialize asyncify data buffer in linear memory
     asyncify.init(instance);
 
+    // Pre-start hook: write zerobuf request into WASM memory before _start
+    if (preStart) {
+      zerobufExchangePtr = preStart(this.wasmMemory!);
+    }
+
     let exitCode = 0;
     try {
       await asyncify.callExport("_start");
@@ -273,14 +283,48 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
     stderr: string;
     exitCode: number;
   }> {
-    return this.run(
+    // Parse the request JSON once on the JS side
+    const parsed = JSON.parse(requestJson);
+    const req = parsed.request || {};
+    const method = req.method || "GET";
+    const url = req.url || "";
+    const headersJson = JSON.stringify(req.headers || {});
+    const body = req.body || "";
+
+    // Use zerobuf: write request into WASM memory, read response from WASM memory
+    const result = await this.run(
       ["python", "-S", "-m", "pymode._handler", entryModule],
       { PYTHONPATH: pythonPath, PYTHONDONTWRITEBYTECODE: "1", PYTHONNOUSERSITE: "1" },
       userFiles,
-      _encoder.encode(requestJson),
+      undefined, // no stdin — request goes via zerobuf
       sitePackagesData,
+      (memory) => {
+        const ptr = zbWriteRequest(memory, method, url, headersJson, body);
+        this._zbExchangePtr = ptr;
+        return ptr;
+      },
     );
+
+    // If Python wrote the response via zerobuf, the stdout will be empty
+    // and the response is in the exchange region
+    if (result.stdout.trim() === "" && this.wasmMemory && this._zbExchangePtr) {
+      const zbResp = zbReadResponse(this.wasmMemory, this._zbExchangePtr);
+      if (zbResp.status !== 0) {
+        // Reconstruct stdout JSON from zerobuf response (for deserializeResponse)
+        const respHeaders = zbResp.headersJson ? JSON.parse(zbResp.headersJson) : {};
+        result.stdout = JSON.stringify({
+          status: zbResp.status,
+          body: zbResp.body,
+          headers: respHeaders,
+          bodyIsBinary: zbResp.bodyIsBinary,
+        });
+      }
+    }
+
+    return result;
   }
+
+  private _zbExchangePtr: number | undefined;
 
   /**
    * RPC entry point — call a Python function by module path and get JSON result.

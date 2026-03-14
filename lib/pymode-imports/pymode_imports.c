@@ -296,6 +296,13 @@ static PyObject* py_thread_join(PyObject* self, PyObject* args) {
     return result;
 }
 
+/* --- Zerobuf exchange wrapper --- */
+
+static PyObject* py_zerobuf_exchange_ptr(PyObject* self, PyObject* args) {
+    int32_t ptr = pymode_zerobuf_exchange_ptr();
+    return PyLong_FromLong(ptr);
+}
+
 /* --- Console wrapper --- */
 
 static PyObject* py_console_log(PyObject* self, PyObject* args) {
@@ -328,6 +335,7 @@ static PyMethodDef pymode_methods[] = {
     {"thread_spawn", py_thread_spawn, METH_VARARGS, NULL},
     {"thread_join", py_thread_join, METH_VARARGS, NULL},
     {"console_log", py_console_log, METH_VARARGS, NULL},
+    {"zerobuf_exchange_ptr", py_zerobuf_exchange_ptr, METH_NOARGS, NULL},
     {NULL, NULL, 0, NULL}
 };
 

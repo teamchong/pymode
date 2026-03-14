@@ -143,6 +143,22 @@ void pymode_dl_close(int32_t handle);
 __attribute__((import_module("pymode"), import_name("dl_error")))
 int32_t pymode_dl_error(char* buf, int32_t buf_len);
 
+/* --- Zerobuf exchange --- */
+
+/* Returns the base offset of the zerobuf exchange region in WASM linear memory.
+ * Returns 0 if not in zerobuf mode (fall back to JSON stdin/stdout).
+ *
+ * Layout (64KB page):
+ *   base+0:     Request schema (4 fields × 16 = 64 bytes)
+ *   base+64:    Response schema (4 fields × 16 = 64 bytes)
+ *   base+128:   Request string pool (JS writes, Python reads)
+ *   base+32768: Response string pool (Python writes, JS reads)
+ *
+ * Request fields: method(0), url(1), headers_json(2), body(3)
+ * Response fields: status(0), body(1), headers_json(2), body_is_binary(3) */
+__attribute__((import_module("pymode"), import_name("zerobuf_exchange_ptr")))
+int32_t pymode_zerobuf_exchange_ptr(void);
+
 /* --- Logging --- */
 
 __attribute__((import_module("pymode"), import_name("console_log")))

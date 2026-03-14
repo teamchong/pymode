@@ -19,6 +19,16 @@ import traceback
 
 from pymode.workers import Request, Response, Headers, Env
 
+# Zerobuf exchange layout constants (must match host-imports.ts)
+_ZB_REQUEST_BASE = 0
+_ZB_RESPONSE_BASE = 64
+_ZB_RESP_POOL_START = 32768
+_ZB_VALUE_SLOT = 16
+_ZB_STRING_HEADER = 4
+_ZB_TAG_I32 = 2
+_ZB_TAG_STRING = 4
+_ZB_TAG_BOOL = 1
+
 
 def _run():
     # Entry module path from argv: python _handler.py <module_path>
@@ -29,15 +39,19 @@ def _run():
     module_name = sys.argv[1]
 
     # Add the entry module's parent directory to sys.path so sibling imports work.
-    # e.g. "src.entry" → add "src/" to path, so `from helpers import greet` works
-    # when helpers.py is in the same directory as entry.py.
     parts = module_name.rsplit(".", 1)
     if len(parts) == 2:
         parent_dir = os.path.join(os.getcwd(), parts[0].replace(".", os.sep))
         if os.path.isdir(parent_dir) and parent_dir not in sys.path:
             sys.path.insert(0, parent_dir)
 
-    # Read request JSON from stdin
+    # Check for zerobuf exchange mode — zero-copy via shared WASM memory
+    exchange_ptr = _get_zerobuf_exchange_ptr()
+    if exchange_ptr > 0:
+        _run_zerobuf(module_name, exchange_ptr)
+        return
+
+    # Fallback: JSON stdin/stdout mode
     try:
         request_json = sys.stdin.read()
         request_data = json.loads(request_json) if request_json.strip() else {}
@@ -173,6 +187,105 @@ def _error_response(status, message):
     """Write an error response to stdout."""
     resp = Response(message, status=status)
     _write_response(resp)
+
+
+def _get_zerobuf_exchange_ptr():
+    """Get the zerobuf exchange pointer from the host. Returns 0 if not available."""
+    try:
+        import _pymode
+        return _pymode.zerobuf_exchange_ptr()
+    except (ImportError, AttributeError):
+        return 0
+
+
+def _run_zerobuf(module_name, exchange_ptr):
+    """Handle request via zerobuf — zero-copy through WASM linear memory."""
+    import _zerobuf
+
+    # Read request fields from WASM memory (zero-copy — no JSON parsing)
+    req_base = exchange_ptr + _ZB_REQUEST_BASE
+    method = _zerobuf.schema_read_field(req_base, 0) or "GET"
+    url = _zerobuf.schema_read_field(req_base, 1) or ""
+    headers_json = _zerobuf.schema_read_field(req_base, 2) or "{}"
+    body = _zerobuf.schema_read_field(req_base, 3) or ""
+
+    headers = json.loads(headers_json) if headers_json != "{}" else {}
+
+    request = Request(method=method, url=url, headers=headers, body=body)
+    env = Env({})
+
+    # Import user module
+    try:
+        mod = importlib.import_module(module_name)
+    except Exception as e:
+        _write_zerobuf_response(exchange_ptr, 500, f"Cannot import '{module_name}': {e}")
+        return
+
+    # Find handler
+    handler = getattr(mod, "on_fetch", None) or getattr(mod, "fetch", None)
+    if handler is None:
+        _write_zerobuf_response(exchange_ptr, 500, f"No on_fetch() handler in '{module_name}'")
+        return
+
+    # Call handler
+    try:
+        result = handler(request, env)
+        if hasattr(result, "send"):
+            try:
+                result.send(None)
+            except StopIteration as stop:
+                result = stop.value
+
+        if isinstance(result, Response):
+            response = result
+        elif isinstance(result, str):
+            response = Response(result)
+        elif isinstance(result, dict):
+            response = Response.json(result)
+        elif isinstance(result, bytes):
+            response = Response(result)
+        else:
+            response = Response(str(result) if result is not None else "")
+    except Exception as e:
+        _write_zerobuf_response(exchange_ptr, 500, f"Handler error: {_format_user_traceback(e)}")
+        return
+
+    # Write response to zerobuf exchange region (zero-copy — no JSON serialization)
+    resp_data = response._serialize()
+    resp_body = resp_data.get("body", "")
+    resp_headers = json.dumps(resp_data.get("headers", {}))
+    resp_status = resp_data.get("status", 200)
+    body_is_binary = resp_data.get("bodyIsBinary", False)
+
+    _write_zerobuf_response(exchange_ptr, resp_status, resp_body, resp_headers, body_is_binary)
+
+
+def _write_zerobuf_response(exchange_ptr, status, body="", headers_json="{}", body_is_binary=False):
+    """Write response fields into the zerobuf exchange region via _zerobuf native module."""
+    import _zerobuf
+
+    resp_base = exchange_ptr + _ZB_RESPONSE_BASE
+    pool_base = exchange_ptr + _ZB_RESP_POOL_START
+
+    # Field 0: status (i32)
+    _zerobuf.write_i32(resp_base + 0 * _ZB_VALUE_SLOT, status)
+
+    # Field 1: body (string) — write string header+data in the response pool
+    pool_offset = 0
+    body_str = body if isinstance(body, str) else body.decode("utf-8", errors="replace")
+    body_header_ptr = pool_base + pool_offset
+    written = _zerobuf.write_string_at(body_header_ptr, body_str)
+    pool_offset += written
+    _zerobuf.write_string_slot(resp_base + 1 * _ZB_VALUE_SLOT, body_header_ptr)
+
+    # Field 2: headers_json (string)
+    headers_header_ptr = pool_base + pool_offset
+    written = _zerobuf.write_string_at(headers_header_ptr, headers_json)
+    pool_offset += written
+    _zerobuf.write_string_slot(resp_base + 2 * _ZB_VALUE_SLOT, headers_header_ptr)
+
+    # Field 3: body_is_binary (bool)
+    _zerobuf.write_bool(resp_base + 3 * _ZB_VALUE_SLOT, body_is_binary)
 
 
 if __name__ == "__main__":

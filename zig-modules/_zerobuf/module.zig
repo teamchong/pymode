@@ -315,6 +315,41 @@ fn py_object_set_i64(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.Py
 }
 
 // ============================================================================
+// STRING WRITE — write a zerobuf string (header + data) at a given address
+// ============================================================================
+
+// write_string_at(pool_addr, string) -> int (bytes written: header + data)
+fn py_write_string_at(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
+    var pool_addr: c_uint = 0;
+    var str_ptr: [*]const u8 = undefined;
+    var str_len: py.Py_ssize_t = 0;
+    if (py.PyArg_ParseTuple(args, "Is#", &pool_addr, &str_ptr, &str_len) == 0) return null;
+
+    const mem = get_mem();
+    const byte_len: u32 = @intCast(str_len);
+
+    // Write string header (4-byte length prefix)
+    std.mem.writeInt(u32, @as(*[4]u8, @ptrCast(mem + pool_addr)), byte_len, .little);
+    // Write string bytes
+    const dest: [*]u8 = mem + pool_addr + zb.STRING_HEADER;
+    @memcpy(dest[0..byte_len], str_ptr[0..byte_len]);
+
+    return py.PyLong_FromUnsignedLong(zb.STRING_HEADER + byte_len);
+}
+
+// write_string_slot(slot_offset, string_header_ptr) -> None
+// Writes TAG_STRING + pointer at the value slot
+fn py_write_string_slot(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
+    var slot_offset: c_uint = 0;
+    var header_ptr: c_uint = 0;
+    if (py.PyArg_ParseTuple(args, "II", &slot_offset, &header_ptr) == 0) return null;
+
+    const mem = get_mem();
+    zb.writeStringRef(mem[0..slot_offset + zb.VALUE_SLOT], slot_offset, header_ptr);
+    return py_none();
+}
+
+// ============================================================================
 // SCHEMA helpers — fixed-layout objects (field at base + index * 16)
 // ============================================================================
 
@@ -402,6 +437,9 @@ var module_methods = [_]py.PyMethodDef{
     .{ .ml_name = "object_set_f64", .ml_meth = @ptrCast(&py_object_set_f64), .ml_flags = py.METH_VARARGS, .ml_doc = "Set f64 on object property." },
     .{ .ml_name = "object_set_i32", .ml_meth = @ptrCast(&py_object_set_i32), .ml_flags = py.METH_VARARGS, .ml_doc = "Set i32 on object property." },
     .{ .ml_name = "object_set_i64", .ml_meth = @ptrCast(&py_object_set_i64), .ml_flags = py.METH_VARARGS, .ml_doc = "Set i64 on object property." },
+    // String write
+    .{ .ml_name = "write_string_at", .ml_meth = @ptrCast(&py_write_string_at), .ml_flags = py.METH_VARARGS, .ml_doc = "Write string header+data at pool address. Returns bytes written." },
+    .{ .ml_name = "write_string_slot", .ml_meth = @ptrCast(&py_write_string_slot), .ml_flags = py.METH_VARARGS, .ml_doc = "Write string tag+pointer at value slot." },
     // Schema
     .{ .ml_name = "schema_read_field", .ml_meth = @ptrCast(&py_schema_read_field), .ml_flags = py.METH_VARARGS, .ml_doc = "Read typed value from schema field (base + index * 16)." },
     .{ .ml_name = null, .ml_meth = null, .ml_flags = 0, .ml_doc = null },

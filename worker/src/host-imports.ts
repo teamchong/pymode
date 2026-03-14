@@ -46,10 +46,146 @@ export interface MemoryAccessor {
   writeBytes(ptr: number, data: Uint8Array, maxLen: number): number;
 }
 
+/** Zerobuf exchange region layout constants. */
+export const ZB_REQUEST_BASE = 0;       // 4 fields × 16 = 64 bytes
+export const ZB_RESPONSE_BASE = 64;     // 4 fields × 16 = 64 bytes
+export const ZB_REQ_POOL_START = 128;   // request string pool (JS writes)
+export const ZB_RESP_POOL_START = 32768; // response string pool (Python writes)
+export const ZB_PAGE_SIZE = 65536;      // 1 WASM page
+
+// Zerobuf tag constants (must match zerobuf.zig Tag enum)
+export const ZB_TAG_NULL = 0;
+export const ZB_TAG_BOOL = 1;
+export const ZB_TAG_I32 = 2;
+export const ZB_TAG_F64 = 3;
+export const ZB_TAG_STRING = 4;
+
+// Zerobuf value slot = 16 bytes, string header = 4 bytes (u32 length prefix)
+export const ZB_VALUE_SLOT = 16;
+export const ZB_STRING_HEADER = 4;
+
+/** Write a zerobuf string into a memory region.
+ * Returns the offset of the string header. */
+export function zbWriteString(
+  mem: Uint8Array, poolBase: number, poolOffset: number, str: string
+): { headerPtr: number; newOffset: number } {
+  const encoded = _encoder.encode(str);
+  const headerPtr = poolBase + poolOffset;
+  const dv = new DataView(mem.buffer);
+  dv.setUint32(headerPtr, encoded.length, true);
+  mem.set(encoded, headerPtr + ZB_STRING_HEADER);
+  return { headerPtr, newOffset: poolOffset + ZB_STRING_HEADER + encoded.length };
+}
+
+/** Write a string-tagged value slot. */
+export function zbWriteStringSlot(
+  mem: Uint8Array, slotOffset: number, stringHeaderPtr: number
+): void {
+  mem[slotOffset] = ZB_TAG_STRING;
+  mem[slotOffset + 1] = 0;
+  mem[slotOffset + 2] = 0;
+  mem[slotOffset + 3] = 0;
+  const dv = new DataView(mem.buffer);
+  dv.setUint32(slotOffset + 4, stringHeaderPtr, true);
+}
+
+/** Write an i32-tagged value slot. */
+export function zbWriteI32Slot(
+  mem: Uint8Array, slotOffset: number, value: number
+): void {
+  mem[slotOffset] = ZB_TAG_I32;
+  mem[slotOffset + 1] = 0;
+  mem[slotOffset + 2] = 0;
+  mem[slotOffset + 3] = 0;
+  const dv = new DataView(mem.buffer);
+  dv.setInt32(slotOffset + 4, value, true);
+}
+
+/** Read a string from a zerobuf string-tagged value slot. */
+export function zbReadString(mem: Uint8Array, slotOffset: number): string {
+  if (mem[slotOffset] !== ZB_TAG_STRING) return "";
+  const dv = new DataView(mem.buffer);
+  const headerPtr = dv.getUint32(slotOffset + 4, true);
+  if (headerPtr === 0) return "";
+  const strLen = dv.getUint32(headerPtr, true);
+  return _decoder.decode(mem.subarray(headerPtr + ZB_STRING_HEADER, headerPtr + ZB_STRING_HEADER + strLen));
+}
+
+/** Read an i32 from a zerobuf i32-tagged value slot. */
+export function zbReadI32(mem: Uint8Array, slotOffset: number): number {
+  if (mem[slotOffset] !== ZB_TAG_I32) return 0;
+  const dv = new DataView(mem.buffer);
+  return dv.getInt32(slotOffset + 4, true);
+}
+
+/** Read a bool from a zerobuf bool-tagged value slot. */
+export function zbReadBool(mem: Uint8Array, slotOffset: number): boolean {
+  if (mem[slotOffset] !== ZB_TAG_BOOL) return false;
+  const dv = new DataView(mem.buffer);
+  return dv.getUint32(slotOffset + 4, true) !== 0;
+}
+
+/** Write the request into the zerobuf exchange region.
+ * Returns the exchange base offset in WASM memory. */
+export function zbWriteRequest(
+  memory: WebAssembly.Memory,
+  method: string,
+  url: string,
+  headersJson: string,
+  body: string,
+): number {
+  // Grow memory by 1 page for the exchange region
+  const oldPages = memory.grow(1);
+  const exchangeBase = oldPages * ZB_PAGE_SIZE;
+  const mem = new Uint8Array(memory.buffer);
+
+  // Clear the exchange page
+  mem.fill(0, exchangeBase, exchangeBase + ZB_PAGE_SIZE);
+
+  // Write request strings into the request pool
+  let poolOffset = 0;
+  const poolBase = exchangeBase + ZB_REQ_POOL_START;
+
+  const { headerPtr: methodPtr, newOffset: o1 } = zbWriteString(mem, poolBase, poolOffset, method);
+  poolOffset = o1;
+  const { headerPtr: urlPtr, newOffset: o2 } = zbWriteString(mem, poolBase, poolOffset, url);
+  poolOffset = o2;
+  const { headerPtr: headersPtr, newOffset: o3 } = zbWriteString(mem, poolBase, poolOffset, headersJson);
+  poolOffset = o3;
+  const { headerPtr: bodyPtr } = zbWriteString(mem, poolBase, poolOffset, body);
+
+  // Write request schema field slots
+  const reqBase = exchangeBase + ZB_REQUEST_BASE;
+  zbWriteStringSlot(mem, reqBase + 0 * ZB_VALUE_SLOT, methodPtr);  // field 0: method
+  zbWriteStringSlot(mem, reqBase + 1 * ZB_VALUE_SLOT, urlPtr);     // field 1: url
+  zbWriteStringSlot(mem, reqBase + 2 * ZB_VALUE_SLOT, headersPtr); // field 2: headers_json
+  zbWriteStringSlot(mem, reqBase + 3 * ZB_VALUE_SLOT, bodyPtr);    // field 3: body
+
+  return exchangeBase;
+}
+
+/** Read the response from the zerobuf exchange region. */
+export function zbReadResponse(
+  memory: WebAssembly.Memory,
+  exchangeBase: number,
+): { status: number; body: string; headersJson: string; bodyIsBinary: boolean } {
+  const mem = new Uint8Array(memory.buffer);
+  const respBase = exchangeBase + ZB_RESPONSE_BASE;
+
+  return {
+    status: zbReadI32(mem, respBase + 0 * ZB_VALUE_SLOT),
+    body: zbReadString(mem, respBase + 1 * ZB_VALUE_SLOT),
+    headersJson: zbReadString(mem, respBase + 2 * ZB_VALUE_SLOT),
+    bodyIsBinary: zbReadBool(mem, respBase + 3 * ZB_VALUE_SLOT),
+  };
+}
+
 /** Options for building host imports. */
 export interface HostImportOptions {
   mem: MemoryAccessor;
   env: Record<string, unknown>;
+  /** If set, zerobuf_exchange_ptr returns this offset. */
+  zerobufExchangePtr?: number;
   /** If provided, enables thread_spawn/thread_join. */
   threading?: {
     spawn: (code: string, input: Uint8Array) => Promise<number>;
@@ -449,6 +585,11 @@ export function buildHostImports(opts: HostImportOptions): Record<string, any> {
           return opts.dynamicLoading!.error(bufPtr, bufLen);
         }
       : () => 0,
+
+    // --- Zerobuf exchange ---
+    zerobuf_exchange_ptr: (): number => {
+      return opts.zerobufExchangePtr || 0;
+    },
 
     // --- Logging ---
     console_log: (msgPtr: number, msgLen: number): void => {
