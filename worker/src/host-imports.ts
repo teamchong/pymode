@@ -184,8 +184,12 @@ export function zbReadResponse(
 export interface HostImportOptions {
   mem: MemoryAccessor;
   env: Record<string, unknown>;
-  /** If set, zerobuf_exchange_ptr returns this offset. */
-  zerobufExchangePtr?: number;
+  /** WASM memory reference — needed for JIT zerobuf allocation. Set after instantiation. */
+  memory?: WebAssembly.Memory;
+  /** Request data for JIT zerobuf exchange (written on first zerobuf_exchange_ptr call). */
+  zerobufRequest?: { method: string; url: string; headersJson: string; body: string };
+  /** Mutable ref — set by JIT zerobuf allocation so caller can read the exchange ptr. */
+  zbExchangePtrRef?: { value: number | undefined };
   /** If provided, enables thread_spawn/thread_join. */
   threading?: {
     spawn: (code: string, input: Uint8Array) => Promise<number>;
@@ -226,6 +230,9 @@ export const ASYNC_IMPORTS = new Set([
  */
 export function buildHostImports(opts: HostImportOptions): Record<string, any> {
   const { mem, env } = opts;
+
+  // Zerobuf exchange pointer — set on first zerobuf_exchange_ptr call
+  let zbExchangePtr: number | undefined;
 
   // TCP connection state (per-instance)
   const tcpConns = new Map<number, {
@@ -587,8 +594,21 @@ export function buildHostImports(opts: HostImportOptions): Record<string, any> {
       : () => 0,
 
     // --- Zerobuf exchange ---
+    // JIT allocation: grow memory and write request data when Python first asks.
+    // This happens AFTER CPython's sbrk has claimed its heap, so the new page
+    // is beyond __curbrk and won't be overwritten by heap allocations.
     zerobuf_exchange_ptr: (): number => {
-      return opts.zerobufExchangePtr || 0;
+      if (!opts.memory || !opts.zerobufRequest) return 0;
+      if (zbExchangePtr !== undefined) return zbExchangePtr;
+      zbExchangePtr = zbWriteRequest(
+        opts.memory,
+        opts.zerobufRequest.method,
+        opts.zerobufRequest.url,
+        opts.zerobufRequest.headersJson,
+        opts.zerobufRequest.body,
+      );
+      if (opts.zbExchangePtrRef) opts.zbExchangePtrRef.value = zbExchangePtr;
+      return zbExchangePtr;
     },
 
     // --- Logging ---
