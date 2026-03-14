@@ -398,18 +398,8 @@ if [ -f "$ZIG_MODULES_DIR/binascii/module.zig" ]; then
     info "  Built binascii (Zig replacement)"
 fi
 
-# zlib (Zig native, not in CPython's WASI build)
-if [ -f "$ZIG_MODULES_DIR/zlib/module.zig" ]; then
-    info "Compiling native module zlib..."
-    (cd "$BUILD_DIR/Modules" && zig build-obj -target wasm32-wasi -OReleaseFast -lc \
-        -I"$BUILD_DIR" -I"$CPYTHON_DIR/Include" -I"$CPYTHON_DIR/Include/internal" \
-        "$ZIG_MODULES_DIR/zlib/module.zig" --name zlib)
-    register_builtin_module "zlib"
-    NATIVE_MODULE_OBJS="$NATIVE_MODULE_OBJS Modules/zlib.o"
-    info "  Built zlib"
-else
-    warn "  zlib sources not found, skipping"
-fi
+# zlib — std.compress.flate API changed significantly in Zig 0.15.
+# Restore pure Python polyfill until the Zig module is updated.
 
 # Update config.c.base with all registered modules (for variant builds)
 cp "$CONFIG_C" "$BUILD_DIR/Modules/config.c.base"

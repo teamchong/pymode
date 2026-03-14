@@ -481,10 +481,7 @@ exec zig cc -target wasm32-wasi -E "\${ARGS[@]}"
       name: "binascii",
       zig_src: join(zigModulesDir, "binascii", "module.zig"),
     },
-    {
-      name: "zlib",
-      zig_src: join(zigModulesDir, "zlib", "module.zig"),
-    },
+    // zlib disabled — std.compress.flate API changed in Zig 0.15
   ];
 
   const builtModules: NativeModule[] = [];

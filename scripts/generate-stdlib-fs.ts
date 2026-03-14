@@ -356,7 +356,8 @@ const PYMODE_FILES = [
 
 // Pure-Python polyfills for C extension modules unavailable in WASM.
 const POLYFILL_FILES = [
-    // binascii and zlib are now Zig native built-in modules (zig-modules/binascii, zig-modules/zlib)
+    // binascii is a Zig native built-in module (zig-modules/binascii)
+    "zlib.py",
     "socket.py",
     "_socket.py",
     "select.py",
