@@ -518,7 +518,7 @@ const module_methods = [_]c.PyMethodDef{
 };
 
 var module_def = c.PyModuleDef{
-    .m_base = c.PyModuleDef_HEAD_INIT,
+    .m_base = std.mem.zeroes(c.PyModuleDef_Base),
     .m_name = "zlib",
     .m_doc = "zlib compression — Zig std.compress.flate native implementation",
     .m_size = -1,

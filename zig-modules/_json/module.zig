@@ -792,7 +792,7 @@ const module_methods = [_]c.PyMethodDef{
 };
 
 var module_def = c.PyModuleDef{
-    .m_base = c.PyModuleDef_HEAD_INIT,
+    .m_base = std.mem.zeroes(c.PyModuleDef_Base),
     .m_name = "_json",
     .m_doc = "json speedups - Zig implementation replacing CPython's Modules/_json.c",
     .m_size = -1,

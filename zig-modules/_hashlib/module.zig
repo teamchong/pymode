@@ -35,7 +35,7 @@ const HmacSha256 = std.crypto.auth.hmac.HmacSha256;
 // HASH ALGORITHM ENUM
 // ============================================================================
 
-const HashAlgorithm = enum {
+const HashAlgorithm = enum(u8) {
     md5,
     sha1,
     sha224,
@@ -781,7 +781,7 @@ const module_methods = [_]c.PyMethodDef{
 };
 
 var module_def = c.PyModuleDef{
-    .m_base = c.PyModuleDef_HEAD_INIT,
+    .m_base = std.mem.zeroes(c.PyModuleDef_Base),
     .m_name = "_hashlib",
     .m_doc = "hashlib accelerator - Zig implementation replacing OpenSSL-backed _hashopenssl.c",
     .m_size = -1,

@@ -628,7 +628,7 @@ const module_methods = [_]c.PyMethodDef{
 };
 
 var module_def = c.PyModuleDef{
-    .m_base = c.PyModuleDef_HEAD_INIT,
+    .m_base = std.mem.zeroes(c.PyModuleDef_Base),
     .m_name = "_functools",
     .m_doc = "Tools for working with functions and callable objects - Zig implementation replacing _functoolsmodule.c",
     .m_size = -1,
