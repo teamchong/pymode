@@ -75,9 +75,13 @@ def FormatError(code=None):
     return f"Error {code}"
 
 def LoadLibrary(name, mode=RTLD_LOCAL):
+    if name is None:
+        return 0
     raise error(f"ctypes: cannot load shared library '{name}' — no dlopen in WASM")
 
 def dlopen(name, mode=RTLD_LOCAL):
+    if name is None:
+        return 0
     raise error(f"ctypes: cannot load shared library '{name}' — no dlopen in WASM")
 
 class _CData:
@@ -128,9 +132,24 @@ def POINTER(cls):
 def pointer(obj):
     raise error("ctypes: pointer not available in WASM")
 
+class _DummyLib:
+    """Returned by CDLL(None) — pretends to be the current process."""
+    def __getattr__(self, name):
+        raise error(f"ctypes: symbol '{name}' not available in WASM")
+
 class CDLL:
+    _handle = 0
+    _name = None
     def __init__(self, name, mode=RTLD_LOCAL, handle=None, use_errno=False, use_last_error=False):
+        if name is None:
+            self._name = None
+            self._handle = 0
+            return
         raise error(f"ctypes: cannot load shared library '{name}' — no dlopen in WASM")
+    def __getattr__(self, name):
+        if self._name is None:
+            raise error(f"ctypes: symbol '{name}' not available in WASM")
+        raise error(f"ctypes: cannot load shared library '{self._name}' — no dlopen in WASM")
 
 class PyDLL(CDLL):
     pass
