@@ -18,12 +18,27 @@ fn py_none() ?*py.PyObject {
     return none;
 }
 
+fn py_true() ?*py.PyObject {
+    const t: *py.PyObject = @ptrCast(&py._Py_TrueStruct);
+    py.Py_INCREF(t);
+    return t;
+}
+
+fn py_false() ?*py.PyObject {
+    const f: *py.PyObject = @ptrCast(&py._Py_FalseStruct);
+    py.Py_INCREF(f);
+    return f;
+}
+
 // ============================================================================
 // Memory access — WASM linear memory starts at address 0
 // ============================================================================
 
 fn get_mem() [*]u8 {
-    return @ptrFromInt(0);
+    // WASM linear memory starts at address 0. Zig doesn't allow @ptrFromInt(0)
+    // for non-optional pointers, so we use allowzero.
+    const ptr: [*]allowzero u8 = @ptrFromInt(0);
+    return @ptrCast(ptr);
 }
 
 fn get_mem_len() u32 {
@@ -70,11 +85,9 @@ fn py_read_bool(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObjec
     if (py.PyArg_ParseTuple(args, "I", &offset) == 0) return null;
     const val = zb.zerobuf_read_bool(get_mem(), offset);
     if (val != 0) {
-        py.Py_INCREF(py.Py_True());
-        return py.Py_True();
+        return py_true();
     } else {
-        py.Py_INCREF(py.Py_False());
-        return py.Py_False();
+        return py_false();
     }
 }
 
@@ -272,11 +285,9 @@ fn py_object_set_f64(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.Py
     if (py.PyArg_ParseTuple(args, "Is#d", &handle_ptr, &key_ptr, &key_len, &value) == 0) return null;
     const ok = zb.zerobuf_object_set_f64(get_mem(), get_mem_len(), handle_ptr, key_ptr, @intCast(key_len), value);
     if (ok != 0) {
-        py.Py_INCREF(py.Py_True());
-        return py.Py_True();
+        return py_true();
     } else {
-        py.Py_INCREF(py.Py_False());
-        return py.Py_False();
+        return py_false();
     }
 }
 
@@ -289,11 +300,9 @@ fn py_object_set_i32(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.Py
     if (py.PyArg_ParseTuple(args, "Is#i", &handle_ptr, &key_ptr, &key_len, &value) == 0) return null;
     const ok = zb.zerobuf_object_set_i32(get_mem(), get_mem_len(), handle_ptr, key_ptr, @intCast(key_len), value);
     if (ok != 0) {
-        py.Py_INCREF(py.Py_True());
-        return py.Py_True();
+        return py_true();
     } else {
-        py.Py_INCREF(py.Py_False());
-        return py.Py_False();
+        return py_false();
     }
 }
 
@@ -306,11 +315,9 @@ fn py_object_set_i64(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.Py
     if (py.PyArg_ParseTuple(args, "Is#L", &handle_ptr, &key_ptr, &key_len, &value) == 0) return null;
     const ok = zb.zerobuf_object_set_i64(get_mem(), get_mem_len(), handle_ptr, key_ptr, @intCast(key_len), value);
     if (ok != 0) {
-        py.Py_INCREF(py.Py_True());
-        return py.Py_True();
+        return py_true();
     } else {
-        py.Py_INCREF(py.Py_False());
-        return py.Py_False();
+        return py_false();
     }
 }
 
@@ -370,9 +377,7 @@ fn py_schema_read_field(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py
         },
         .bool => blk: {
             const val = zb.zerobuf_read_bool(mem, offset);
-            const result = if (val != 0) py.Py_True() else py.Py_False();
-            py.Py_INCREF(result);
-            break :blk result;
+            break :blk if (val != 0) py_true() else py_false();
         },
         .i32 => py.PyLong_FromLong(zb.zerobuf_read_i32(mem, offset)),
         .f64 => py.PyFloat_FromDouble(zb.zerobuf_read_f64(mem, offset)),

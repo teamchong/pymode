@@ -534,8 +534,9 @@ fn py_compare_digest(_: ?*c.PyObject, args: ?*c.PyObject) callconv(.c) ?*c.PyObj
         const b_ptr: [*]const u8 = @ptrCast(c.PyBytes_AsString(b_obj.?));
 
         if (a_len != b_len) {
-            c.Py_IncRef(c.Py_False());
-            return c.Py_False();
+            const f: *c.PyObject = @ptrCast(&c._Py_FalseStruct);
+            c.Py_IncRef(f);
+            return f;
         }
 
         // Constant-time comparison
@@ -546,11 +547,13 @@ fn py_compare_digest(_: ?*c.PyObject, args: ?*c.PyObject) callconv(.c) ?*c.PyObj
         }
 
         if (result == 0) {
-            c.Py_IncRef(c.Py_True());
-            return c.Py_True();
+            const t: *c.PyObject = @ptrCast(&c._Py_TrueStruct);
+            c.Py_IncRef(t);
+            return t;
         } else {
-            c.Py_IncRef(c.Py_False());
-            return c.Py_False();
+            const f: *c.PyObject = @ptrCast(&c._Py_FalseStruct);
+            c.Py_IncRef(f);
+            return f;
         }
     }
 
@@ -563,8 +566,9 @@ fn py_compare_digest(_: ?*c.PyObject, args: ?*c.PyObject) callconv(.c) ?*c.PyObj
 
         if (a_ptr == null or b_ptr == null) return null;
         if (a_len != b_len) {
-            c.Py_IncRef(c.Py_False());
-            return c.Py_False();
+            const f: *c.PyObject = @ptrCast(&c._Py_FalseStruct);
+            c.Py_IncRef(f);
+            return f;
         }
 
         var result: u8 = 0;
@@ -574,11 +578,13 @@ fn py_compare_digest(_: ?*c.PyObject, args: ?*c.PyObject) callconv(.c) ?*c.PyObj
         }
 
         if (result == 0) {
-            c.Py_IncRef(c.Py_True());
-            return c.Py_True();
+            const t: *c.PyObject = @ptrCast(&c._Py_TrueStruct);
+            c.Py_IncRef(t);
+            return t;
         } else {
-            c.Py_IncRef(c.Py_False());
-            return c.Py_False();
+            const f: *c.PyObject = @ptrCast(&c._Py_FalseStruct);
+            c.Py_IncRef(f);
+            return f;
         }
     }
 

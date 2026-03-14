@@ -107,12 +107,12 @@ fn scan_string_value(pystr: *c.PyObject, idx: c.Py_ssize_t) ?*c.PyObject {
         },
         't' => {
             if (data.len >= 4 and std.mem.eql(u8, data[0..4], "true")) {
-                return make_pair(c.Py_True(), idx + 4);
+                return make_pair(@as(*c.PyObject, @ptrCast(&c._Py_TrueStruct)), idx + 4);
             }
         },
         'f' => {
             if (data.len >= 5 and std.mem.eql(u8, data[0..5], "false")) {
-                return make_pair(c.Py_False(), idx + 5);
+                return make_pair(@as(*c.PyObject, @ptrCast(&c._Py_FalseStruct)), idx + 5);
             }
         },
         '-', '0'...'9' => return parse_json_number(str_ptr, str_len, idx),
@@ -412,12 +412,12 @@ fn encode_obj(self: *EncoderObject, chunks: *c.PyObject, obj: *c.PyObject, _: c.
     }
 
     // True
-    if (obj == c.Py_True()) {
+    if (obj == @as(*c.PyObject, @ptrCast(&c._Py_TrueStruct))) {
         return append_chunk(chunks, "true");
     }
 
     // False
-    if (obj == c.Py_False()) {
+    if (obj == @as(*c.PyObject, @ptrCast(&c._Py_FalseStruct))) {
         return append_chunk(chunks, "false");
     }
 
