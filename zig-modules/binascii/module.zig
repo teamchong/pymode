@@ -14,6 +14,7 @@ const c = @cImport({
 // ============================================================================
 
 const crc32_table: [256]u32 = blk: {
+    @setEvalBranchQuota(10000);
     var table: [256]u32 = undefined;
     for (0..256) |i| {
         var crc: u32 = @intCast(i);
@@ -34,6 +35,7 @@ const crc32_table: [256]u32 = blk: {
 // ============================================================================
 
 const crc_hqx_table: [256]u16 = blk: {
+    @setEvalBranchQuota(10000);
     var table: [256]u16 = undefined;
     for (0..256) |i| {
         var crc: u16 = @as(u16, @intCast(i)) << 8;
