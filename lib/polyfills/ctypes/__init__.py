@@ -125,11 +125,11 @@ def create_string_buffer(init, size=None):
     if isinstance(init, bytes):
         if size is None:
             size = len(init) + 1
-        buf = (c_char * size)()
+        buf = type("c_char_Array", (Array,), {"_type_": c_char, "_length_": size})()
         buf.value = init
         return buf
     elif isinstance(init, int):
-        return (c_char * init)()
+        return type("c_char_Array", (Array,), {"_type_": c_char, "_length_": init})()
     raise TypeError(init)
 
 c_buffer = create_string_buffer
@@ -138,11 +138,11 @@ def create_unicode_buffer(init, size=None):
     if isinstance(init, str):
         if size is None:
             size = len(init) + 1
-        buf = (c_wchar * size)()
+        buf = type("c_wchar_Array", (Array,), {"_type_": c_wchar, "_length_": size})()
         buf.value = init
         return buf
     elif isinstance(init, int):
-        return (c_wchar * init)()
+        return type("c_wchar_Array", (Array,), {"_type_": c_wchar, "_length_": init})()
     raise TypeError(init)
 
 # --- Utility functions ---
@@ -215,18 +215,3 @@ class BigEndianUnion(Union):
 class LittleEndianUnion(Union):
     pass
 
-# --- Array multiplication support ---
-
-def _array_type(self, length):
-    return type(f"{self.__name__}_Array_{length}", (Array,), {
-        "_type_": self,
-        "_length_": length,
-    })
-
-# Add __mul__ to _SimpleCData so c_char * 10 works
-_SimpleCData.__class_getitem__ = classmethod(lambda cls, key: _array_type(cls, key))
-try:
-    _SimpleCData.__mul__ = classmethod(lambda cls, n: _array_type(cls, n)).__func__
-    _SimpleCData.__rmul__ = classmethod(lambda cls, n: _array_type(cls, n)).__func__
-except (TypeError, AttributeError):
-    pass
