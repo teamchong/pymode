@@ -35,10 +35,10 @@ fn py_false() ?*py.PyObject {
 // ============================================================================
 
 fn get_mem() [*]u8 {
-    // WASM linear memory starts at address 0. Zig doesn't allow @ptrFromInt(0)
-    // for non-optional pointers, so we use allowzero.
-    const ptr: [*]allowzero u8 = @ptrFromInt(0);
-    return @ptrCast(ptr);
+    // WASM linear memory starts at address 0. Use a runtime-computed value
+    // to avoid Zig's compile-time null pointer check.
+    var addr: usize = 0;
+    return @ptrFromInt(addr);
 }
 
 fn get_mem_len() u32 {
