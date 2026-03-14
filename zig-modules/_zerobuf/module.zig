@@ -38,6 +38,7 @@ fn get_mem() [*]u8 {
     // WASM linear memory starts at address 0. Use a runtime-computed value
     // to avoid Zig's compile-time null pointer check.
     var addr: usize = 0;
+    _ = &addr; // prevent "never mutated" — need runtime value to bypass null check
     return @ptrFromInt(addr);
 }
 
