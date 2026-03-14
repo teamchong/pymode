@@ -151,6 +151,13 @@ const BOOT_FILES = [
     "pathlib/__init__.py",
     "pathlib/_abc.py",
     "pathlib/_local.py",
+    // compression
+    "bz2.py",
+    "lzma.py",
+    // ctypes
+    "ctypes/__init__.py",
+    // subprocess
+    "subprocess.py",
     // pprint
     "pprint.py",
     // email (needed by requests, urllib3, http)
