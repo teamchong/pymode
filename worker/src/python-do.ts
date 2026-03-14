@@ -292,11 +292,12 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
     const body = req.body || "";
 
     // Use zerobuf: write request into WASM memory, read response from WASM memory
+    // Also pass requestJson as stdin for fallback when _zerobuf module isn't compiled in
     const result = await this.run(
       ["python", "-S", "-m", "pymode._handler", entryModule],
       { PYTHONPATH: pythonPath, PYTHONDONTWRITEBYTECODE: "1", PYTHONNOUSERSITE: "1" },
       userFiles,
-      undefined, // no stdin — request goes via zerobuf
+      _encoder.encode(requestJson),
       sitePackagesData,
       (memory) => {
         const ptr = zbWriteRequest(memory, method, url, headersJson, body);
