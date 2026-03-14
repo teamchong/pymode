@@ -352,6 +352,73 @@ else
     warn "  _markupsafe_speedups sources not found, skipping"
 fi
 
+# _simd (Zig only)
+if [ -f "$ZIG_MODULES_DIR/_simd/module.zig" ]; then
+    info "Compiling native module _simd..."
+    (cd "$BUILD_DIR/Modules" && zig build-obj -target wasm32-wasi -OReleaseFast -lc \
+        -I"$BUILD_DIR" -I"$CPYTHON_DIR/Include" -I"$CPYTHON_DIR/Include/internal" \
+        "$ZIG_MODULES_DIR/_simd/module.zig" --name _simd)
+    register_builtin_module "_simd"
+    NATIVE_MODULE_OBJS="$NATIVE_MODULE_OBJS Modules/_simd.o"
+    info "  Built _simd"
+else
+    warn "  _simd sources not found, skipping"
+fi
+
+# _zerobuf (Zig only, depends on zerobuf.zig)
+if [ -f "$ZIG_MODULES_DIR/_zerobuf/module.zig" ]; then
+    info "Compiling native module _zerobuf..."
+    (cd "$BUILD_DIR/Modules" && zig build-obj -target wasm32-wasi -OReleaseFast -lc \
+        -I"$BUILD_DIR" -I"$CPYTHON_DIR/Include" -I"$CPYTHON_DIR/Include/internal" \
+        "$ZIG_MODULES_DIR/_zerobuf/module.zig" --name _zerobuf)
+    register_builtin_module "_zerobuf"
+    NATIVE_MODULE_OBJS="$NATIVE_MODULE_OBJS Modules/_zerobuf.o"
+    info "  Built _zerobuf"
+else
+    warn "  _zerobuf sources not found, skipping"
+fi
+
+# _hashlib (Zig only)
+if [ -f "$ZIG_MODULES_DIR/_hashlib/module.zig" ]; then
+    info "Compiling native module _hashlib..."
+    (cd "$BUILD_DIR/Modules" && zig build-obj -target wasm32-wasi -OReleaseFast -lc \
+        -I"$BUILD_DIR" -I"$CPYTHON_DIR/Include" -I"$CPYTHON_DIR/Include/internal" \
+        "$ZIG_MODULES_DIR/_hashlib/module.zig" --name _hashlib)
+    register_builtin_module "_hashlib"
+    NATIVE_MODULE_OBJS="$NATIVE_MODULE_OBJS Modules/_hashlib.o"
+    info "  Built _hashlib"
+else
+    warn "  _hashlib sources not found, skipping"
+fi
+
+# binascii (Zig replacement for CPython's C binascii)
+if [ -f "$ZIG_MODULES_DIR/binascii/module.zig" ]; then
+    info "Compiling native module binascii (Zig)..."
+    (cd "$BUILD_DIR/Modules" && zig build-obj -target wasm32-wasi -OReleaseFast -lc \
+        -I"$BUILD_DIR" -I"$CPYTHON_DIR/Include" -I"$CPYTHON_DIR/Include/internal" \
+        "$ZIG_MODULES_DIR/binascii/module.zig" --name binascii_zig)
+    # Replace CPython's binascii.o with our Zig version
+    if [ -f "$BUILD_DIR/Modules/binascii.o" ]; then
+        mv "$BUILD_DIR/Modules/binascii.o" "$BUILD_DIR/Modules/binascii_cpython.o.bak"
+    fi
+    mv "$BUILD_DIR/Modules/binascii_zig.o" "$BUILD_DIR/Modules/binascii.o"
+    # Already registered in config.c by CPython configure
+    info "  Built binascii (Zig replacement)"
+fi
+
+# zlib (Zig native, not in CPython's WASI build)
+if [ -f "$ZIG_MODULES_DIR/zlib/module.zig" ]; then
+    info "Compiling native module zlib..."
+    (cd "$BUILD_DIR/Modules" && zig build-obj -target wasm32-wasi -OReleaseFast -lc \
+        -I"$BUILD_DIR" -I"$CPYTHON_DIR/Include" -I"$CPYTHON_DIR/Include/internal" \
+        "$ZIG_MODULES_DIR/zlib/module.zig" --name zlib)
+    register_builtin_module "zlib"
+    NATIVE_MODULE_OBJS="$NATIVE_MODULE_OBJS Modules/zlib.o"
+    info "  Built zlib"
+else
+    warn "  zlib sources not found, skipping"
+fi
+
 # Update config.c.base with all registered modules (for variant builds)
 cp "$CONFIG_C" "$BUILD_DIR/Modules/config.c.base"
 info "  Updated config.c.base with all native module registrations"
