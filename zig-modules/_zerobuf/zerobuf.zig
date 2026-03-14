@@ -392,94 +392,94 @@ pub const ObjectWriter = struct {
 // ---------------------------------------------------------------------------
 
 /// Get the tag byte at a value slot offset.
-export fn zerobuf_tag(mem: [*]const u8, offset: u32) u8 {
+pub export fn zerobuf_tag(mem: [*]const u8, offset: u32) u8 {
     return mem[offset];
 }
 
 /// Read an i32 from a tagged value slot. Returns 0 if wrong type.
-export fn zerobuf_read_i32(mem: [*]const u8, offset: u32) i32 {
+pub export fn zerobuf_read_i32(mem: [*]const u8, offset: u32) i32 {
     if (mem[offset] != @intFromEnum(Tag.i32)) return 0;
     return readI32(mem[0..offset + VALUE_SLOT], offset + 4);
 }
 
 /// Read an f64 from a tagged value slot. Returns 0 if wrong type.
-export fn zerobuf_read_f64(mem: [*]const u8, offset: u32) f64 {
+pub export fn zerobuf_read_f64(mem: [*]const u8, offset: u32) f64 {
     if (mem[offset] != @intFromEnum(Tag.f64)) return 0;
     return readF64(mem[0..offset + VALUE_SLOT], offset + 8);
 }
 
 /// Read an i64 (bigint) from a tagged value slot. Returns 0 if wrong type.
-export fn zerobuf_read_i64(mem: [*]const u8, offset: u32) i64 {
+pub export fn zerobuf_read_i64(mem: [*]const u8, offset: u32) i64 {
     if (mem[offset] != @intFromEnum(Tag.bigint)) return 0;
     return readI64(mem[0..offset + VALUE_SLOT], offset + 8);
 }
 
 /// Read a bool from a tagged value slot. Returns 0 if wrong type.
-export fn zerobuf_read_bool(mem: [*]const u8, offset: u32) u32 {
+pub export fn zerobuf_read_bool(mem: [*]const u8, offset: u32) u32 {
     if (mem[offset] != @intFromEnum(Tag.bool)) return 0;
     return readU32(mem[0..offset + VALUE_SLOT], offset + 4);
 }
 
 /// Write an i32 tagged value.
-export fn zerobuf_write_i32(mem: [*]u8, offset: u32, value: i32) void {
+pub export fn zerobuf_write_i32(mem: [*]u8, offset: u32, value: i32) void {
     writeI32Val(mem[0..offset + VALUE_SLOT], offset, value);
 }
 
 /// Write an f64 tagged value.
-export fn zerobuf_write_f64(mem: [*]u8, offset: u32, value: f64) void {
+pub export fn zerobuf_write_f64(mem: [*]u8, offset: u32, value: f64) void {
     writeF64Val(mem[0..offset + VALUE_SLOT], offset, value);
 }
 
 /// Write an i64 (bigint) tagged value.
-export fn zerobuf_write_i64(mem: [*]u8, offset: u32, value: i64) void {
+pub export fn zerobuf_write_i64(mem: [*]u8, offset: u32, value: i64) void {
     writeBigInt(mem[0..offset + VALUE_SLOT], offset, value);
 }
 
 /// Write a bool tagged value.
-export fn zerobuf_write_bool(mem: [*]u8, offset: u32, value: u32) void {
+pub export fn zerobuf_write_bool(mem: [*]u8, offset: u32, value: u32) void {
     writeBool(mem[0..offset + VALUE_SLOT], offset, value != 0);
 }
 
 /// Write a null tagged value.
-export fn zerobuf_write_null(mem: [*]u8, offset: u32) void {
+pub export fn zerobuf_write_null(mem: [*]u8, offset: u32) void {
     writeNull(mem[0..offset + VALUE_SLOT], offset);
 }
 
 /// Read string/bytes length from a header pointer.
-export fn zerobuf_read_len(mem: [*]const u8, header_ptr: u32) u32 {
+pub export fn zerobuf_read_len(mem: [*]const u8, header_ptr: u32) u32 {
     return readU32(mem[0..header_ptr + 4], header_ptr);
 }
 
 /// Read string/bytes data pointer (header_ptr + 4).
-export fn zerobuf_read_data_ptr(header_ptr: u32) u32 {
+pub export fn zerobuf_read_data_ptr(header_ptr: u32) u32 {
     return header_ptr + STRING_HEADER;
 }
 
 /// Dereference a handle — returns the data pointer stored in a handle cell.
-export fn zerobuf_deref(mem: [*]const u8, handle_ptr: u32) u32 {
+pub export fn zerobuf_deref(mem: [*]const u8, handle_ptr: u32) u32 {
     return readU32(mem[0..handle_ptr + 4], handle_ptr);
 }
 
 /// Get array length from a handle pointer.
-export fn zerobuf_array_len(mem: [*]const u8, handle_ptr: u32) u32 {
+pub export fn zerobuf_array_len(mem: [*]const u8, handle_ptr: u32) u32 {
     const data_ptr = readU32(mem[0..handle_ptr + 4], handle_ptr);
     return readU32(mem[0..data_ptr + 8], data_ptr + 4);
 }
 
 /// Get array element offset (for reading with zerobuf_read_* functions).
-export fn zerobuf_array_element_offset(mem: [*]const u8, handle_ptr: u32, index: u32) u32 {
+pub export fn zerobuf_array_element_offset(mem: [*]const u8, handle_ptr: u32, index: u32) u32 {
     const data_ptr = readU32(mem[0..handle_ptr + 4], handle_ptr);
     return data_ptr + ARRAY_HEADER + index * VALUE_SLOT;
 }
 
 /// Get object property count from a handle pointer.
-export fn zerobuf_object_count(mem: [*]const u8, handle_ptr: u32) u32 {
+pub export fn zerobuf_object_count(mem: [*]const u8, handle_ptr: u32) u32 {
     const data_ptr = readU32(mem[0..handle_ptr + 4], handle_ptr);
     return readU32(mem[0..data_ptr + 8], data_ptr + 4);
 }
 
 /// Find an object property by key. Returns the value slot offset, or 0xFFFFFFFF if not found.
-export fn zerobuf_object_find(mem: [*]const u8, mem_len: u32, handle_ptr: u32, key: [*]const u8, key_len: u32) u32 {
+pub export fn zerobuf_object_find(mem: [*]const u8, mem_len: u32, handle_ptr: u32, key: [*]const u8, key_len: u32) u32 {
     const slice = mem[0..mem_len];
     const obj = ObjectReader.init(slice, handle_ptr);
     const entry = obj.findEntry(key[0..key_len]) orelse return 0xFFFFFFFF;
@@ -487,21 +487,21 @@ export fn zerobuf_object_find(mem: [*]const u8, mem_len: u32, handle_ptr: u32, k
 }
 
 /// Read f64 from an object property by key. Returns 0 if not found.
-export fn zerobuf_object_get_f64(mem: [*]const u8, mem_len: u32, handle_ptr: u32, key: [*]const u8, key_len: u32) f64 {
+pub export fn zerobuf_object_get_f64(mem: [*]const u8, mem_len: u32, handle_ptr: u32, key: [*]const u8, key_len: u32) f64 {
     const slice = mem[0..mem_len];
     const obj = ObjectReader.init(slice, handle_ptr);
     return obj.getF64(key[0..key_len]) orelse 0;
 }
 
 /// Read i32 from an object property by key. Returns 0 if not found.
-export fn zerobuf_object_get_i32(mem: [*]const u8, mem_len: u32, handle_ptr: u32, key: [*]const u8, key_len: u32) i32 {
+pub export fn zerobuf_object_get_i32(mem: [*]const u8, mem_len: u32, handle_ptr: u32, key: [*]const u8, key_len: u32) i32 {
     const slice = mem[0..mem_len];
     const obj = ObjectReader.init(slice, handle_ptr);
     return obj.getI32(key[0..key_len]) orelse 0;
 }
 
 /// Read i64 from an object property by key. Returns 0 if not found.
-export fn zerobuf_object_get_i64(mem: [*]const u8, mem_len: u32, handle_ptr: u32, key: [*]const u8, key_len: u32) i64 {
+pub export fn zerobuf_object_get_i64(mem: [*]const u8, mem_len: u32, handle_ptr: u32, key: [*]const u8, key_len: u32) i64 {
     const slice = mem[0..mem_len];
     const obj = ObjectReader.init(slice, handle_ptr);
     return obj.getI64(key[0..key_len]) orelse 0;
@@ -509,7 +509,7 @@ export fn zerobuf_object_get_i64(mem: [*]const u8, mem_len: u32, handle_ptr: u32
 
 /// Read string pointer + length from an object property by key.
 /// Returns the string data pointer, writes length to out_len. Returns 0 if not found.
-export fn zerobuf_object_get_string(mem: [*]const u8, mem_len: u32, handle_ptr: u32, key: [*]const u8, key_len: u32, out_len: *u32) u32 {
+pub export fn zerobuf_object_get_string(mem: [*]const u8, mem_len: u32, handle_ptr: u32, key: [*]const u8, key_len: u32, out_len: *u32) u32 {
     const slice = mem[0..mem_len];
     const obj = ObjectReader.init(slice, handle_ptr);
     const str = obj.getString(key[0..key_len]) orelse {
@@ -521,21 +521,21 @@ export fn zerobuf_object_get_string(mem: [*]const u8, mem_len: u32, handle_ptr: 
 }
 
 /// Write f64 to an object property by key. Returns 1 on success, 0 if key not found.
-export fn zerobuf_object_set_f64(mem: [*]u8, mem_len: u32, handle_ptr: u32, key: [*]const u8, key_len: u32, value: f64) u32 {
+pub export fn zerobuf_object_set_f64(mem: [*]u8, mem_len: u32, handle_ptr: u32, key: [*]const u8, key_len: u32, value: f64) u32 {
     const slice = mem[0..mem_len];
     var writer = ObjectWriter.init(slice, handle_ptr);
     return if (writer.setF64(key[0..key_len], value)) 1 else 0;
 }
 
 /// Write i32 to an object property by key. Returns 1 on success, 0 if key not found.
-export fn zerobuf_object_set_i32(mem: [*]u8, mem_len: u32, handle_ptr: u32, key: [*]const u8, key_len: u32, value: i32) u32 {
+pub export fn zerobuf_object_set_i32(mem: [*]u8, mem_len: u32, handle_ptr: u32, key: [*]const u8, key_len: u32, value: i32) u32 {
     const slice = mem[0..mem_len];
     var writer = ObjectWriter.init(slice, handle_ptr);
     return if (writer.setI32(key[0..key_len], value)) 1 else 0;
 }
 
 /// Write i64 to an object property by key. Returns 1 on success, 0 if key not found.
-export fn zerobuf_object_set_i64(mem: [*]u8, mem_len: u32, handle_ptr: u32, key: [*]const u8, key_len: u32, value: i64) u32 {
+pub export fn zerobuf_object_set_i64(mem: [*]u8, mem_len: u32, handle_ptr: u32, key: [*]const u8, key_len: u32, value: i64) u32 {
     const slice = mem[0..mem_len];
     var writer = ObjectWriter.init(slice, handle_ptr);
     return if (writer.setI64(key[0..key_len], value)) 1 else 0;
