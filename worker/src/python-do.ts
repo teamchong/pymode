@@ -283,49 +283,14 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
     stderr: string;
     exitCode: number;
   }> {
-    // Parse the request JSON once on the JS side
-    const parsed = JSON.parse(requestJson);
-    const req = parsed.request || {};
-    const method = req.method || "GET";
-    const url = req.url || "";
-    const headersJson = JSON.stringify(req.headers || {});
-    const body = req.body || "";
-
-    // Use zerobuf: write request into WASM memory, read response from WASM memory
-    // Also pass requestJson as stdin for fallback when _zerobuf module isn't compiled in
-    const result = await this.run(
+    return this.run(
       ["python", "-S", "-m", "pymode._handler", entryModule],
       { PYTHONPATH: pythonPath, PYTHONDONTWRITEBYTECODE: "1", PYTHONNOUSERSITE: "1" },
       userFiles,
       _encoder.encode(requestJson),
       sitePackagesData,
-      (memory) => {
-        const ptr = zbWriteRequest(memory, method, url, headersJson, body);
-        this._zbExchangePtr = ptr;
-        return ptr;
-      },
     );
-
-    // If Python wrote the response via zerobuf, the stdout will be empty
-    // and the response is in the exchange region
-    if (result.stdout.trim() === "" && this.wasmMemory && this._zbExchangePtr) {
-      const zbResp = zbReadResponse(this.wasmMemory, this._zbExchangePtr);
-      if (zbResp.status !== 0) {
-        // Reconstruct stdout JSON from zerobuf response (for deserializeResponse)
-        const respHeaders = zbResp.headersJson ? JSON.parse(zbResp.headersJson) : {};
-        result.stdout = JSON.stringify({
-          status: zbResp.status,
-          body: zbResp.body,
-          headers: respHeaders,
-          bodyIsBinary: zbResp.bodyIsBinary,
-        });
-      }
-    }
-
-    return result;
   }
-
-  private _zbExchangePtr: number | undefined;
 
   /**
    * RPC entry point — call a Python function by module path and get JSON result.

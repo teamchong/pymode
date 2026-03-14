@@ -45,16 +45,6 @@ def _run():
         if os.path.isdir(parent_dir) and parent_dir not in sys.path:
             sys.path.insert(0, parent_dir)
 
-    # Check for zerobuf exchange mode — zero-copy via shared WASM memory
-    exchange_ptr = _get_zerobuf_exchange_ptr()
-    if exchange_ptr > 0:
-        try:
-            _run_zerobuf(module_name, exchange_ptr)
-            return
-        except ImportError:
-            pass  # _zerobuf not compiled into this WASM binary, fall back to JSON
-
-    # Fallback: JSON stdin/stdout mode
     try:
         request_json = sys.stdin.read()
         request_data = json.loads(request_json) if request_json.strip() else {}
