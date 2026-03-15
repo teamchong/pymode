@@ -634,45 +634,36 @@ exec zig cc -target wasm32-wasi -E "\${ARGS[@]}"
     }
   }
 
-  // Step 6: Asyncify + optimize with wasm-opt
+  // Step 6: Optimize with wasm-opt (fan-out replay replaces asyncify)
   if (which("wasm-opt")) {
     const origSize = statSync(pythonWasm).size;
 
-    const asyncImports =
-      "pymode.tcp_recv,pymode.http_fetch_full," +
-      "pymode.kv_get,pymode.kv_put,pymode.kv_delete,pymode.kv_multi_get,pymode.kv_multi_put," +
-      "pymode.r2_get,pymode.r2_put,pymode.d1_exec,pymode.d1_batch," +
-      "pymode.thread_spawn,pymode.thread_join,pymode.dl_open";
-
-    info("Running wasm-opt --asyncify (async imports: tcp_recv, http_fetch, kv_*, r2_*, d1_exec)...");
-    copyFileSync(pythonWasm, pythonWasm + ".pre-asyncify");
-    const asyncified = pythonWasm + ".asyncified";
-    const asyncifyResult = spawnSync(
+    info("Running wasm-opt -O2 (no asyncify — fan-out replay handles async)...");
+    const optimized = pythonWasm + ".opt";
+    const optResult = spawnSync(
       "wasm-opt",
       [
         "-O2",
-        "--asyncify",
         "--enable-simd",
         "--enable-nontrapping-float-to-int",
         "--enable-bulk-memory",
         "--enable-sign-ext",
         "--enable-mutable-globals",
-        `--pass-arg=asyncify-imports@${asyncImports}`,
         pythonWasm,
         "-o",
-        asyncified,
+        optimized,
       ],
       { stdio: "inherit" },
     );
-    if (asyncifyResult.status !== 0) {
-      error("wasm-opt --asyncify failed");
+    if (optResult.status !== 0) {
+      error("wasm-opt -O2 failed");
     }
-    renameSync(asyncified, pythonWasm);
+    renameSync(optimized, pythonWasm);
 
     const newSize = statSync(pythonWasm).size;
-    info(`asyncify + optimize: ${origSize} -> ${newSize} bytes`);
+    info(`optimized: ${origSize} -> ${newSize} bytes`);
   } else {
-    warn("wasm-opt not found. Skipping asyncify -- trampoline fallback will be used at runtime.");
+    warn("wasm-opt not found. Skipping optimization.");
     warn("Install binaryen: brew install binaryen (or apt install binaryen)");
   }
 

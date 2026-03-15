@@ -10,6 +10,7 @@
 
 import { connect } from "cloudflare:sockets";
 import { encoder as _encoder, decoder as _decoder } from "./stdlib-bin";
+import type { FanoutContext } from "./fanout";
 
 /** Block requests to private/internal networks (SSRF prevention). */
 function isPrivateHost(hostname: string): boolean {
@@ -190,46 +191,32 @@ export interface HostImportOptions {
   zerobufRequest?: { method: string; url: string; headersJson: string; body: string };
   /** Mutable ref — set by JIT zerobuf allocation so caller can read the exchange ptr. */
   zbExchangePtrRef?: { value: number | undefined };
-  /** If provided, enables thread_spawn/thread_join. */
+  /** Fan-out context — if provided, async imports use record/cache instead of Promises. */
+  fanout?: FanoutContext;
+  /** If provided, enables thread_spawn/thread_join (handled via fan-out). */
   threading?: {
-    spawn: (code: string, input: Uint8Array) => Promise<number>;
-    join: (threadId: number, bufPtr: number, bufLen: number) => Promise<number>;
+    spawn: (code: string, input: Uint8Array) => number;
+    join: (threadId: number, bufPtr: number, bufLen: number) => number;
   };
-  /** If provided, enables dl_open/dl_sym/dl_close/dl_error. */
+  /** If provided, enables dl_open/dl_sym/dl_close/dl_error (synchronous). */
   dynamicLoading?: {
-    open: (path: string) => Promise<number>;
+    open: (path: string) => number;
     sym: (handle: number, symbol: string) => number;
     close: (handle: number) => void;
     error: (bufPtr: number, bufLen: number) => number;
   };
 }
 
-/** The set of pymode.* imports that are async (return Promises). */
-export const ASYNC_IMPORTS = new Set([
-  "pymode.tcp_recv",
-  "pymode.http_fetch_full",
-  "pymode.kv_get",
-  "pymode.kv_put",
-  "pymode.kv_delete",
-  "pymode.kv_multi_get",
-  "pymode.kv_multi_put",
-  "pymode.r2_get",
-  "pymode.r2_put",
-  "pymode.d1_exec",
-  "pymode.d1_batch",
-  "pymode.thread_spawn",
-  "pymode.thread_join",
-  "pymode.dl_open",
-]);
-
 /**
  * Build the pymode.* WASM import namespace.
  *
- * Sync imports return values directly.
- * Async imports return Promises — Asyncify handles suspend/resume.
+ * All imports are synchronous. Async operations use fan-out:
+ * first pass records calls and returns sentinels, JS resolves
+ * all pending calls in parallel, then replays with cached results.
  */
 export function buildHostImports(opts: HostImportOptions): Record<string, any> {
   const { mem, env } = opts;
+  const fanout = opts.fanout;
 
   // Zerobuf exchange pointer — set on first zerobuf_exchange_ptr call
   let zbExchangePtr: number | undefined;
@@ -272,20 +259,19 @@ export function buildHostImports(opts: HostImportOptions): Record<string, any> {
       return dataLen;
     },
 
-    tcp_recv: async (connId: number, bufPtr: number, bufLen: number): Promise<number> => {
-      const conn = tcpConns.get(connId);
-      if (!conn) return -1;
-      if (conn.timedOut) return 0;
-      let didTimeout = false;
-      const timeoutPromise = new Promise<{ value: undefined; done: true }>((resolve) =>
-        setTimeout(() => { didTimeout = true; resolve({ value: undefined, done: true }); }, 10000)
-      );
-      const result = await Promise.race([conn.reader.read(), timeoutPromise]);
-      if (didTimeout) conn.timedOut = true;
-      if (result.done || !result.value) return 0;
-      const n = Math.min(result.value.length, bufLen);
-      mem.getMemBytes().set(result.value.subarray(0, n), bufPtr);
-      return n;
+    tcp_recv: (connId: number, bufPtr: number, bufLen: number): number => {
+      // TCP recv is stateful — record as pending for fan-out resolution
+      if (fanout) {
+        const result = fanout.getOrRecord("tcp_recv", [connId]);
+        if (result.cached && result.value != null) {
+          const data = result.value as Uint8Array;
+          const n = Math.min(data.length, bufLen);
+          mem.getMemBytes().set(data.subarray(0, n), bufPtr);
+          return n;
+        }
+        return 0; // EOF sentinel on first pass
+      }
+      return 0;
     },
 
     tcp_close: (connId: number): void => {
@@ -298,13 +284,13 @@ export function buildHostImports(opts: HostImportOptions): Record<string, any> {
     },
 
     // --- HTTP ---
-    http_fetch_full: async (
+    http_fetch_full: (
       urlPtr: number, urlLen: number,
       methodPtr: number, methodLen: number,
       bodyPtr: number, bodyLen: number,
       headersPtr: number, headersLen: number,
       resultPtr: number, resultLen: number
-    ): Promise<number> => {
+    ): number => {
       try {
         const url = mem.readString(urlPtr, urlLen);
         const parsed = new URL(url);
@@ -317,33 +303,31 @@ export function buildHostImports(opts: HostImportOptions): Record<string, any> {
           return -1;
         }
         const method = mem.readString(methodPtr, methodLen);
-        const body = bodyLen > 0 ? mem.getMemBytes().slice(bodyPtr, bodyPtr + bodyLen) : undefined;
+        const body = bodyLen > 0 ? mem.getMemBytes().slice(bodyPtr, bodyPtr + bodyLen) : null;
         const headersJson = headersLen > 0 ? mem.readString(headersPtr, headersLen) : "{}";
-        const headers = JSON.parse(headersJson);
-        if (!validateHeaders(headers)) {
+        if (!validateHeaders(JSON.parse(headersJson))) {
           console.error("http_fetch_full blocked: invalid headers (CRLF/null injection)");
           return -1;
         }
-        const resp = await fetch(url, { method: method || "GET", headers, body });
-        const respBody = new Uint8Array(await resp.arrayBuffer());
 
-        const respHeaders: Record<string, string> = {};
-        resp.headers.forEach((value, key) => { respHeaders[key] = value; });
-        const headersBytes = _encoder.encode(JSON.stringify(respHeaders));
-
-        const totalLen = 8 + headersBytes.length + respBody.length;
-        if (totalLen > resultLen) {
-          console.error(`http_fetch_full: result too large (${totalLen} > ${resultLen})`);
+        if (fanout) {
+          const result = fanout.getOrRecord("http_fetch_full", [url, method, body, headersJson]);
+          if (result.cached && result.value != null) {
+            const cached = result.value as { status: number; headers: Record<string, string>; body: Uint8Array };
+            const headersBytes = _encoder.encode(JSON.stringify(cached.headers));
+            const totalLen = 8 + headersBytes.length + cached.body.length;
+            if (totalLen > resultLen) return -1;
+            const memBytes = mem.getMemBytes();
+            const dv = new DataView(memBytes.buffer);
+            dv.setUint32(resultPtr, cached.status, true);
+            dv.setUint32(resultPtr + 4, headersBytes.length, true);
+            memBytes.set(headersBytes, resultPtr + 8);
+            memBytes.set(cached.body, resultPtr + 8 + headersBytes.length);
+            return totalLen;
+          }
           return -1;
         }
-
-        const memBytes = mem.getMemBytes();
-        const dv = new DataView(memBytes.buffer);
-        dv.setUint32(resultPtr, resp.status, true);
-        dv.setUint32(resultPtr + 4, headersBytes.length, true);
-        memBytes.set(headersBytes, resultPtr + 8);
-        memBytes.set(respBody, resultPtr + 8 + headersBytes.length);
-        return totalLen;
+        return -1;
       } catch (e: unknown) {
         console.error("http_fetch_full error:", e);
         return -1;
@@ -351,94 +335,95 @@ export function buildHostImports(opts: HostImportOptions): Record<string, any> {
     },
 
     // --- KV ---
-    kv_get: async (keyPtr: number, keyLen: number, bufPtr: number, bufLen: number): Promise<number> => {
+    kv_get: (keyPtr: number, keyLen: number, bufPtr: number, bufLen: number): number => {
       try {
         const raw = mem.readString(keyPtr, keyLen);
         const [bindingName, key] = parseBindingKey(raw, "KV");
-        const kv = env[bindingName] as KVNamespace | undefined;
-        if (!kv) return -1;
-        const val = await kv.get(key, "arrayBuffer");
-        if (val === null) return -1;
-        return mem.writeBytes(bufPtr, new Uint8Array(val), bufLen);
+        if (fanout) {
+          const result = fanout.getOrRecord("kv_get", [bindingName, key]);
+          if (result.cached && result.value != null) {
+            return mem.writeBytes(bufPtr, result.value as Uint8Array, bufLen);
+          }
+          return -1; // Not cached or null — key "not found" sentinel
+        }
+        return -1;
       } catch (e: unknown) {
         console.error("kv_get error:", e);
         return -1;
       }
     },
 
-    kv_put: async (keyPtr: number, keyLen: number, valPtr: number, valLen: number): Promise<void> => {
+    kv_put: (keyPtr: number, keyLen: number, valPtr: number, valLen: number): void => {
       try {
         const raw = mem.readString(keyPtr, keyLen);
         const [bindingName, key] = parseBindingKey(raw, "KV");
-        const kv = env[bindingName] as KVNamespace | undefined;
-        if (!kv) return;
         const val = mem.getMemBytes().slice(valPtr, valPtr + valLen);
-        await kv.put(key, val);
+        if (fanout) {
+          fanout.recordWrite("kv_put", [bindingName, key, val]);
+        }
       } catch (e: unknown) {
         console.error("kv_put error:", e);
       }
     },
 
-    kv_delete: async (keyPtr: number, keyLen: number): Promise<void> => {
+    kv_delete: (keyPtr: number, keyLen: number): void => {
       try {
         const raw = mem.readString(keyPtr, keyLen);
         const [bindingName, key] = parseBindingKey(raw, "KV");
-        const kv = env[bindingName] as KVNamespace | undefined;
-        if (!kv) return;
-        await kv.delete(key);
+        if (fanout) {
+          fanout.recordWrite("kv_delete", [bindingName, key]);
+        }
       } catch (e: unknown) {
         console.error("kv_delete error:", e);
       }
     },
 
-    kv_multi_get: async (
+    kv_multi_get: (
       keysPtr: number, keysLen: number,
       resultPtr: number, resultLen: number
-    ): Promise<number> => {
+    ): number => {
       try {
         const keysJson: string[] = JSON.parse(mem.readString(keysPtr, keysLen));
-        const results = await Promise.all(keysJson.map(async (raw) => {
-          const [bindingName, key] = parseBindingKey(raw, "KV");
-          const kv = env[bindingName] as KVNamespace | undefined;
-          if (!kv) return null;
-          const val = await kv.get(key, "arrayBuffer");
-          return val !== null ? new Uint8Array(val) : null;
-        }));
-
-        const count = results.length;
-        let totalLen = 4;
-        for (const r of results) totalLen += 4 + (r ? r.length : 0);
-        if (totalLen > resultLen) return -1;
-
-        const memBytes = mem.getMemBytes();
-        const dv = new DataView(memBytes.buffer);
-        dv.setInt32(resultPtr, count, true);
-        let offset = 4;
-        for (const r of results) {
-          if (r) {
-            dv.setInt32(resultPtr + offset, r.length, true);
-            offset += 4;
-            memBytes.set(r, resultPtr + offset);
-            offset += r.length;
-          } else {
-            dv.setInt32(resultPtr + offset, -1, true);
-            offset += 4;
+        const parsedKeys = keysJson.map(raw => parseBindingKey(raw, "KV"));
+        const bindingName = parsedKeys[0]?.[0] || "KV";
+        const keys = parsedKeys.map(([, k]) => k);
+        if (fanout) {
+          const result = fanout.getOrRecord("kv_multi_get", [keys, bindingName]);
+          if (result.cached && result.value != null) {
+            const results = result.value as Array<Uint8Array | null>;
+            const memBytes = mem.getMemBytes();
+            const dv = new DataView(memBytes.buffer);
+            dv.setInt32(resultPtr, results.length, true);
+            let offset = 4;
+            for (const r of results) {
+              if (r) {
+                dv.setInt32(resultPtr + offset, r.length, true);
+                offset += 4;
+                memBytes.set(r, resultPtr + offset);
+                offset += r.length;
+              } else {
+                dv.setInt32(resultPtr + offset, -1, true);
+                offset += 4;
+              }
+            }
+            return offset;
           }
         }
-        return offset;
+        return -1;
       } catch (e: unknown) {
         console.error("kv_multi_get error:", e);
         return -1;
       }
     },
 
-    kv_multi_put: async (dataPtr: number, dataLen: number): Promise<void> => {
+    kv_multi_put: (dataPtr: number, dataLen: number): void => {
       try {
         const memBytes = mem.getMemBytes();
         const dv = new DataView(memBytes.buffer);
         const count = dv.getInt32(dataPtr, true);
         let offset = dataPtr + 4;
-        const ops: Promise<void>[] = [];
+        const entries: Array<[string, Uint8Array]> = [];
+        let bindingName = "KV";
 
         for (let i = 0; i < count; i++) {
           const keyLen = dv.getInt32(offset, true);
@@ -450,72 +435,78 @@ export function buildHostImports(opts: HostImportOptions): Record<string, any> {
           const val = memBytes.slice(offset, offset + valLen);
           offset += valLen;
 
-          const [bindingName, key] = parseBindingKey(rawKey, "KV");
-          const kv = env[bindingName] as KVNamespace | undefined;
-          if (kv) ops.push(kv.put(key, val));
+          const [bn, key] = parseBindingKey(rawKey, "KV");
+          bindingName = bn;
+          entries.push([key, val]);
         }
 
-        await Promise.all(ops);
+        if (fanout) {
+          fanout.recordWrite("kv_multi_put", [entries, bindingName]);
+        }
       } catch (e: unknown) {
         console.error("kv_multi_put error:", e);
       }
     },
 
     // --- R2 ---
-    r2_get: async (keyPtr: number, keyLen: number, bufPtr: number, bufLen: number): Promise<number> => {
+    r2_get: (keyPtr: number, keyLen: number, bufPtr: number, bufLen: number): number => {
       try {
         const raw = mem.readString(keyPtr, keyLen);
         const [bindingName, key] = parseBindingKey(raw, "R2");
-        const r2 = env[bindingName] as R2Bucket | undefined;
-        if (!r2) return -1;
-        const obj = await r2.get(key);
-        if (!obj) return -1;
-        return mem.writeBytes(bufPtr, new Uint8Array(await obj.arrayBuffer()), bufLen);
+        if (fanout) {
+          const result = fanout.getOrRecord("r2_get", [bindingName, key]);
+          if (result.cached && result.value != null) {
+            return mem.writeBytes(bufPtr, result.value as Uint8Array, bufLen);
+          }
+        }
+        return -1;
       } catch (e: unknown) {
         console.error("r2_get error:", e);
         return -1;
       }
     },
 
-    r2_put: async (keyPtr: number, keyLen: number, valPtr: number, valLen: number): Promise<void> => {
+    r2_put: (keyPtr: number, keyLen: number, valPtr: number, valLen: number): void => {
       try {
         const raw = mem.readString(keyPtr, keyLen);
         const [bindingName, key] = parseBindingKey(raw, "R2");
-        const r2 = env[bindingName] as R2Bucket | undefined;
-        if (!r2) return;
         const val = mem.getMemBytes().slice(valPtr, valPtr + valLen);
-        await r2.put(key, val);
+        if (fanout) {
+          fanout.recordWrite("r2_put", [bindingName, key, val]);
+        }
       } catch (e: unknown) {
         console.error("r2_put error:", e);
       }
     },
 
     // --- D1 ---
-    d1_exec: async (
+    d1_exec: (
       sqlPtr: number, sqlLen: number,
       paramsPtr: number, paramsLen: number,
       resultPtr: number, resultLen: number
-    ): Promise<number> => {
+    ): number => {
       try {
         const rawSql = mem.readString(sqlPtr, sqlLen);
         const [bindingName, sql] = parseBindingKey(rawSql, "D1");
-        const d1 = env[bindingName] as D1Database | undefined;
-        if (!d1) return -1;
         const params = JSON.parse(mem.readString(paramsPtr, paramsLen));
-        const stmt = d1.prepare(sql).bind(...params);
-        const { results } = await stmt.all();
-        const encoded = _encoder.encode(JSON.stringify(results));
-        return mem.writeBytes(resultPtr, encoded, resultLen);
+        if (fanout) {
+          const result = fanout.getOrRecord("d1_exec", [bindingName, sql, params]);
+          if (result.cached && result.value != null) {
+            const encoded = _encoder.encode(JSON.stringify(result.value));
+            return mem.writeBytes(resultPtr, encoded, resultLen);
+          }
+        }
+        return -1;
       } catch (e: unknown) {
         console.error("d1_exec error:", e);
         return -1;
       }
     },
 
-    d1_batch: async (
+    d1_batch: (
       queriesPtr: number, queriesLen: number,
       resultPtr: number, resultLen: number
-    ): Promise<number> => {
+    ): number => {
       try {
         const queries: Array<{ sql: string; params?: unknown[]; binding?: string }> =
           JSON.parse(mem.readString(queriesPtr, queriesLen));
@@ -525,21 +516,14 @@ export function buildHostImports(opts: HostImportOptions): Record<string, any> {
         }
 
         const bindingName = queries[0].binding || "D1";
-        const mismatch = queries.find((q) => (q.binding || "D1") !== bindingName);
-        if (mismatch) {
-          console.error(`d1_batch: mixed bindings (${bindingName} vs ${mismatch.binding})`);
-          return -1;
+        if (fanout) {
+          const result = fanout.getOrRecord("d1_batch", [bindingName, queries]);
+          if (result.cached && result.value != null) {
+            const encoded = _encoder.encode(JSON.stringify(result.value));
+            return mem.writeBytes(resultPtr, encoded, resultLen);
+          }
         }
-        const d1 = env[bindingName] as D1Database | undefined;
-        if (!d1) return -1;
-
-        const stmts = queries.map((q) =>
-          d1.prepare(q.sql).bind(...(q.params || []))
-        );
-        const batchResults = await d1.batch(stmts);
-        const allResults = batchResults.map((r) => r.results);
-        const encoded = _encoder.encode(JSON.stringify(allResults));
-        return mem.writeBytes(resultPtr, encoded, resultLen);
+        return -1;
       } catch (e: unknown) {
         console.error("d1_batch error:", e);
         return -1;
@@ -556,26 +540,36 @@ export function buildHostImports(opts: HostImportOptions): Record<string, any> {
     },
 
     // --- Threading ---
-    thread_spawn: opts.threading
-      ? async (codePtr: number, codeLen: number, inputPtr: number, inputLen: number): Promise<number> => {
-          const code = mem.readString(codePtr, codeLen);
-          const input = mem.getMemBytes().slice(inputPtr, inputPtr + inputLen);
-          return opts.threading!.spawn(code, input);
-        }
-      : () => -1,
+    thread_spawn: (codePtr: number, codeLen: number, inputPtr: number, inputLen: number): number => {
+      if (fanout) {
+        const code = mem.readString(codePtr, codeLen);
+        const input = mem.getMemBytes().slice(inputPtr, inputPtr + inputLen);
+        const result = fanout.getOrRecord("thread_spawn", [code, input]);
+        if (result.cached) return result.value as number;
+      }
+      return -1;
+    },
 
-    thread_join: opts.threading
-      ? async (threadId: number, bufPtr: number, bufLen: number): Promise<number> => {
-          return opts.threading!.join(threadId, bufPtr, bufLen);
+    thread_join: (threadId: number, bufPtr: number, bufLen: number): number => {
+      if (fanout) {
+        const result = fanout.getOrRecord("thread_join", [threadId]);
+        if (result.cached && result.value != null) {
+          const data = result.value as Uint8Array;
+          return mem.writeBytes(bufPtr, data, bufLen);
         }
-      : () => -1,
+      }
+      return -1;
+    },
 
     // --- Dynamic Loading ---
-    dl_open: opts.dynamicLoading
-      ? async (pathPtr: number, pathLen: number): Promise<number> => {
-          return opts.dynamicLoading!.open(mem.readString(pathPtr, pathLen));
-        }
-      : () => -1,
+    dl_open: (pathPtr: number, pathLen: number): number => {
+      if (fanout && opts.dynamicLoading) {
+        const path = mem.readString(pathPtr, pathLen);
+        const result = fanout.getOrRecord("dl_open", [path]);
+        if (result.cached) return result.value as number;
+      }
+      return -1;
+    },
 
     dl_sym: opts.dynamicLoading
       ? (handle: number, symbolPtr: number, symbolLen: number): number => {

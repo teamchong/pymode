@@ -25,11 +25,7 @@ const BUILD_DIR = path.join(ROOT_DIR, "build", "zig-wasi");
 const RECIPES_DIR = path.join(ROOT_DIR, "recipes");
 const ZIG_CC = path.join(ROOT_DIR, "build", "zig-wrappers", "zig-cc");
 
-const ASYNC_IMPORTS =
-  "pymode.tcp_recv,pymode.http_fetch_full," +
-  "pymode.kv_get,pymode.kv_put,pymode.kv_delete,pymode.kv_multi_get,pymode.kv_multi_put," +
-  "pymode.r2_get,pymode.r2_put,pymode.d1_exec,pymode.d1_batch," +
-  "pymode.thread_spawn,pymode.thread_join,pymode.dl_open";
+// Asyncify removed — fan-out replay handles async imports at runtime.
 
 function globFiles(dir: string, pattern: string): string[] {
   if (!fs.existsSync(dir)) return [];
@@ -306,21 +302,19 @@ function main(): void {
   const preSize = fs.statSync(output).size;
   console.log(`  Raw size: ${(preSize / 1048576).toFixed(1)}MB`);
 
-  // Step 5: Asyncify with wasm-opt
+  // Step 5: Optimize with wasm-opt (fan-out replay replaces asyncify)
   const wasmOptPath = spawnSync("which", ["wasm-opt"], { encoding: "utf-8" });
   if (wasmOptPath.status === 0) {
-    console.log("  Running wasm-opt --asyncify...");
+    console.log("  Running wasm-opt -O1...");
     const optOutput = output + ".opt";
     const optRes = run([
       "wasm-opt",
       "-O1",
-      "--asyncify",
       "--enable-simd",
       "--enable-nontrapping-float-to-int",
       "--enable-bulk-memory",
       "--enable-sign-ext",
       "--enable-mutable-globals",
-      `--pass-arg=asyncify-imports@${ASYNC_IMPORTS}`,
       output,
       "-o",
       optOutput,
@@ -328,9 +322,9 @@ function main(): void {
     if (optRes.status !== 0) process.exit(1);
     fs.renameSync(optOutput, output);
     const postSize = fs.statSync(output).size;
-    console.log(`  Asyncified: ${(postSize / 1048576).toFixed(1)}MB`);
+    console.log(`  Optimized: ${(postSize / 1048576).toFixed(1)}MB`);
   } else {
-    console.log("  WARNING: wasm-opt not found, skipping asyncify");
+    console.log("  WARNING: wasm-opt not found, skipping optimization");
   }
 
   // Step 6: Merge site-packages

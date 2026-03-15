@@ -13,12 +13,11 @@ globs = ["**/*.wasm"]
 type = "Data"
 globs = ["**/*.zip", "**/*.dat"]
 
-# Persistent /data directory backed by KV
-# Create with: wrangler kv namespace create PYMODE_DATA
-# Then update the id below with the actual namespace ID
-# [[kv_namespaces]]
-# binding = "PYMODE_DATA"
-# id = "YOUR_KV_NAMESPACE_ID"
+# Persistent /data directory backed by R2
+# Create with: wrangler r2 bucket create pymode-fs
+# [[r2_buckets]]
+# binding = "FS_BUCKET"
+# bucket_name = "pymode-fs"
 
 # Durable Objects:
 # - TcpPoolDO: Legacy persistent TCP connections (trampoline mode)

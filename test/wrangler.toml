@@ -41,6 +41,10 @@ id = "test-kv"
 binding = "MY_R2"
 bucket_name = "test-bucket"
 
+[[r2_buckets]]
+binding = "FS_BUCKET"
+bucket_name = "test-fs"
+
 [[d1_databases]]
 binding = "MY_DB"
 database_name = "test-db"

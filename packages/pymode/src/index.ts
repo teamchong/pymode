@@ -24,8 +24,8 @@
 export { ProcExit, createWasi, buildDirIndex } from "./wasi";
 export type { WasiResult } from "./wasi";
 
-// Asyncify runtime for async WASM imports
-export { AsyncifyRuntime } from "./asyncify";
+// Fan-out replay context for async WASM imports
+export { FanoutContext, resolveAll } from "./fanout";
 
 // PythonDO — full Durable Object with CF binding host imports
 export { PythonDO } from "./python-do";

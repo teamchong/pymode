@@ -29,11 +29,7 @@ const WIZER_DIR = path.join(ROOT_DIR, "lib", "wizer");
 const IMPORTS_DIR = path.join(ROOT_DIR, "lib", "pymode-imports");
 const OUTPUT = path.join(BUILD_DIR, "python-wizer.wasm");
 
-const ASYNC_IMPORTS =
-  "pymode.tcp_recv,pymode.http_fetch_full," +
-  "pymode.kv_get,pymode.kv_put,pymode.kv_delete,pymode.kv_multi_get,pymode.kv_multi_put," +
-  "pymode.r2_get,pymode.r2_put,pymode.d1_exec,pymode.d1_batch," +
-  "pymode.thread_spawn,pymode.thread_join,pymode.dl_open";
+// Asyncify removed — fan-out replay handles async imports at runtime.
 
 function mb(size: number): string {
   return `${(size / 1048576).toFixed(1)}MB`;
@@ -211,25 +207,23 @@ function main(): void {
 
   // Step 5: Asyncify with wasm-opt
   if (which("wasm-opt")) {
-    console.log("  [5/6] Asyncify + optimize...");
+    console.log("  [5/6] Optimize with wasm-opt...");
     const optOutput = wizerRaw + ".opt";
     run([
       "wasm-opt",
       "-O2",
-      "--asyncify",
       "--enable-simd",
       "--enable-nontrapping-float-to-int",
       "--enable-bulk-memory",
       "--enable-sign-ext",
       "--enable-mutable-globals",
-      `--pass-arg=asyncify-imports@${ASYNC_IMPORTS}`,
       wizerRaw,
       "-o",
       optOutput,
     ]);
     fs.renameSync(optOutput, wizerRaw);
     const optSize = fs.statSync(wizerRaw).size;
-    console.log(`    Asyncified: ${mb(optSize)}`);
+    console.log(`    Optimized: ${mb(optSize)}`);
   } else {
     console.log("  [5/6] SKIP: wasm-opt not found");
   }

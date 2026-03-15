@@ -94,21 +94,19 @@ if command -v wasm-objdump &>/dev/null; then
     fi
 fi
 
-# Step 5: Asyncify with wasm-opt
+# Step 5: Optimize with wasm-opt (fan-out replay replaces asyncify)
 if command -v wasm-opt &>/dev/null; then
-    echo "  [5/6] Asyncify + optimize..."
-    ASYNC_IMPORTS="pymode.tcp_recv,pymode.http_fetch_full,pymode.kv_get,pymode.kv_put,pymode.kv_delete,pymode.kv_multi_get,pymode.kv_multi_put,pymode.r2_get,pymode.r2_put,pymode.d1_exec,pymode.d1_batch,pymode.thread_spawn,pymode.thread_join,pymode.dl_open"
-    wasm-opt -O2 --asyncify \
+    echo "  [5/6] Optimize with wasm-opt..."
+    wasm-opt -O2 \
         --enable-simd \
         --enable-nontrapping-float-to-int \
         --enable-bulk-memory \
         --enable-sign-ext \
         --enable-mutable-globals \
-        --pass-arg="asyncify-imports@${ASYNC_IMPORTS}" \
         "$WIZER_RAW" -o "${WIZER_RAW}.opt"
     mv "${WIZER_RAW}.opt" "$WIZER_RAW"
     OPT_SIZE=$(wc -c < "$WIZER_RAW" | tr -d ' ')
-    echo "    Asyncified: $(echo "scale=1; $OPT_SIZE / 1048576" | bc)MB"
+    echo "    Optimized: $(echo "scale=1; $OPT_SIZE / 1048576" | bc)MB"
 else
     echo "  [5/6] SKIP: wasm-opt not found"
 fi

@@ -203,23 +203,21 @@ fi
 PRE_SIZE=$(wc -c < "$OUTPUT" | tr -d ' ')
 echo "  Raw size: $(echo "scale=1; $PRE_SIZE / 1048576" | bc)MB"
 
-# Step 5: Asyncify with wasm-opt
+# Step 5: Optimize with wasm-opt (fan-out replay replaces asyncify)
 if command -v wasm-opt &>/dev/null; then
-    echo "  Running wasm-opt --asyncify..."
-    ASYNC_IMPORTS="pymode.tcp_recv,pymode.http_fetch_full,pymode.kv_get,pymode.kv_put,pymode.kv_delete,pymode.kv_multi_get,pymode.kv_multi_put,pymode.r2_get,pymode.r2_put,pymode.d1_exec,pymode.d1_batch,pymode.thread_spawn,pymode.thread_join,pymode.dl_open"
-    wasm-opt -O1 --asyncify \
+    echo "  Running wasm-opt -O1..."
+    wasm-opt -O1 \
         --enable-simd \
         --enable-nontrapping-float-to-int \
         --enable-bulk-memory \
         --enable-sign-ext \
         --enable-mutable-globals \
-        --pass-arg="asyncify-imports@${ASYNC_IMPORTS}" \
         "$OUTPUT" -o "${OUTPUT}.opt"
     mv "${OUTPUT}.opt" "$OUTPUT"
     POST_SIZE=$(wc -c < "$OUTPUT" | tr -d ' ')
-    echo "  Asyncified: $(echo "scale=1; $POST_SIZE / 1048576" | bc)MB"
+    echo "  Optimized: $(echo "scale=1; $POST_SIZE / 1048576" | bc)MB"
 else
-    echo "  WARNING: wasm-opt not found, skipping asyncify"
+    echo "  WARNING: wasm-opt not found, skipping optimization"
 fi
 
 # Step 6: Merge site-packages

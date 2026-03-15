@@ -169,17 +169,11 @@ async function runWasm(
     env_get: () => -1, console_log: () => {},
     zerobuf_exchange_ptr: () => 0,
   };
-  const asyncify: Record<string, Function> = {
-    start_unwind: () => {}, stop_unwind: () => {},
-    start_rewind: () => {}, stop_rewind: () => {},
-  };
-
   let exitCode = 0;
   try {
     const { instance } = await WebAssembly.instantiate(pythonWasm, {
       wasi_snapshot_preview1: wasi.imports,
       pymode,
-      asyncify,
     });
     memory = instance.exports.memory as WebAssembly.Memory;
     (instance.exports._start as () => void)();

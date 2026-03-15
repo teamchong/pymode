@@ -26,8 +26,8 @@ describe("python-do.ts structure (Step 3)", () => {
   const srcPath = resolve(ROOT, "worker/src/python-do.ts");
   const src = readFileSync(srcPath, "utf-8");
 
-  it("has dl_open in ASYNC_IMPORTS", () => {
-    assert.ok(src.includes('"pymode.dl_open"'), "dl_open should be in ASYNC_IMPORTS");
+  it("has dynamic loading implementation", () => {
+    assert.ok(src.includes("dynamicLoading"), "should have dynamicLoading in host imports");
   });
 
   it("has dlModules state", () => {
@@ -42,15 +42,15 @@ describe("python-do.ts structure (Step 3)", () => {
   });
 
   it("implements dl_open host import", () => {
-    assert.ok(src.includes("dl_open: async"), "dl_open should be async");
+    assert.ok(src.includes("open:"), "dl_open should be implemented");
     assert.ok(
-      src.includes("WebAssembly.instantiate(wasmModule, sideImports)"),
-      "dl_open should instantiate side modules"
+      src.includes("WebAssembly.Instance(wasmModule, sideImports)"),
+      "dl_open should instantiate side modules synchronously"
     );
   });
 
   it("implements dl_sym host import", () => {
-    assert.ok(src.includes("dl_sym:"), "should have dl_sym implementation");
+    assert.ok(src.includes("sym:"), "should have sym implementation");
     assert.ok(
       src.includes("__indirect_function_table"),
       "dl_sym should use indirect function table"
@@ -59,7 +59,7 @@ describe("python-do.ts structure (Step 3)", () => {
   });
 
   it("implements dl_close host import", () => {
-    assert.ok(src.includes("dl_close:"), "should have dl_close implementation");
+    assert.ok(src.includes("close:"), "should have close implementation");
     assert.ok(
       src.includes("dlModules.delete(handle)"),
       "dl_close should remove the module from the map"
@@ -67,7 +67,7 @@ describe("python-do.ts structure (Step 3)", () => {
   });
 
   it("implements dl_error host import", () => {
-    assert.ok(src.includes("dl_error:"), "should have dl_error implementation");
+    assert.ok(src.includes("error:"), "should have error implementation");
     assert.ok(
       src.includes("dlLastError"),
       "dl_error should read from dlLastError"

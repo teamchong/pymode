@@ -427,31 +427,24 @@ if [ ! -f "$BUILD_DIR/python.wasm" ]; then
     fi
 fi
 
-# Step 6: Asyncify + optimize with wasm-opt
-# Asyncify instruments the binary so async host imports (tcp_recv, http_fetch,
-# kv_get, etc.) can suspend/resume the WASM stack. This eliminates the
-# trampoline — single _start() invocation, async ops pause in-place.
+# Step 6: Optimize with wasm-opt (fan-out replay replaces asyncify)
 if command -v wasm-opt >/dev/null 2>&1; then
     ORIG_SIZE=$(stat -f%z "$BUILD_DIR/python.wasm" 2>/dev/null || stat -c%s "$BUILD_DIR/python.wasm")
 
-    # List of async pymode imports that can suspend the WASM stack
-    ASYNC_IMPORTS="pymode.tcp_recv,pymode.http_fetch_full,pymode.kv_get,pymode.kv_put,pymode.kv_delete,pymode.kv_multi_get,pymode.kv_multi_put,pymode.r2_get,pymode.r2_put,pymode.d1_exec,pymode.d1_batch,pymode.thread_spawn,pymode.thread_join,pymode.dl_open"
-
-    info "Running wasm-opt --asyncify (async imports: tcp_recv, http_fetch, kv_*, r2_*, d1_exec)..."
-    wasm-opt -O2 --asyncify \
+    info "Running wasm-opt -O2 (no asyncify — fan-out replay handles async)..."
+    wasm-opt -O2 \
         --enable-simd \
         --enable-nontrapping-float-to-int \
         --enable-bulk-memory \
         --enable-sign-ext \
         --enable-mutable-globals \
-        --pass-arg="asyncify-imports@${ASYNC_IMPORTS}" \
-        "$BUILD_DIR/python.wasm" -o "$BUILD_DIR/python.wasm.asyncified"
-    mv "$BUILD_DIR/python.wasm.asyncified" "$BUILD_DIR/python.wasm"
+        "$BUILD_DIR/python.wasm" -o "$BUILD_DIR/python.wasm.opt"
+    mv "$BUILD_DIR/python.wasm.opt" "$BUILD_DIR/python.wasm"
 
     NEW_SIZE=$(stat -f%z "$BUILD_DIR/python.wasm" 2>/dev/null || stat -c%s "$BUILD_DIR/python.wasm")
-    info "asyncify + optimize: ${ORIG_SIZE} -> ${NEW_SIZE} bytes"
+    info "optimized: ${ORIG_SIZE} -> ${NEW_SIZE} bytes"
 else
-    warn "wasm-opt not found. Skipping asyncify — trampoline fallback will be used at runtime."
+    warn "wasm-opt not found. Skipping optimization."
     warn "Install binaryen: brew install binaryen (or apt install binaryen)"
 fi
 
