@@ -142,5 +142,64 @@ def setdefaulttimeout(timeout):
     pass
 
 
+class _PipeSocket:
+    """In-memory pipe socket for socketpair(). Used by asyncio's self-pipe
+    trick for signal wakeups — irrelevant in WASM but must not crash."""
+
+    def __init__(self):
+        self._buf = bytearray()
+        self._peer = None
+        self._closed = False
+        self._blocking = True
+
+    def setblocking(self, flag):
+        self._blocking = flag
+
+    def send(self, data):
+        if self._peer and not self._peer._closed:
+            self._peer._buf.extend(data)
+        return len(data)
+
+    def recv(self, bufsize):
+        if self._buf:
+            data = bytes(self._buf[:bufsize])
+            del self._buf[:bufsize]
+            return data
+        return b""
+
+    def fileno(self):
+        return -1
+
+    def close(self):
+        self._closed = True
+
+    def shutdown(self, how):
+        pass
+
+    def setsockopt(self, *args):
+        pass
+
+    def getsockopt(self, *args):
+        return 0
+
+    def getpeername(self):
+        return ("127.0.0.1", 0)
+
+    def getsockname(self):
+        return ("127.0.0.1", 0)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+
 def socketpair(family=AF_UNIX, type=SOCK_STREAM, proto=0):
-    raise OSError("socketpair not available in WASM runtime")
+    """Return a pair of connected in-memory sockets.
+    Used by asyncio's SelectorEventLoop for self-pipe wakeups."""
+    a = _PipeSocket()
+    b = _PipeSocket()
+    a._peer = b
+    b._peer = a
+    return (a, b)

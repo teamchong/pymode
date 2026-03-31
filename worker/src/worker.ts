@@ -8,6 +8,7 @@ import { encoder as _encoder, decoder as _decoder, stdlibBin, stdlibDirIndex, ex
 // Re-export DOs so wrangler can find them
 export { PythonDO } from "./python-do";
 export { ThreadDO } from "./thread-do";
+export { SandboxDO } from "./sandbox-do";
 
 /** Block requests to private/internal networks (SSRF prevention). */
 function isPrivateHost(hostname: string): boolean {
@@ -604,6 +605,21 @@ export default {
     }
 
     try {
+      // ---- Sandbox API: route /sandbox/* to SandboxDO for hermes-agent ----
+      const url = new URL(request.url);
+      if (url.pathname.startsWith("/sandbox/") && (env as any).SANDBOX_DO) {
+        // /sandbox/{session_id}/exec → SandboxDO(session_id).fetch(/exec)
+        const pathParts = url.pathname.slice("/sandbox/".length).split("/");
+        const sessionId = pathParts[0];
+        const subPath = "/" + pathParts.slice(1).join("/");
+        const sandboxNs = (env as any).SANDBOX_DO as DurableObjectNamespace;
+        const doId = sandboxNs.idFromName(sessionId);
+        const sandbox = sandboxNs.get(doId);
+        const sandboxUrl = new URL(request.url);
+        sandboxUrl.pathname = subPath;
+        return sandbox.fetch(new Request(sandboxUrl.toString(), request));
+      }
+
       // ---- Project mode: route through PythonDO for full host imports ----
       if (userFilesModule) {
         const requestJson = await serializeRequest(request, env);
@@ -618,7 +634,6 @@ export default {
             userFilesModule.userFiles,
             pythonPath,
             requestJson,
-            sitePackagesData,
           );
 
           if (result.stderr) console.error("[PyMode stderr]", result.stderr);
@@ -658,7 +673,7 @@ export default {
       if (env.PYTHON_DO) {
         const doId = env.PYTHON_DO.idFromName("default");
         const pythonDO = env.PYTHON_DO.get(doId) as any;
-        const result = await pythonDO.executeCode(code, sitePackagesData);
+        const result = await pythonDO.executeCode(code);
 
         if (result.exitCode === 0) {
           return textResponse(result.stdout || "(empty output)\n");

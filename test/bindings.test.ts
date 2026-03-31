@@ -119,7 +119,8 @@ describe("D1 bindings", () => {
     const { text, status } = await runPython(`
 from pymode.workers import Env
 env = Env()
-env.MY_DB.prepare("CREATE TABLE IF NOT EXISTS test_users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)").run()
+env.MY_DB.prepare("DROP TABLE IF EXISTS test_users").run()
+env.MY_DB.prepare("CREATE TABLE test_users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)").run()
 env.MY_DB.prepare("INSERT INTO test_users (name, age) VALUES (?, ?)").bind("Alice", 30).run()
 env.MY_DB.prepare("INSERT INTO test_users (name, age) VALUES (?, ?)").bind("Bob", 25).run()
 result = env.MY_DB.prepare("SELECT * FROM test_users ORDER BY name").all()

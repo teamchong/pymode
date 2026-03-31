@@ -208,10 +208,16 @@ if command -v wasm-opt &>/dev/null; then
     echo "  Running wasm-opt -O1..."
     wasm-opt -O1 \
         --enable-simd \
+        --enable-relaxed-simd \
         --enable-nontrapping-float-to-int \
         --enable-bulk-memory \
+        --enable-bulk-memory-opt \
         --enable-sign-ext \
         --enable-mutable-globals \
+        --enable-multivalue \
+        --enable-tail-call \
+        --enable-reference-types \
+        --enable-extended-const \
         "$OUTPUT" -o "${OUTPUT}.opt"
     mv "${OUTPUT}.opt" "$OUTPUT"
     POST_SIZE=$(wc -c < "$OUTPUT" | tr -d ' ')

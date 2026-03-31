@@ -137,7 +137,16 @@ jobs:
             langgraph langgraph-checkpoint langgraph-prebuilt langgraph-sdk \
             instructor openai dspy \
             orjson httptools \
-            docstring-parser rich typer requests-toolbelt
+            docstring-parser rich typer requests-toolbelt \
+            fastmcp mcp httpx-sse jsonschema jsonschema-specifications referencing \
+            pydantic-settings python-multipart sse-starlette python-dotenv \
+            exceptiongroup arrow fqdn isoduration rfc3339-validator rfc3986-validator \
+            uri-template webcolors lark platformdirs pygments \
+            uncalled-for jsonref beartype cachetools dnspython docutils \
+            email-validator importlib-metadata jaraco-classes jaraco-context jaraco-functools \
+            jsonschema-path key-value keyring markdown-it-py mdurl more-itertools \
+            opentelemetry-api pathable py-key-value-aio rich-rst websockets zipp \
+            PyJWT
 
       - name: Run tests
         run: npm test

@@ -454,10 +454,175 @@ async function main() {
       "    return _json.loads(data)",
       "Fragment = bytes",
     ].join("\n"),
+    // FastMCP optional imports — transport/CLI packages unavailable in WASI.
+    // These are imported conditionally by FastMCP but not needed for tool registration/calling.
+    "uvicorn/__init__.py": "class Config: pass\ndef run(*a, **kw): raise RuntimeError('uvicorn not available in WASI')\n",
+    "authlib/__init__.py": "",
+    "cryptography/__init__.py": "",
+    "cffi/__init__.py": "",
+    "pyperclip/__init__.py": "def copy(text): pass\ndef paste(): return ''\n",
+    "cyclopts/__init__.py": "",
+    "openapi_core/__init__.py": "",
+    "openapi_pydantic/__init__.py": "",
+    "rfc3987/__init__.py": "",
+    "aiofile/__init__.py": "",
+    "caio/__init__.py": "",
+    "watchfiles/__init__.py": "",
+    "pycparser/__init__.py": "",
+    // rpds-py is a Rust extension — pure Python fallback for HashTrieMap/HashTrieSet/List/Queue
+    "rpds/__init__.py": [
+      "class HashTrieMap:",
+      "    def __init__(self, data=None):",
+      "        self._d = dict(data) if data else {}",
+      "    @classmethod",
+      "    def convert(cls, mapping): return cls(mapping)",
+      "    @classmethod",
+      "    def fromkeys(cls, keys, value=None): return cls({k: value for k in keys})",
+      "    def insert(self, key, value):",
+      "        new = HashTrieMap(self._d); new._d[key] = value; return new",
+      "    def remove(self, key):",
+      "        new = HashTrieMap(self._d); del new._d[key]; return new",
+      "    def discard(self, key):",
+      "        new = HashTrieMap(self._d); new._d.pop(key, None); return new",
+      "    def update(self, other):",
+      "        new = HashTrieMap(self._d); new._d.update(other); return new",
+      "    def get(self, key, default=None): return self._d.get(key, default)",
+      "    def keys(self): return self._d.keys()",
+      "    def values(self): return self._d.values()",
+      "    def items(self): return self._d.items()",
+      "    def __getitem__(self, key): return self._d[key]",
+      "    def __contains__(self, key): return key in self._d",
+      "    def __iter__(self): return iter(self._d)",
+      "    def __len__(self): return len(self._d)",
+      "    def __eq__(self, other): return isinstance(other, HashTrieMap) and self._d == other._d",
+      "    def __hash__(self): return hash(tuple(sorted(self._d.items())))",
+      "    def __repr__(self): return f'HashTrieMap({self._d!r})'",
+      "class HashTrieSet:",
+      "    def __init__(self, data=None):",
+      "        self._s = set(data) if data else set()",
+      "    def insert(self, value):",
+      "        new = HashTrieSet(self._s); new._s.add(value); return new",
+      "    def remove(self, value):",
+      "        new = HashTrieSet(self._s); new._s.remove(value); return new",
+      "    def discard(self, value):",
+      "        new = HashTrieSet(self._s); new._s.discard(value); return new",
+      "    def update(self, other):",
+      "        new = HashTrieSet(self._s); new._s.update(other); return new",
+      "    def union(self, other): return HashTrieSet(self._s | (other._s if isinstance(other, HashTrieSet) else set(other)))",
+      "    def intersection(self, other): return HashTrieSet(self._s & (other._s if isinstance(other, HashTrieSet) else set(other)))",
+      "    def difference(self, other): return HashTrieSet(self._s - (other._s if isinstance(other, HashTrieSet) else set(other)))",
+      "    def symmetric_difference(self, other): return HashTrieSet(self._s ^ (other._s if isinstance(other, HashTrieSet) else set(other)))",
+      "    def __contains__(self, value): return value in self._s",
+      "    def __iter__(self): return iter(self._s)",
+      "    def __len__(self): return len(self._s)",
+      "    def __eq__(self, other): return isinstance(other, HashTrieSet) and self._s == other._s",
+      "    def __repr__(self): return f'HashTrieSet({self._s!r})'",
+      "class List:",
+      "    def __init__(self, data=None):",
+      "        self._l = list(data) if data else []",
+      "    def push_front(self, value):",
+      "        new = List(self._l); new._l.insert(0, value); return new",
+      "    def drop_first(self):",
+      "        new = List(self._l[1:]); return new",
+      "    @property",
+      "    def first(self): return self._l[0] if self._l else None",
+      "    def __iter__(self): return iter(self._l)",
+      "    def __len__(self): return len(self._l)",
+      "    def __repr__(self): return f'List({self._l!r})'",
+      "class Queue:",
+      "    def __init__(self, data=None):",
+      "        self._q = list(data) if data else []",
+      "    def enqueue(self, value):",
+      "        new = Queue(self._q); new._q.append(value); return new",
+      "    def dequeue(self):",
+      "        new = Queue(self._q[1:]); return new",
+      "    @property",
+      "    def peek(self): return self._q[0] if self._q else None",
+      "    def __iter__(self): return iter(self._q)",
+      "    def __len__(self): return len(self._q)",
+      "    def __repr__(self): return f'Queue({self._q!r})'",
+    ].join("\n"),
   };
   for (const [shimPath, shimCode] of Object.entries(pureShims)) {
     allFiles.set(shimPath, Buffer.from(shimCode, "utf-8"));
     console.log(`  Injected pure-Python shim: ${shimPath}`);
+  }
+
+  // WASI compatibility patches — override files from real wheels that use
+  // features unavailable in WASI (entry_points, beartype path hooks, etc.)
+  const wasiPatches: Record<string, string> = {
+    // beartype's claw hooks call invalidate_caches() which crashes in WASI
+    // (MetaPathFinder not instantiated). key_value uses beartype_this_package.
+    "key_value/aio/__init__.py": "# beartype disabled for WASI compatibility\n",
+    // opentelemetry uses importlib_metadata entry_points which don't work in WASI.
+    // Replace with hardcoded entry points for the known opentelemetry components.
+    "opentelemetry/util/_importlib_metadata.py": [
+      "# WASI-patched: hardcoded entry points (no importlib_metadata)",
+      "class PackageNotFoundError(Exception): pass",
+      "class EntryPoint:",
+      "    def __init__(self, name, value, group):",
+      "        self.name = name",
+      "        self.value = value",
+      "        self.group = group",
+      "    def load(self):",
+      "        module_path, attr = self.value.rsplit(':', 1)",
+      "        import importlib",
+      "        mod = importlib.import_module(module_path)",
+      "        return getattr(mod, attr)",
+      "class EntryPoints(list):",
+      "    def select(self, **params):",
+      "        result = list(self)",
+      "        if 'group' in params: result = [ep for ep in result if ep.group == params['group']]",
+      "        if 'name' in params: result = [ep for ep in result if ep.name == params['name']]",
+      "        return EntryPoints(result)",
+      "class Distribution: pass",
+      "_ALL_ENTRY_POINTS = EntryPoints([",
+      "    EntryPoint('contextvars_context', 'opentelemetry.context.contextvars_context:ContextVarsRuntimeContext', 'opentelemetry_context'),",
+      "    EntryPoint('tracecontext', 'opentelemetry.trace.propagation.tracecontext:TraceContextTextMapPropagator', 'opentelemetry_propagator'),",
+      "    EntryPoint('baggage', 'opentelemetry.baggage.propagation:W3CBaggagePropagator', 'opentelemetry_propagator'),",
+      "    EntryPoint('default_tracer_provider', 'opentelemetry.trace:NoOpTracerProvider', 'opentelemetry_tracer_provider'),",
+      "    EntryPoint('default_meter_provider', 'opentelemetry.metrics:NoOpMeterProvider', 'opentelemetry_meter_provider'),",
+      "])",
+      "def entry_points(**params):",
+      "    return _ALL_ENTRY_POINTS.select(**params) if params else _ALL_ENTRY_POINTS",
+      "def version(package_name): return '0.0.0'",
+      "def requires(package_name): return []",
+      "def distributions(): return []",
+      "__all__ = ['entry_points', 'version', 'EntryPoint', 'EntryPoints', 'requires', 'Distribution', 'distributions', 'PackageNotFoundError']",
+    ].join("\n"),
+  };
+  for (const [patchPath, patchCode] of Object.entries(wasiPatches)) {
+    // Only apply if the package is actually bundled
+    const pkgDir = patchPath.split("/")[0];
+    const hasPkg = [...allFiles.keys()].some((k) => k.startsWith(pkgDir + "/"));
+    if (hasPkg) {
+      allFiles.set(patchPath, Buffer.from(patchCode, "utf-8"));
+      console.log(`  Applied WASI patch: ${patchPath}`);
+    }
+  }
+
+  // Patch opentelemetry context __init__.py to use direct import instead of entry_points.
+  // The upstream code tries to discover the context implementation via entry_points(),
+  // which requires importlib.metadata — unavailable in WASI. We replace _load_runtime_context
+  // to directly import the ContextVarsRuntimeContext that ships with the package.
+  if (allFiles.has("opentelemetry/context/__init__.py")) {
+    let ctxInit = allFiles.get("opentelemetry/context/__init__.py")!.toString("utf-8");
+    // Match the _load_runtime_context function body and replace it entirely
+    const fnStart = "def _load_runtime_context()";
+    const fnEnd = "\n\n\n_RUNTIME_CONTEXT";
+    const startIdx = ctxInit.indexOf(fnStart);
+    const endIdx = ctxInit.indexOf(fnEnd);
+    if (startIdx !== -1 && endIdx !== -1) {
+      const replacement = [
+        'def _load_runtime_context() -> _RuntimeContext:',
+        '    """Initialize the RuntimeContext using direct import for WASI."""',
+        '    from opentelemetry.context.contextvars_context import ContextVarsRuntimeContext',
+        '    return ContextVarsRuntimeContext()',
+      ].join("\n");
+      ctxInit = ctxInit.substring(0, startIdx) + replacement + ctxInit.substring(endIdx);
+      allFiles.set("opentelemetry/context/__init__.py", Buffer.from(ctxInit, "utf-8"));
+      console.log("  Applied WASI patch: opentelemetry/context/__init__.py");
+    }
   }
 
   // Auto-inject __init__.py for namespace packages (zipimport requires it)

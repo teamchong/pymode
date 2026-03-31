@@ -40,6 +40,12 @@ function parseBindingKey(raw: string, fallback: string): [string, string] {
   return [raw.substring(0, sep), raw.substring(sep + 1)];
 }
 
+/** Detect SQL mutation statements that modify data/schema. */
+const _SQL_MUTATION_RE = /^\s*(INSERT|UPDATE|DELETE|CREATE|DROP|ALTER|REPLACE|UPSERT)\b/i;
+function _isSqlMutation(sql: string): boolean {
+  return _SQL_MUTATION_RE.test(sql);
+}
+
 /** Memory accessor interface for reading/writing WASM linear memory. */
 export interface MemoryAccessor {
   getMemBytes(): Uint8Array;
@@ -490,6 +496,13 @@ export function buildHostImports(opts: HostImportOptions): Record<string, any> {
         const [bindingName, sql] = parseBindingKey(rawSql, "D1");
         const params = JSON.parse(mem.readString(paramsPtr, paramsLen));
         if (fanout) {
+          if (_isSqlMutation(sql)) {
+            // Mutations use recordWrite (bumps generation for subsequent reads).
+            // Return empty result to satisfy the C code — mutations don't return rows.
+            fanout.recordWrite("d1_exec", [bindingName, sql, params]);
+            const encoded = _encoder.encode("[]");
+            return mem.writeBytes(resultPtr, encoded, resultLen);
+          }
           const result = fanout.getOrRecord("d1_exec", [bindingName, sql, params]);
           if (result.cached && result.value != null) {
             const encoded = _encoder.encode(JSON.stringify(result.value));
@@ -517,6 +530,11 @@ export function buildHostImports(opts: HostImportOptions): Record<string, any> {
 
         const bindingName = queries[0].binding || "D1";
         if (fanout) {
+          if (queries.some(q => _isSqlMutation(q.sql))) {
+            fanout.recordWrite("d1_batch", [bindingName, queries]);
+            const encoded = _encoder.encode("[]");
+            return mem.writeBytes(resultPtr, encoded, resultLen);
+          }
           const result = fanout.getOrRecord("d1_batch", [bindingName, queries]);
           if (result.cached && result.value != null) {
             const encoded = _encoder.encode(JSON.stringify(result.value));
@@ -592,6 +610,9 @@ export function buildHostImports(opts: HostImportOptions): Record<string, any> {
     // This happens AFTER CPython's sbrk has claimed its heap, so the new page
     // is beyond __curbrk and won't be overwritten by heap allocations.
     zerobuf_exchange_ptr: (): number => {
+      // Disabled: zerobuf memory layout needs validation with new WASM features.
+      // Falls back to stdin JSON path which is equally functional.
+      return 0;
       if (!opts.memory || !opts.zerobufRequest) return 0;
       if (zbExchangePtr !== undefined) return zbExchangePtr;
       zbExchangePtr = zbWriteRequest(

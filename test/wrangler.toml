@@ -18,6 +18,7 @@ bindings = [
   { name = "TCP_POOL", class_name = "TcpPoolDO" },
   { name = "PYTHON_DO", class_name = "PythonDO" },
   { name = "THREAD_DO", class_name = "ThreadDO" },
+  { name = "SANDBOX_DO", class_name = "SandboxDO" },
 ]
 
 [[migrations]]
@@ -31,6 +32,10 @@ new_classes = ["PythonDO"]
 [[migrations]]
 tag = "v3"
 new_classes = ["ThreadDO"]
+
+[[migrations]]
+tag = "v4"
+new_sqlite_classes = ["SandboxDO"]
 
 # Test bindings — miniflare provides local in-memory implementations
 [[kv_namespaces]]

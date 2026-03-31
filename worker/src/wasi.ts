@@ -541,11 +541,15 @@ export function createWasi(
 
       let offset = 0;
       const startIdx = Number(cookie);
+      let reachedEnd = true;
       for (let i = startIdx; i < entries.length; i++) {
         const name = entries[i];
         const nameBytes = _encoder.encode(name);
         const entrySize = 24 + nameBytes.length;
-        if (offset + entrySize > bufLen) break;
+        if (offset + entrySize > bufLen) {
+          reachedEnd = false;
+          break;
+        }
 
         const base = bufPtr + offset;
         v.setBigUint64(base, BigInt(i + 1), true);
@@ -557,7 +561,9 @@ export function createWasi(
         offset += entrySize;
       }
 
-      v.setUint32(retPtr, offset, true);
+      // WASI spec: if returned size == bufLen, caller should retry for more.
+      // If we didn't reach the end, report bufLen to signal more entries.
+      v.setUint32(retPtr, reachedEnd ? offset : bufLen, true);
       return ESUCCESS;
     },
 

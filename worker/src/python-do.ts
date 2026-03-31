@@ -18,6 +18,12 @@ import { buildHostImports, zbReadResponse } from "./host-imports";
 import type { MemoryAccessor } from "./host-imports";
 import { FanoutContext, resolveAll } from "./fanout";
 
+// Site-packages loaded directly as Data module — avoids 32MB RPC limit
+// @ts-ignore — Data module import (ArrayBuffer)
+import sitePackagesZip from "./site-packages.zip";
+const _sitePackagesBin: Uint8Array | undefined =
+  sitePackagesZip.byteLength > 22 ? new Uint8Array(sitePackagesZip) : undefined;
+
 interface PythonDOEnv {
   THREAD_DO?: DurableObjectNamespace;
   FS_BUCKET?: R2Bucket;
@@ -159,9 +165,11 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
       }
     }
 
-    // Mount site-packages
+    // Mount site-packages (loaded directly, not via RPC)
     if (sitePackagesData) {
       baseFiles["site-packages.zip"] = new Uint8Array(sitePackagesData);
+    } else if (_sitePackagesBin) {
+      baseFiles["site-packages.zip"] = _sitePackagesBin;
     }
 
     // Mount extension site-packages (numpy, etc.)
@@ -309,11 +317,11 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
     exitCode: number;
   }> {
     let pythonPath = "/stdlib";
-    if (sitePackagesData) pythonPath += ":/stdlib/site-packages.zip";
+    if (sitePackagesData || _sitePackagesBin) pythonPath += ":/stdlib/site-packages.zip";
     if (extensionPackagesBin) pythonPath += ":/stdlib/extension-site-packages.zip";
     return this.run(
       ["python", "-S", "-c", "import _wasi_compat\n" + code],
-      { PYTHONPATH: pythonPath, PYTHONDONTWRITEBYTECODE: "1", PYTHONNOUSERSITE: "1" },
+      { PYTHONPATH: pythonPath, PYTHONDONTWRITEBYTECODE: "1", PYTHONNOUSERSITE: "1", PY_KEY_VALUE_DISABLE_BEARTYPE: "1" },
       undefined,
       undefined,
       sitePackagesData,
@@ -356,7 +364,7 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
 
     const result = await this.run(
       ["python", "-S", "-m", "pymode._handler", entryModule],
-      { PYTHONPATH: pythonPath, PYTHONDONTWRITEBYTECODE: "1", PYTHONNOUSERSITE: "1" },
+      { PYTHONPATH: pythonPath, PYTHONDONTWRITEBYTECODE: "1", PYTHONNOUSERSITE: "1", PY_KEY_VALUE_DISABLE_BEARTYPE: "1" },
       userFiles,
       stdinData,
       sitePackagesData,
@@ -422,7 +430,7 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
     const pythonPath = options?.pythonPath || "/stdlib";
     const result = await this.run(
       ["python", "-S", "-c", code],
-      { PYTHONPATH: pythonPath, PYTHONDONTWRITEBYTECODE: "1", PYTHONNOUSERSITE: "1" },
+      { PYTHONPATH: pythonPath, PYTHONDONTWRITEBYTECODE: "1", PYTHONNOUSERSITE: "1", PY_KEY_VALUE_DISABLE_BEARTYPE: "1" },
       options?.userFiles,
       undefined,
       options?.sitePackagesData,

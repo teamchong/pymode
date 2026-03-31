@@ -144,3 +144,10 @@ ac_cv_func_dlopen=yes
 # Use our pymode dynload shim instead of dynload_shlib.o (which calls real dlopen).
 # dynload_pymode.c routes through WASM host imports (pymode.dl_open/dl_sym).
 DYNLOADFILE="dynload_pymode.o"
+
+# Enable computed gotos for the bytecode dispatch loop.
+# Clang/zig supports GNU computed goto (&&label) on wasm32.
+# This converts the eval loop from a switch statement to direct threaded code,
+# giving ~15-20% speedup on native and potentially more on WASM where
+# indirect branch prediction is expensive.
+ac_cv_computed_gotos=yes

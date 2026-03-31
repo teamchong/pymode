@@ -8,8 +8,12 @@
  * instance replays with cached results. The loop repeats until no
  * pending calls remain (handling conditional async paths).
  *
- * This eliminates wasm-opt --asyncify (~30% binary size overhead) and
- * makes all async operations parallel by default.
+ * Write-generation tracking: each mutation (put/delete) bumps a generation
+ * counter. Read cache keys include the generation, so a read AFTER a
+ * mutation gets a different cache key than the same read BEFORE the mutation.
+ * resolveAll() executes in generation order: writes at gen 0, then reads
+ * at gen 0, then writes at gen 1, then reads at gen 1, etc. This ensures
+ * put→get→delete→get sees the correct state at each step.
  */
 
 import { encoder as _encoder, decoder as _decoder } from "./stdlib-bin";
@@ -17,10 +21,12 @@ import { encoder as _encoder, decoder as _decoder } from "./stdlib-bin";
 /** A recorded async call that needs resolution. */
 export interface PendingCall {
   type: string;
-  /** Cache key — type + serialized args */
+  /** Cache key — type + serialized args (+ @gen for reads) */
   key: string;
   /** Arguments needed to resolve this call */
   args: unknown[];
+  /** Write generation at time of recording */
+  gen: number;
 }
 
 /**
@@ -28,31 +34,34 @@ export interface PendingCall {
  * Tracks pending async calls and cached results across replay passes.
  */
 export class FanoutContext {
-  /** Cached results from previous passes. Keyed by "type:args". */
+  /** Cached results from previous passes. */
   readonly cache = new Map<string, unknown>();
-  /** Pending calls recorded during the current pass. */
+  /** Pending read operations recorded during the current pass. */
   pendingCalls: PendingCall[] = [];
-  /** Pending write operations (kv_put, kv_delete, r2_put) */
+  /** Pending write operations (kv_put, kv_delete, r2_put, d1 mutations) */
   pendingWrites: PendingCall[] = [];
+  /** Monotonic write counter — bumped on each mutation. */
+  private _writeGen = 0;
 
   /** Check cache or record a READ operation.
-   * Returns { cached: true, value } if cached, or { cached: false } if pending. */
+   * Cache key includes write generation so reads after mutations get fresh keys. */
   getOrRecord(type: string, args: unknown[]): { cached: boolean; value: unknown } {
-    const key = cacheKey(type, args);
+    const key = `${cacheKey(type, args)}@${this._writeGen}`;
     if (this.cache.has(key)) {
       return { cached: true, value: this.cache.get(key) };
     }
-    this.pendingCalls.push({ type, key, args });
+    this.pendingCalls.push({ type, key, args, gen: this._writeGen });
     return { cached: false, value: null };
   }
 
-  /** Record a WRITE operation (kv_put, kv_delete, r2_put).
-   * Writes are deferred to after WASM exits, then executed before replay. */
+  /** Record a WRITE operation. Bumps generation counter so subsequent
+   * reads use fresh cache keys. Skips execution if already cached. */
   recordWrite(type: string, args: unknown[]): void {
     const key = cacheKey(type, args);
     if (!this.cache.has(key)) {
-      this.pendingWrites.push({ type, key, args });
+      this.pendingWrites.push({ type, key, args, gen: this._writeGen });
     }
+    this._writeGen++;
   }
 
   /** True if there are unresolved async calls. */
@@ -60,10 +69,11 @@ export class FanoutContext {
     return this.pendingCalls.length > 0 || this.pendingWrites.length > 0;
   }
 
-  /** Reset for next pass (keep cache, clear pending). */
+  /** Reset for next pass (keep cache, clear pending, reset generation). */
   resetPass(): void {
     this.pendingCalls = [];
     this.pendingWrites = [];
+    this._writeGen = 0;
   }
 }
 
@@ -182,26 +192,65 @@ export async function resolvePendingCall(
   }
 }
 
-/** Resolve all pending calls in parallel. */
+/**
+ * Resolve all pending calls in generation order.
+ *
+ * A read at gen N sees state after all writes at gen < N.
+ * Sequence: writes@0 → reads@1 → writes@1 → reads@2 → writes@2 → reads@3 → ...
+ *
+ * This ensures put→get→delete→get sees correct intermediate state:
+ *   put (gen 0→1) → get (gen 1) → delete (gen 1→2) → get (gen 2)
+ * Resolves as: put@0 → get@1 (sees put) → delete@1 → get@2 (sees delete)
+ */
 export async function resolveAll(
   fanout: FanoutContext,
   env: Record<string, unknown>,
 ): Promise<void> {
-  // Resolve writes first (they may affect subsequent reads on replay)
-  if (fanout.pendingWrites.length > 0) {
-    await Promise.all(
-      fanout.pendingWrites.map(async (call) => {
-        const result = await resolvePendingCall(call, env);
-        fanout.cache.set(call.key, result);
-      })
-    );
+  // Find max generation across all pending operations
+  let maxGen = 0;
+  for (const call of fanout.pendingWrites) {
+    if (call.gen > maxGen) maxGen = call.gen;
   }
-  // Then resolve reads
-  if (fanout.pendingCalls.length > 0) {
+  for (const call of fanout.pendingCalls) {
+    if (call.gen > maxGen) maxGen = call.gen;
+  }
+
+  // Resolve in order: for each gen, writes at gen, then reads at gen+1
+  // (reads at gen N were recorded AFTER writes bumped gen to N)
+  for (let gen = 0; gen <= maxGen; gen++) {
+    // Execute writes recorded at this generation
+    const genWrites = fanout.pendingWrites.filter(c => c.gen === gen);
+    if (genWrites.length > 0) {
+      await Promise.all(
+        genWrites.map(async (call) => {
+          const result = await resolvePendingCall(call, env);
+          fanout.cache.set(call.key, result);
+        })
+      );
+    }
+
+    // Execute reads recorded at gen+1 (they were recorded after this write bumped gen)
+    const readGen = gen + 1;
+    const genReads = fanout.pendingCalls.filter(c => c.gen === readGen);
+    if (genReads.length > 0) {
+      await Promise.all(
+        genReads.map(async (call) => {
+          const result = await resolvePendingCall(call, env);
+          fanout.cache.set(call.key, result);
+        })
+      );
+    }
+  }
+
+  // Also resolve any reads at gen 0 (reads before any writes)
+  const earlyReads = fanout.pendingCalls.filter(c => c.gen === 0);
+  if (earlyReads.length > 0) {
     await Promise.all(
-      fanout.pendingCalls.map(async (call) => {
-        const result = await resolvePendingCall(call, env);
-        fanout.cache.set(call.key, result);
+      earlyReads.map(async (call) => {
+        if (!fanout.cache.has(call.key)) {
+          const result = await resolvePendingCall(call, env);
+          fanout.cache.set(call.key, result);
+        }
       })
     );
   }

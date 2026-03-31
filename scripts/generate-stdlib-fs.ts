@@ -336,6 +336,12 @@ const BOOT_FILES = [
     "_sysconfigdata__wasi_wasm32-wasi.py",
     // colorsys (needed by pydantic color)
     "colorsys.py",
+    // getpass (needed by fastmcp, dotenv)
+    "getpass.py",
+    // webbrowser (needed by fastmcp)
+    "webbrowser.py",
+    // socketserver (needed by http.server, xmlrpc)
+    "socketserver.py",
     // configparser (needed by various packages)
     "configparser.py",
     // tomllib (needed by pydantic, project configs)
@@ -355,6 +361,7 @@ const PYMODE_FILES = [
     "pymode/env.py",
     "pymode/parallel.py",
     "pymode/workflows.py",
+    "pymode/mcp.py",
     "pymode/importer.py",
     "pymode/compute.py",
     "pymode/simd.py",
@@ -390,6 +397,8 @@ const POLYFILL_FILES = [
     "curses/__init__.py",
     "dbm/__init__.py",
     "tkinter/__init__.py",
+    "concurrent/futures/thread.py",
+    "subprocess.py",
 ];
 
 function collectFiles(): Record<string, string> {
@@ -445,6 +454,34 @@ function main(): void {
             "import _socket\n        return type(_socket.CAPI)",
             "import _datetime\n        return type(_datetime.datetime_CAPI)",
         );
+    }
+
+    // Patch asyncio selector_events.py: disable self-pipe in WASI.
+    // The self-pipe is used for signal wakeups which don't exist in WASM.
+    // Without this patch, asyncio.run() fails because socketpair FDs
+    // can't be registered with the selector.
+    if ("asyncio/selector_events.py" in files) {
+        let selectorSrc = files["asyncio/selector_events.py"];
+        // Skip self-pipe creation
+        selectorSrc = selectorSrc.replace(
+            "self._make_self_pipe()",
+            "pass  # WASI: no signals, no self-pipe needed",
+        );
+        // Make _close_self_pipe safe when _ssock doesn't exist
+        selectorSrc = selectorSrc.replace(
+            "def _close_self_pipe(self):",
+            "def _close_self_pipe(self):\n        if not hasattr(self, '_ssock'): return",
+        );
+        files["asyncio/selector_events.py"] = selectorSrc;
+    }
+
+    // Patch asyncio unix_events.py: skip child watcher (no signals/processes in WASI)
+    if ("asyncio/unix_events.py" in files) {
+        files["asyncio/unix_events.py"] = files["asyncio/unix_events.py"]
+            .replace(
+                "signal.set_wakeup_fd",
+                "getattr(signal, '_disabled_set_wakeup_fd', None) or signal.set_wakeup_fd",
+            );
     }
 
     // Write binary data file (JSON encoded as UTF-8)

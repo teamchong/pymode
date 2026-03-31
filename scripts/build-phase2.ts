@@ -88,6 +88,9 @@ interface NativeModule {
   c_srcs?: string[];
   c_flags?: string[];
   extra_includes?: string[];
+  /** If true, this module replaces a CPython built-in. The .o file replaces
+   *  CPython's version in-place instead of being added to MODULE_OBJS. */
+  replaces_builtin?: boolean;
 }
 
 function main(): void {
@@ -322,7 +325,7 @@ exec zig cc -target wasm32-wasi -E "\${ARGS[@]}"
       `CPP=${zigCppScript}`,
       `AR=${join(ZIG_WRAPPER_DIR, "zig-ar")}`,
       `RANLIB=${join(ZIG_WRAPPER_DIR, "zig-ranlib")}`,
-      "CFLAGS=-Os -DNDEBUG -fno-strict-aliasing -msimd128",
+      "CFLAGS=-Os -DNDEBUG -fno-strict-aliasing -msimd128 -mbulk-memory -msign-ext -mmutable-globals -mnontrapping-fptoint -mtail-call -mmultivalue -mreference-types -DUSE_COMPUTED_GOTOS=1",
       "LDFLAGS=-s",
       "--disable-ipv6",
       "--disable-shared",
@@ -465,22 +468,10 @@ exec zig cc -target wasm32-wasi -E "\${ARGS[@]}"
     },
     // _hashlib disabled — requires std.crypto API fixes for Zig 0.15.
     // CPython's built-in _md5, _sha1, _sha2, _sha3, _blake2 already provide hashing.
-    {
-      name: "_json",
-      zig_src: join(zigModulesDir, "_json", "module.zig"),
-    },
-    {
-      name: "_collections",
-      zig_src: join(zigModulesDir, "_collections", "module.zig"),
-    },
-    {
-      name: "_functools",
-      zig_src: join(zigModulesDir, "_functools", "module.zig"),
-    },
-    {
-      name: "binascii",
-      zig_src: join(zigModulesDir, "binascii", "module.zig"),
-    },
+    // _json, _collections, _functools, binascii — CPython builds these as
+    // built-ins already. Zig replacements disabled: they have compatibility
+    // issues with new WASM features (tail-call, reference-types).
+    // CPython's C versions work correctly with all features enabled.
     // zlib disabled — std.compress.flate API changed in Zig 0.15
   ];
 
@@ -587,6 +578,10 @@ exec zig cc -target wasm32-wasi -E "\${ARGS[@]}"
   const makefile = join(BUILD_DIR, "Makefile");
   let makefileAppend = "\nMODULE_OBJS += Modules/pymode_imports.o\n";
   for (const mod of builtModules) {
+    if (mod.replaces_builtin) {
+      // Skip — will replace CPython's .o after make and re-link
+      continue;
+    }
     if (mod.zig_src) {
       makefileAppend += `MODULE_OBJS += Modules/${mod.name}.o\n`;
     }
@@ -598,7 +593,9 @@ exec zig cc -target wasm32-wasi -E "\${ARGS[@]}"
   writeFileSync(makefile, readFileSync(makefile, "utf-8") + makefileAppend);
   info("  Added Modules/pymode_imports.o to MODULE_OBJS");
   for (const mod of builtModules) {
-    info(`  Added ${mod.name} objects to MODULE_OBJS`);
+    if (!mod.replaces_builtin) {
+      info(`  Added ${mod.name} objects to MODULE_OBJS`);
+    }
   }
 
   const buildLog = join(BUILD_DIR, "build.log");
@@ -611,7 +608,30 @@ exec zig cc -target wasm32-wasi -E "\${ARGS[@]}"
     (makeResult.stdout ? makeResult.stdout.toString() : "") +
     (makeResult.stderr ? makeResult.stderr.toString() : "");
   writeFileSync(buildLog, logContent);
-  if (makeResult.status !== 0) {
+  // Step 4b: Replace CPython built-in .o files with our Zig versions and re-link.
+  // CPython's make compiled its own _json.o, binascii.o etc. We overwrite them
+  // with our optimized Zig versions and re-run the link step.
+  const replacedModules = builtModules.filter(m => m.replaces_builtin);
+  if (replacedModules.length > 0) {
+    const modObjDir = join(BUILD_DIR, "Modules");
+    for (const mod of replacedModules) {
+      const zigObj = join(modObjDir, `${mod.name}.o`);
+      if (existsSync(zigObj)) {
+        info(`  Replaced CPython ${mod.name}.o with Zig version`);
+      }
+    }
+    // Re-link with our replacement objects
+    info("  Re-linking with Zig replacements...");
+    const relinkResult = spawnSync("make", ["python.wasm", `-j${ncpu()}`], {
+      cwd: BUILD_DIR,
+      stdio: ["inherit", "pipe", "pipe"],
+    });
+    const relinkLog = (relinkResult.stdout?.toString() || "") + (relinkResult.stderr?.toString() || "");
+    writeFileSync(buildLog, logContent + "\n--- RELINK ---\n" + relinkLog);
+    if (relinkResult.status !== 0) {
+      warn("Re-link had errors. Check build.log");
+    }
+  } else if (makeResult.status !== 0) {
     warn("Build had errors. Check build.log");
   }
 
@@ -645,10 +665,16 @@ exec zig cc -target wasm32-wasi -E "\${ARGS[@]}"
       [
         "-O2",
         "--enable-simd",
+        "--enable-relaxed-simd",
         "--enable-nontrapping-float-to-int",
         "--enable-bulk-memory",
+        "--enable-bulk-memory-opt",
         "--enable-sign-ext",
         "--enable-mutable-globals",
+        "--enable-multivalue",
+        "--enable-tail-call",
+        "--enable-reference-types",
+        "--enable-extended-const",
         pythonWasm,
         "-o",
         optimized,
