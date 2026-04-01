@@ -70,9 +70,11 @@ void wizer_initialize(void) {
     config.install_signal_handlers = 0;
     config.pathconfig_warnings = 0;
 
-    /* Set PYTHONPATH to the stdlib location in the WASI VFS */
+    /* Set PYTHONPATH — include stdlib + site-packages for pre-imports.
+     * At wizer time, site-packages.zip is mapped as a directory. */
     PyStatus status;
-    status = PyConfig_SetBytesString(&config, &config.pythonpath_env, "/stdlib");
+    status = PyConfig_SetBytesString(&config, &config.pythonpath_env,
+        "/stdlib:/stdlib/site-packages.zip");
     if (_PyStatus_EXCEPTION(status)) {
         PyConfig_Clear(&config);
         return;
@@ -118,7 +120,22 @@ void wizer_initialize(void) {
     _preimport("pymode.tcp");
     _preimport("pymode.http");
     _preimport("pymode.env");
+    _preimport("pymode.workers");
+    _preimport("pymode.mcp");
     _preimport("_wasi_compat");
+
+    /* Pre-import heavy third-party packages (from site-packages.zip).
+     * These take 1-2 seconds to import normally — snapshotting them
+     * eliminates the cost entirely. Non-fatal if not available. */
+    _preimport("pydantic");
+    _preimport("pydantic.main");
+    _preimport("httpx");
+    _preimport("jinja2");
+    _preimport("yaml");
+    _preimport("rich");
+    _preimport("rich.text");
+    _preimport("tenacity");
+    _preimport("fastmcp");
 
     /* Create the execution namespace.
      * __main__.__dict__ serves as both globals and locals. */
@@ -177,10 +194,15 @@ int main(int argc, char **argv) {
     /* Find the code to execute from argv: python -c "code" or python script.py */
     const char *code = NULL;
     const char *script = NULL;
+    const char *module = NULL;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-c") == 0 && i + 1 < argc) {
             code = argv[i + 1];
+            break;
+        }
+        if (strcmp(argv[i], "-m") == 0 && i + 1 < argc) {
+            module = argv[i + 1];
             break;
         }
         if (strcmp(argv[i], "-S") == 0 || strcmp(argv[i], "-") == 0) {
@@ -195,7 +217,46 @@ int main(int argc, char **argv) {
 
     int exitcode = 0;
 
-    if (code) {
+    if (module) {
+        /* Execute module: python -m pymode._handler entry_module */
+        char run_module_code[4096];
+        /* Collect remaining args after -m module_name */
+        int mod_arg_idx = -1;
+        for (int i = 1; i < argc; i++) {
+            if (strcmp(argv[i], "-m") == 0 && i + 1 < argc) {
+                mod_arg_idx = i + 2;
+                break;
+            }
+        }
+        /* Set sys.argv so the module can read its arguments */
+        PyObject *sys_mod = PyImport_ImportModule("sys");
+        if (sys_mod) {
+            PyObject *argv_list = PyList_New(0);
+            PyObject *mod_str = PyUnicode_FromString(module);
+            PyList_Append(argv_list, mod_str);
+            Py_DECREF(mod_str);
+            if (mod_arg_idx >= 0) {
+                for (int i = mod_arg_idx; i < argc; i++) {
+                    PyObject *arg = PyUnicode_FromString(argv[i]);
+                    PyList_Append(argv_list, arg);
+                    Py_DECREF(arg);
+                }
+            }
+            PyObject_SetAttrString(sys_mod, "argv", argv_list);
+            Py_DECREF(argv_list);
+            Py_DECREF(sys_mod);
+        }
+        snprintf(run_module_code, sizeof(run_module_code),
+            "import runpy; runpy.run_module('%s', run_name='__main__')", module);
+        PyObject *result = PyRun_String(run_module_code, Py_file_input,
+                                         _pymode_globals, _pymode_locals);
+        if (!result) {
+            PyErr_Print();
+            exitcode = 1;
+        } else {
+            Py_DECREF(result);
+        }
+    } else if (code) {
         /* Execute inline code: python -c "print('hello')" */
         PyObject *result = PyRun_String(code, Py_file_input,
                                          _pymode_globals, _pymode_locals);

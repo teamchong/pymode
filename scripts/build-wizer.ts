@@ -118,7 +118,12 @@ function main(): void {
   const configWizerC = path.join(BUILD_DIR, "Modules", "config_wizer.c");
   const configWizerO = path.join(BUILD_DIR, "Modules", "config_wizer.o");
 
-  if (fs.existsSync(configBase)) {
+  // Prefer variant config (has pydantic-core, numpy registered)
+  const configVariantO = path.join(BUILD_DIR, "Modules", "config_variant.o");
+  if (fs.existsSync(configVariantO)) {
+    fs.copyFileSync(configVariantO, configWizerO);
+    console.log("    Using variant config (pydantic-core + numpy)");
+  } else if (fs.existsSync(configBase)) {
     fs.copyFileSync(configBase, configWizerC);
     run([
       "bash",
@@ -170,7 +175,36 @@ function main(): void {
   linkObjs.push(path.join(BUILD_DIR, "Programs", "pymode_wizer.o"));
   linkObjs.push(configWizerO);
 
-  console.log(`    ${linkObjs.length} objects`);
+  // Include recipe static archives (pydantic-core, etc.)
+  // Skip recipes whose objects are already linked from the base build (regex)
+  const skipRecipes = new Set(["regex", "msgpack", "xxhash", "markupsafe"]);
+  const recipesDir = path.join(ROOT_DIR, "build", "recipes");
+  if (fs.existsSync(recipesDir)) {
+    for (const recipe of fs.readdirSync(recipesDir)) {
+      if (skipRecipes.has(recipe)) continue;
+      const objDir = path.join(recipesDir, recipe, "obj");
+      if (!fs.existsSync(objDir)) continue;
+      for (const f of fs.readdirSync(objDir)) {
+        if (f.endsWith(".a") || f.endsWith(".o")) {
+          linkObjs.push(path.join(objDir, f));
+          console.log(`    Including recipe: ${recipe}/${f}`);
+        }
+      }
+    }
+  }
+
+  // Include numpy objects if available
+  const numpyDir = path.join(BUILD_DIR, "Modules", "numpy");
+  if (fs.existsSync(numpyDir)) {
+    for (const f of fs.readdirSync(numpyDir)) {
+      if (f.endsWith(".o")) {
+        linkObjs.push(path.join(numpyDir, f));
+      }
+    }
+    console.log(`    Including numpy: ${fs.readdirSync(numpyDir).filter(f => f.endsWith(".o")).length} objects`);
+  }
+
+  console.log(`    ${linkObjs.length} total link inputs`);
 
   // Step 4: Link
   console.log("  [4/6] Linking...");
@@ -187,6 +221,8 @@ function main(): void {
     "-lwasi-emulated-getpid",
     "-lwasi-emulated-process-clocks",
     "-lm",
+    "-lc++",
+    "-lc++abi",
   ]);
 
   const rawSize = fs.statSync(wizerRaw).size;
@@ -236,13 +272,63 @@ function main(): void {
 
   // Step 6: Run Wizer to snapshot CPython init
   console.log(
-    "  [6/6] Wizer snapshot (booting CPython + pre-importing stdlib)..."
+    "  [6/6] Wizer snapshot (booting CPython + pre-importing stdlib + packages)..."
   );
 
   const stdlibDir = path.join(CPYTHON, "Lib");
   const wizerTmp = fs.mkdtempSync(path.join(os.tmpdir(), "wizer-"));
 
+  // Build a merged stdlib dir: cpython/Lib + polyfills (polyfills override)
+  const mergedStdlib = path.join(wizerTmp, "stdlib");
+  fs.mkdirSync(mergedStdlib, { recursive: true });
+
+  // Copy stdlib data from generate-stdlib-fs output (includes polyfills + patches)
+  const stdlibDat = path.join(ROOT_DIR, "worker", "src", "stdlib-data.dat");
+  if (fs.existsSync(stdlibDat)) {
+    const data = JSON.parse(fs.readFileSync(stdlibDat, "utf-8"));
+    for (const [relPath, content] of Object.entries(data)) {
+      const fullPath = path.join(mergedStdlib, relPath);
+      fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+      fs.writeFileSync(fullPath, content as string);
+    }
+    console.log(`    Merged stdlib: ${Object.keys(data).length} files`);
+  }
+
+  // Extract site-packages.zip for wizer to access
+  const sitePackagesZip = path.join(ROOT_DIR, "worker", "src", "site-packages.zip");
+  const sitePackagesDir = path.join(wizerTmp, "site-packages");
+  if (fs.existsSync(sitePackagesZip)) {
+    fs.mkdirSync(sitePackagesDir, { recursive: true });
+    const unzipResult = spawnSync("python3", [
+      "-c",
+      `import zipfile, sys; z=zipfile.ZipFile("${sitePackagesZip}"); z.extractall("${sitePackagesDir}")`,
+    ], { stdio: "pipe" });
+    if (unzipResult.status === 0) {
+      const count = spawnSync("find", [sitePackagesDir, "-name", "*.py"], { encoding: "utf-8", stdio: "pipe" });
+      const fileCount = (count.stdout || "").split("\n").filter(Boolean).length;
+      console.log(`    Site-packages: ${fileCount} Python files`);
+    }
+  }
+
+  // Extension site-packages
+  const extZip = path.join(ROOT_DIR, "worker", "src", "extension-site-packages.zip");
+  const extDir = path.join(wizerTmp, "ext-site-packages");
+  if (fs.existsSync(extZip) && fs.statSync(extZip).size > 22) {
+    fs.mkdirSync(extDir, { recursive: true });
+    spawnSync("python3", [
+      "-c",
+      `import zipfile; z=zipfile.ZipFile("${extZip}"); z.extractall("${extDir}")`,
+    ], { stdio: "pipe" });
+  }
+
   try {
+    // Set PYTHONPATH so wizer init can find all packages
+    const wizerEnv = { ...process.env };
+    const pythonPaths = [mergedStdlib];
+    if (fs.existsSync(sitePackagesDir)) pythonPaths.push(sitePackagesDir);
+    if (fs.existsSync(extDir)) pythonPaths.push(extDir);
+    wizerEnv.PYTHONPATH = pythonPaths.join(":");
+
     const result = run(
       [
         "wizer",
@@ -254,7 +340,8 @@ function main(): void {
         "true",
         "--wasm-simd",
         "true",
-        `--mapdir=/stdlib::${stdlibDir}`,
+        `--mapdir=/stdlib::${mergedStdlib}`,
+        `--mapdir=/stdlib/site-packages.zip::${sitePackagesDir}`,
         `--mapdir=/tmp::${wizerTmp}`,
         `--mapdir=/data::${wizerTmp}`,
       ],
