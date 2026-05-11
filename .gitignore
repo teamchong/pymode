@@ -1,6 +1,16 @@
 # Build artifacts
 build/
 cross-build/
+null.o
+**/__pycache__/
+
+# Generated per-app preimports header (created by scripts/generate-app-preimports.mjs)
+lib/wizer/pymode_wizer_app_preimports.h
+
+# Astro docs build output
+docs/dist/
+docs/.astro/
+docs/node_modules/
 
 # CPython source (cloned by build script)
 cpython/
