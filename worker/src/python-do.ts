@@ -242,15 +242,18 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
     let exitCode = 0;
     let lastWrittenFiles: Map<string, Uint8Array> | null = null;
 
-    // ── Persistent fast path ────────────────────────────────────────
-    // If a previous request left a cached instance and the user-files
-    // set hasn't changed, reuse it. proc_exit no-longer-throws when
-    // the WasiState is external, so _start can be re-called on the
-    // same instance.
+    // ── Persistent fast path (DISABLED) ─────────────────────────────
+    // Calling _start() twice on the same wasm instance currently traps
+    // with `RuntimeError: unreachable`. Until the underlying state
+    // isn't reset between calls (likely __stack_pointer or some Python
+    // C-level global), force a fresh instance per request. The slow
+    // path is still ~150ms per request — slower than the cached path
+    // would be but correct.
     const userFilesKey = userFiles
       ? Object.keys(userFiles).sort().join("\n")
       : "";
-    if (this.persistentRunner && this.persistentRunner.userFilesKey === userFilesKey) {
+    const ENABLE_PERSISTENT_RUNNER = false;
+    if (ENABLE_PERSISTENT_RUNNER && this.persistentRunner && this.persistentRunner.userFilesKey === userFilesKey) {
       const { instance, wasiState, wasi } = this.persistentRunner;
       // Reset per-request state.
       wasiState.stdinData = stdinData;
@@ -413,15 +416,9 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
       stderr = _decoder.decode(wasi.getStderr());
       lastWrittenFiles = wasi.getWrittenFiles();
 
-      // If no pending async calls, we're done. Promote the instance to
-      // the persistent cache so the next request skips instantiation.
+      // If no pending async calls, we're done. (Persistent-cache
+      // promotion disabled — see the fast-path block above for why.)
       if (!fanout.hasPending) {
-        this.persistentRunner = {
-          instance,
-          wasiState: slowPathWasiState,
-          wasi,
-          userFilesKey,
-        };
         break;
       }
 
