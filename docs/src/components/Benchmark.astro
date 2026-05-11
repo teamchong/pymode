@@ -1,0 +1,348 @@
+---
+/**
+ * Live benchmark — three real Python serverless workloads handled by
+ * the pymode worker at /api/{markdown,validate,json}. Click "Run" to
+ * fire N requests per endpoint from the browser and summarise
+ * cold (first request) + warm p50 + warm p99 latencies.
+ *
+ * No baked-in numbers, no comparison column. The endpoint code lives
+ * in the test app at /tmp/pymode-deploy-test/src/entry.py and is
+ * deployed via `pymode deploy`.
+ */
+const WORKLOADS = [
+  {
+    key: "markdown",
+    title: "Markdown render",
+    description: "POST a markdown body, get HTML wrapped in a jinja2 template. Exercises markdown_it + jinja2 — both pure-Python packages loaded from the wizer snapshot.",
+    sampleBody: "# Hello pymode\n\nReal CPython 3.13 on Cloudflare Workers — **markdown_it** parses this, **jinja2** wraps it.\n\n- Item one\n- Item two\n- Item three\n",
+    contentType: "text/plain",
+  },
+  {
+    key: "validate",
+    title: "Dataclass validate",
+    description: "POST JSON, parse with stdlib json, construct a dataclass with __post_init__ checks, return validated JSON. Pure stdlib — no pydantic_core dependency.",
+    sampleBody: '{"name":"alice","age":30,"email":"alice@example.com"}',
+    contentType: "application/json",
+  },
+  {
+    key: "json",
+    title: "JSON roundtrip",
+    description: "POST JSON, parse, re-serialise with a count field. Tightest hot path — only stdlib json + string ops.",
+    sampleBody: '{"items":[1,2,3,4,5,6,7,8,9,10]}',
+    contentType: "application/json",
+  },
+];
+---
+
+<div class="benchmark-root">
+  <div class="benchmark-controls">
+    <div class="control-row">
+      <label>
+        Iterations (warm)
+        <input id="iterations" type="number" value="30" min="5" max="200" />
+      </label>
+      <label>
+        Cold pause (seconds)
+        <input id="cold-pause" type="number" value="15" min="0" max="60" />
+        <span class="hint">Wait before the cold-start measurement.</span>
+      </label>
+      <button id="run-bench" type="button">Run benchmark</button>
+    </div>
+    <p class="bench-status" id="bench-status">
+      Idle. Click "Run benchmark" to measure each endpoint live from your browser.
+    </p>
+  </div>
+
+  <div class="workload-grid">
+    {WORKLOADS.map(w => (
+      <article class="workload-card" data-workload={w.key}>
+        <h3>{w.title}</h3>
+        <p class="subtitle">POST <code>/api/{w.key}</code></p>
+        <p class="description">{w.description}</p>
+        <dl>
+          <div>
+            <dt>Cold</dt>
+            <dd data-metric="cold">—</dd>
+          </div>
+          <div>
+            <dt>Warm p50</dt>
+            <dd data-metric="p50">—</dd>
+          </div>
+          <div>
+            <dt>Warm p99</dt>
+            <dd data-metric="p99">—</dd>
+          </div>
+          <div>
+            <dt>Samples</dt>
+            <dd data-metric="samples">—</dd>
+          </div>
+        </dl>
+        <details class="sample-body">
+          <summary>Sample request body</summary>
+          <pre><code>{w.sampleBody}</code></pre>
+        </details>
+      </article>
+    ))}
+  </div>
+</div>
+
+<script type="module" define:vars={{ WORKLOADS }}>
+  const statusEl = document.getElementById("bench-status");
+  const runBtn = document.getElementById("run-bench");
+  const iterationsInput = document.getElementById("iterations");
+  const coldPauseInput = document.getElementById("cold-pause");
+
+  function setMetric(workloadKey, metric, value) {
+    const card = document.querySelector(`.workload-card[data-workload="${workloadKey}"]`);
+    if (!card) return;
+    const el = card.querySelector(`[data-metric="${metric}"]`);
+    if (el) el.textContent = value;
+  }
+
+  function fmt(ms) {
+    if (ms === null || ms === undefined) return "—";
+    if (ms < 10) return `${ms.toFixed(1)} ms`;
+    return `${Math.round(ms)} ms`;
+  }
+
+  async function timeRequest(url, body, contentType) {
+    const t0 = performance.now();
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": contentType },
+      body,
+    });
+    // Drain the body to include full transfer time
+    await res.text();
+    const t1 = performance.now();
+    return { ms: t1 - t0, status: res.status };
+  }
+
+  function percentile(sorted, p) {
+    if (sorted.length === 0) return null;
+    const idx = Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length));
+    return sorted[idx];
+  }
+
+  async function runWorkload(workload, iterations, coldPauseMs, signal) {
+    setMetric(workload.key, "cold", "...");
+    setMetric(workload.key, "p50", "...");
+    setMetric(workload.key, "p99", "...");
+    setMetric(workload.key, "samples", "...");
+
+    const url = `/api/${workload.key}`;
+
+    // Cold pause
+    if (coldPauseMs > 0) {
+      statusEl.textContent = `${workload.title}: waiting ${coldPauseMs / 1000}s before cold measurement…`;
+      await new Promise(r => setTimeout(r, coldPauseMs));
+      if (signal.aborted) return;
+    }
+
+    statusEl.textContent = `${workload.title}: cold request…`;
+    const cold = await timeRequest(url, workload.sampleBody, workload.contentType);
+    if (cold.status !== 200) {
+      setMetric(workload.key, "cold", `HTTP ${cold.status}`);
+      return;
+    }
+    setMetric(workload.key, "cold", fmt(cold.ms));
+
+    // Warm samples
+    const warm = [];
+    for (let i = 0; i < iterations; i++) {
+      if (signal.aborted) return;
+      statusEl.textContent = `${workload.title}: warm ${i + 1}/${iterations}…`;
+      const r = await timeRequest(url, workload.sampleBody, workload.contentType);
+      if (r.status === 200) warm.push(r.ms);
+      setMetric(workload.key, "samples", `${warm.length}/${i + 1}`);
+    }
+    warm.sort((a, b) => a - b);
+    setMetric(workload.key, "p50", fmt(percentile(warm, 50)));
+    setMetric(workload.key, "p99", fmt(percentile(warm, 99)));
+    setMetric(workload.key, "samples", `${warm.length}`);
+  }
+
+  let currentRun = null;
+  runBtn.addEventListener("click", async () => {
+    if (currentRun) {
+      currentRun.abort();
+      currentRun = null;
+      runBtn.textContent = "Run benchmark";
+      statusEl.textContent = "Cancelled.";
+      return;
+    }
+    currentRun = new AbortController();
+    runBtn.textContent = "Cancel";
+
+    const iterations = Math.max(5, Math.min(200, Number(iterationsInput.value) || 30));
+    const coldPauseMs = Math.max(0, Math.min(60, Number(coldPauseInput.value) || 0)) * 1000;
+
+    try {
+      for (const workload of WORKLOADS) {
+        if (currentRun.signal.aborted) break;
+        await runWorkload(workload, iterations, coldPauseMs, currentRun.signal);
+      }
+      statusEl.textContent = "Done.";
+    } catch (e) {
+      statusEl.textContent = `Error: ${e?.message ?? e}`;
+    } finally {
+      currentRun = null;
+      runBtn.textContent = "Run benchmark";
+    }
+  });
+</script>
+
+<style>
+  .benchmark-root {
+    margin: 1.5rem 0;
+    font-family: var(--sl-font-system, system-ui);
+  }
+
+  .benchmark-controls {
+    border: 1px solid var(--sl-color-gray-5);
+    border-radius: 8px;
+    padding: 1rem;
+    margin-bottom: 1.5rem;
+    background: var(--sl-color-gray-7);
+  }
+
+  .control-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem;
+    align-items: flex-end;
+  }
+
+  .control-row label {
+    display: flex;
+    flex-direction: column;
+    font-size: 0.85rem;
+    font-weight: 600;
+    gap: 0.25rem;
+  }
+
+  .control-row input {
+    padding: 0.4rem 0.6rem;
+    border-radius: 4px;
+    border: 1px solid var(--sl-color-gray-5);
+    background: var(--sl-color-bg);
+    color: var(--sl-color-text);
+    font-family: inherit;
+    width: 8rem;
+  }
+
+  .hint {
+    font-size: 0.7rem;
+    font-weight: 400;
+    color: var(--sl-color-gray-3);
+  }
+
+  #run-bench {
+    padding: 0.5rem 1rem;
+    background: var(--sl-color-accent);
+    color: var(--sl-color-accent-low, white);
+    border: none;
+    border-radius: 4px;
+    font-weight: 600;
+    cursor: pointer;
+    font-size: 0.9rem;
+  }
+
+  #run-bench:hover {
+    filter: brightness(1.1);
+  }
+
+  .bench-status {
+    margin: 0.75rem 0 0;
+    font-size: 0.85rem;
+    color: var(--sl-color-gray-3);
+    font-family: var(--sl-font-mono, ui-monospace, monospace);
+  }
+
+  .workload-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 1rem;
+  }
+
+  .workload-card {
+    border: 1px solid var(--sl-color-gray-5);
+    border-radius: 8px;
+    padding: 1rem;
+    background: var(--sl-color-gray-7);
+  }
+
+  .workload-card h3 {
+    margin: 0 0 0.25rem;
+    font-size: 1.1rem;
+  }
+
+  .workload-card .subtitle {
+    margin: 0 0 0.5rem;
+    font-size: 0.85rem;
+    color: var(--sl-color-gray-3);
+  }
+
+  .workload-card .subtitle code {
+    background: var(--sl-color-gray-6);
+    padding: 0.1rem 0.35rem;
+    border-radius: 3px;
+    font-size: 0.85em;
+  }
+
+  .workload-card .description {
+    font-size: 0.85rem;
+    color: var(--sl-color-gray-2);
+    margin: 0 0 0.85rem;
+    line-height: 1.4;
+  }
+
+  .workload-card dl {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.5rem 1rem;
+    margin: 0 0 0.75rem;
+  }
+
+  .workload-card dl > div {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .workload-card dt {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--sl-color-gray-3);
+    margin: 0;
+  }
+
+  .workload-card dd {
+    margin: 0;
+    font-size: 1.05rem;
+    font-weight: 600;
+    font-family: var(--sl-font-mono, ui-monospace, monospace);
+    color: var(--sl-color-text);
+  }
+
+  .sample-body {
+    border-top: 1px solid var(--sl-color-gray-6);
+    padding-top: 0.5rem;
+    font-size: 0.8rem;
+  }
+
+  .sample-body summary {
+    cursor: pointer;
+    color: var(--sl-color-gray-3);
+  }
+
+  .sample-body pre {
+    margin: 0.5rem 0 0;
+    padding: 0.5rem;
+    background: var(--sl-color-bg);
+    border-radius: 4px;
+    font-size: 0.75rem;
+    max-height: 200px;
+    overflow: auto;
+  }
+</style>
