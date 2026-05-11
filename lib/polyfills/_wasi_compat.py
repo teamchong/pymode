@@ -168,9 +168,20 @@ def _install_zip_metadata_finder():
             if pkg_name:
                 _metadata_cache[_normalize(pkg_name)] = (archive, dist_dir, entry_map)
 
-    # Scan all zip paths eagerly (runs once at import time)
+    # Eager scan at this point captures only zips on sys.path now. At wizer
+    # time that's empty (sys.path is /stdlib:/wizer-sp:/wizer-ext-sp), so we
+    # also scan lazily on first lookup against the runtime sys.path.
+    _scanned_archives = set()
+
+    def _ensure_runtime_scan():
+        for _path_entry in sys.path:
+            if _path_entry.endswith(".zip") and _path_entry not in _scanned_archives:
+                _scanned_archives.add(_path_entry)
+                _scan_zip(_path_entry)
+
     for _path_entry in sys.path:
         if _path_entry.endswith(".zip"):
+            _scanned_archives.add(_path_entry)
             _scan_zip(_path_entry)
 
     class ZipDistribution(metadata.Distribution):
@@ -198,6 +209,7 @@ def _install_zip_metadata_finder():
 
         @classmethod
         def find_distributions(cls, context=metadata.DistributionFinder.Context()):
+            _ensure_runtime_scan()
             name = getattr(context, "name", None)
             if name:
                 key = _normalize(name)
@@ -216,3 +228,114 @@ def _install_zip_metadata_finder():
 
 _install_zip_metadata_finder()
 del _install_zip_metadata_finder
+
+
+def _install_side_module_finder():
+    """Bridge PyPI-style extension imports (e.g. numpy._core._multiarray_umath)
+    to dlopen-loaded .wasm side modules.
+
+    PyPI packages do `from .submod import X`, but native extensions in pymode
+    ship as separate .wasm side modules (bundled in worker/src/extensions/).
+    They can't be discovered by FileFinder because they live inside a zip
+    (or alongside the worker bundle, not on a filesystem path the finder
+    walks). This MetaPathFinder returns a spec backed by ExtensionFileLoader
+    for known names; loading the spec invokes CPython's _imp.create_dynamic,
+    which calls _PyImport_FindSharedFuncptr (dynload_pymode.c) → pymode.dl_open
+    → JS instantiates the side module from extensionModules.
+    """
+    import sys
+    from importlib.abc import MetaPathFinder
+    from importlib.machinery import ExtensionFileLoader
+    from importlib.util import spec_from_loader
+
+    # Map fully-qualified module names to the .wasm filename we ask dl_open for.
+    # JS-side python-do.ts seeds extensionModules with these names plus
+    # path-suffix matches, so either basename or full path works.
+    _BRIDGES = {
+        "numpy._core._multiarray_umath": "_multiarray_umath.wasm",
+    }
+
+    class SideModuleFinder(MetaPathFinder):
+        @classmethod
+        def find_spec(cls, fullname, path, target=None):
+            wasm_name = _BRIDGES.get(fullname)
+            if wasm_name is None:
+                return None
+            loader = ExtensionFileLoader(fullname, wasm_name)
+            return spec_from_loader(fullname, loader, origin=wasm_name)
+
+        @classmethod
+        def invalidate_caches(cls):
+            pass
+
+    # Insert at the front so it runs before PathFinder (which would fail with
+    # FileNotFoundError on the zip-internal _multiarray_umath path).
+    sys.meta_path.insert(0, SideModuleFinder)
+
+
+_install_side_module_finder()
+del _install_side_module_finder
+
+
+# Path-rewrite is in pymode._path_fixup so it can be preimported AFTER all the
+# third-party packages whose __path__ it needs to rewrite. Keep the function
+# below for documentation / standalone use, but don't call it from _wasi_compat
+# (we'd run before the packages exist in sys.modules).
+def _rewrite_wizer_package_paths():
+    """Re-point preimported packages' __path__ from wizer paths to the
+    runtime zip paths so new submodules become loadable.
+
+    At wizer time, site-packages content lives at /wizer-sp (directory).
+    Packages preimported during wizer (jinja2, click, pydantic, starlette,
+    fastmcp, …) keep `__path__ = ['/wizer-sp/<pkg>']`. At runtime, the same
+    content is mounted as a zip file at /stdlib/site-packages.zip, with
+    extension packages at /stdlib/extension-site-packages.zip. Python's
+    zipimport can resolve subpaths inside zip files (e.g. opening a
+    zipimporter at `/stdlib/site-packages.zip/click` works), so rewriting
+    the path makes `import click.testing` succeed.
+
+    Without this, every preimported package looks fully loaded but any
+    submodule that wasn't itself preimported fails with
+    `ModuleNotFoundError`.
+    """
+    import sys
+    SP = "/stdlib/site-packages.zip"
+    EXT = "/stdlib/extension-site-packages.zip"
+    for mod in list(sys.modules.values()):
+        path_attr = getattr(mod, "__path__", None)
+        if not path_attr:
+            continue
+        try:
+            entries = list(path_attr)
+        except TypeError:
+            continue
+        new_entries = []
+        changed = False
+        for entry in entries:
+            if isinstance(entry, str):
+                if entry.startswith("/wizer-ext-sp/"):
+                    new_entries.append(EXT + "/" + entry[len("/wizer-ext-sp/"):])
+                    changed = True
+                    continue
+                if entry == "/wizer-ext-sp":
+                    new_entries.append(EXT)
+                    changed = True
+                    continue
+                if entry.startswith("/wizer-sp/"):
+                    new_entries.append(SP + "/" + entry[len("/wizer-sp/"):])
+                    changed = True
+                    continue
+                if entry == "/wizer-sp":
+                    new_entries.append(SP)
+                    changed = True
+                    continue
+            new_entries.append(entry)
+        if changed:
+            try:
+                mod.__path__ = new_entries
+            except (AttributeError, TypeError):
+                pass
+
+
+# intentionally not called: see pymode._path_fixup preimport in pymode_wizer.c
+del _rewrite_wizer_package_paths

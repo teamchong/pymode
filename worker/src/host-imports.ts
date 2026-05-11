@@ -580,14 +580,15 @@ export function buildHostImports(opts: HostImportOptions): Record<string, any> {
     },
 
     // --- Dynamic Loading ---
-    dl_open: (pathPtr: number, pathLen: number): number => {
-      if (fanout && opts.dynamicLoading) {
-        const path = mem.readString(pathPtr, pathLen);
-        const result = fanout.getOrRecord("dl_open", [path]);
-        if (result.cached) return result.value as number;
-      }
-      return -1;
-    },
+    // dl_open is synchronous (modules are pre-bundled WebAssembly.Modules on
+    // the JS side) so it doesn't need the fan-out replay dance the async
+    // imports use. Just call straight through.
+    dl_open: opts.dynamicLoading
+      ? (pathPtr: number, pathLen: number): number => {
+          const path = mem.readString(pathPtr, pathLen);
+          return opts.dynamicLoading!.open(path);
+        }
+      : () => -1,
 
     dl_sym: opts.dynamicLoading
       ? (handle: number, symbolPtr: number, symbolLen: number): number => {

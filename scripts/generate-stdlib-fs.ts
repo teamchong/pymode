@@ -366,6 +366,7 @@ const PYMODE_FILES = [
     "pymode/compute.py",
     "pymode/simd.py",
     "pymode/zerobuf.py",
+    "pymode/_path_fixup.py",
 ];
 
 // Pure-Python polyfills for C extension modules unavailable in WASM.

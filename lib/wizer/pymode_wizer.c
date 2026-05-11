@@ -71,10 +71,21 @@ void wizer_initialize(void) {
     config.pathconfig_warnings = 0;
 
     /* Set PYTHONPATH — include stdlib + site-packages for pre-imports.
-     * At wizer time, site-packages.zip is mapped as a directory. */
+     * /wizer-sp and /wizer-ext-sp are wizer-only mapdir destinations: see
+     * build-wizer.ts. Using these wizer-private paths keeps the snapshot's
+     * wasi-libc preopen table from poisoning the runtime mount points
+     * /stdlib/site-packages.zip and /stdlib/extension-site-packages.zip,
+     * which the runtime mounts as zip-file bytes (not directories).
+     * For --mode=app builds, /stdlib/app is also on the path so the
+     * user's entry module is importable at wizer time. */
     PyStatus status;
     status = PyConfig_SetBytesString(&config, &config.pythonpath_env,
-        "/stdlib:/stdlib/site-packages.zip");
+#if defined(PYMODE_APP_PREIMPORTS)
+        "/stdlib:/stdlib/app:/wizer-sp:/wizer-ext-sp"
+#else
+        "/stdlib:/wizer-sp:/wizer-ext-sp"
+#endif
+    );
     if (_PyStatus_EXCEPTION(status)) {
         PyConfig_Clear(&config);
         return;
@@ -124,9 +135,12 @@ void wizer_initialize(void) {
     _preimport("pymode.mcp");
     _preimport("_wasi_compat");
 
-    /* Pre-import heavy third-party packages (from site-packages.zip).
-     * These take 1-2 seconds to import normally — snapshotting them
-     * eliminates the cost entirely. Non-fatal if not available. */
+    /* Heavy preimports. The default (PYMODE_HEAVY_PREIMPORTS=1) is the
+     * "test runtime" build — covers everything the test suite exercises.
+     * For deploy builds the build script generates a tailored override
+     * via the optional `pymode_wizer_app_preimports.h` header and skips
+     * setting PYMODE_HEAVY_PREIMPORTS, producing a smaller binary. */
+#if defined(PYMODE_HEAVY_PREIMPORTS) && !defined(PYMODE_APP_PREIMPORTS)
     _preimport("pydantic");
     _preimport("pydantic.main");
     _preimport("httpx");
@@ -136,6 +150,23 @@ void wizer_initialize(void) {
     _preimport("rich.text");
     _preimport("tenacity");
     _preimport("fastmcp");
+#endif
+
+#if defined(PYMODE_APP_PREIMPORTS)
+    /* Per-app preimports — generated at deploy time by
+     * scripts/generate-app-preimports.mjs walking the user's entry.py
+     * imports. Header may be empty if the app imports nothing extra. */
+#include "pymode_wizer_app_preimports.h"
+#endif
+
+    /* MUST be last — rewrites the third-party packages' __path__ entries
+     * from wizer-time paths (/wizer-sp/<pkg>, /wizer-ext-sp/<pkg>) to the
+     * runtime zip-mount paths (/stdlib/site-packages.zip/<pkg>, …) so
+     * submodule lookups succeed at runtime. Only needed when something
+     * was preimported from a wizer-mounted directory. */
+#if defined(PYMODE_HEAVY_PREIMPORTS) || defined(PYMODE_APP_PREIMPORTS)
+    _preimport("pymode._path_fixup");
+#endif
 
     /* Create the execution namespace.
      * __main__.__dict__ serves as both globals and locals. */

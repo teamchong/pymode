@@ -33,6 +33,40 @@ const CPYTHON_DIR = join(ROOT_DIR, "cpython");
 const BUILD_DIR = join(ROOT_DIR, "build", "zig-wasi");
 const ZIG_WRAPPER_DIR = join(ROOT_DIR, "build", "zig-wrappers");
 
+/**
+ * Build mode determines what goes into the final python.wasm:
+ *
+ *   "test"  — kitchen-sink runtime used by the vitest suite. Heavy wizer
+ *             preimports (jinja2/pydantic/langchain/…) baked in; every
+ *             recipe linked; full side-module dynamic linker exports.
+ *             Output: worker/src/python.wasm (large, deploy-incompatible).
+ *
+ *   "base"  — slim CPython runtime for deploys. Stdlib + pymode shims
+ *             preimported only. No recipes, no kitchen-sink packages, no
+ *             dynamic linker exports. Output: worker/src/python-base.wasm.
+ *
+ *   "app"   — per-app deploy build. Same trimmings as base, plus an
+ *             auto-generated header with the user's imports preimported.
+ *             Driven by scripts/generate-app-preimports.mjs and emits to
+ *             worker/src/python-app.wasm.
+ */
+const CLI_ARGS = process.argv.slice(2);
+function getArg(flag: string, fallback: string): string {
+  const eq = CLI_ARGS.find(a => a.startsWith(flag + "="));
+  if (eq) return eq.slice(flag.length + 1);
+  const idx = CLI_ARGS.indexOf(flag);
+  if (idx >= 0 && CLI_ARGS[idx + 1] && !CLI_ARGS[idx + 1].startsWith("-")) {
+    return CLI_ARGS[idx + 1];
+  }
+  return fallback;
+}
+const BUILD_MODE = getArg("--mode", "test") as "test" | "base" | "app";
+if (!["test", "base", "app"].includes(BUILD_MODE)) {
+  console.error(`Invalid --mode=${BUILD_MODE}. Use test, base, or app.`);
+  process.exit(2);
+}
+const APP_PREIMPORT_HEADER = getArg("--app-preimports", "");  // path to .h, only used in app mode
+
 const GREEN = "\x1b[0;32m";
 const YELLOW = "\x1b[1;33m";
 const RED = "\x1b[0;31m";
@@ -160,8 +194,9 @@ function main(): void {
   writeFileSync(
     zigCcScript,
     `#!/usr/bin/env bash
-# zig cc wrapper for wasm32-wasi cross-compilation
-# Applies ReleaseSmall: -Os, strip, no debug info
+# zig cc wrapper for wasm32-wasi cross-compilation.
+# Size-tuned: -Oz, dead-code-stripping linkage, constant merging, no canaries
+# or unwind metadata. Matches the flag set used by edgesharp/capnwasm.
 
 ARGS=()
 HAS_OPT=0
@@ -180,8 +215,8 @@ for arg in "$@"; do
         -Wl,--initial-memory=*) continue ;;
         -Wl,--stack-first) continue ;;
         -z) SKIP_NEXT=1; continue ;;  # skip -z and its argument
-        # Replace optimization flags with -Os (ReleaseSmall)
-        -O0|-O1|-O2|-O3|-Og) ARGS+=("-Os"); HAS_OPT=1 ;;
+        # Replace optimization flags with -Oz (size-first)
+        -O0|-O1|-O2|-O3|-Og|-Os) ARGS+=("-Oz"); HAS_OPT=1 ;;
         -flto=thin) ARGS+=("-flto") ;;
         # Skip macOS-specific flags
         -framework) continue ;;
@@ -198,9 +233,9 @@ for arg in "$@"; do
     esac
 done
 
-# Ensure -Os is always set for ReleaseSmall
+# Default to -Oz when nothing else was specified
 if [ "$HAS_OPT" -eq 0 ]; then
-    ARGS+=("-Os")
+    ARGS+=("-Oz")
 fi
 
 # Strip debug info for smaller binary
@@ -209,6 +244,23 @@ ARGS+=("-s")
 # WASI defines CLOCK_REALTIME/CLOCK_MONOTONIC as pointers, not integers.
 # Zig's clang treats -Wint-conversion as an error by default, so demote it.
 ARGS+=("-Wno-error=int-conversion" "-Wno-error=incompatible-pointer-types" "-Wno-error=date-time")
+
+# Size-tuning flags borrowed from edgesharp/capnwasm:
+#  -fdata-sections -ffunction-sections + -Wl,--gc-sections — drop unreachable
+#    code/data once the linker can prove it
+#  -fmerge-all-constants — dedupe identical string/numeric constants
+#  -fno-unwind-tables -fno-asynchronous-unwind-tables — no C++ EH metadata
+#  -fno-stack-protector — no canary instrumentation (WASI doesn't need it)
+ARGS+=(
+  "-fdata-sections"
+  "-ffunction-sections"
+  "-fmerge-all-constants"
+  "-fno-unwind-tables"
+  "-fno-asynchronous-unwind-tables"
+  "-fno-stack-protector"
+  "-Wl,--gc-sections"
+  "-Wl,--strip-all"
+)
 
 exec zig cc -target wasm32-wasi "\${ARGS[@]}"
 `,
@@ -343,10 +395,26 @@ exec zig cc -target wasm32-wasi -E "\${ARGS[@]}"
     error("Configure failed");
   }
 
-  // Step 3b: Patch pyconfig.h - use CPython pthread types instead of musl
-  info("Patching pyconfig.h for WASI...");
+  // Step 3b: (Zig 0.16+) pyconfig.h needs no pthread patching. Zig 0.16's
+  // bundled wasm-wasi-musl provides a complete pthread implementation with
+  // a correct `_Noreturn void pthread_exit` signature, so HAVE_PTHREAD_H
+  // can stay enabled. Disabling it and enabling HAVE_PTHREAD_STUBS would
+  // make CPython's Python/thread.o re-define pthread_mutex_init / _cond_init /
+  // etc., colliding with musl's libc.a → duplicate-symbol link errors.
   const pyconfig = join(BUILD_DIR, "pyconfig.h");
-  sedi(pyconfig, /^#define HAVE_PTHREAD_H 1/m, "/* #undef HAVE_PTHREAD_H */");
+  void pyconfig; // keep path local for future patches without unused-var noise
+
+  // Strip `-fvisibility=hidden` from the generated Makefile so side modules
+  // can resolve musl libc functions (sinf, cosf, sqrtf, etc.) from main
+  // wasm via --export-dynamic. Without this, libc math is statically
+  // linked with hidden visibility and unreachable from numpy's side
+  // module. The PyAPI_FUNC macro on CPython's own API uses an explicit
+  // `__attribute__((visibility("default")))` so those stay public even
+  // without the global default.
+  const phase2Makefile = join(BUILD_DIR, "Makefile");
+  if (existsSync(phase2Makefile)) {
+    sedi(phase2Makefile, /\s-fvisibility=hidden\b/g, "");
+  }
 
   // Step 3b2: Save clean config.c as base (before variant patching)
   const configC = join(BUILD_DIR, "Modules", "config.c");
@@ -430,10 +498,16 @@ exec zig cc -target wasm32-wasi -E "\${ARGS[@]}"
     info("  Built Modules/pymode_imports.o");
   }
 
-  // Step 3e: Build native extension modules (Zig and/or C)
+  // Step 3e: Build native extension modules (Zig and/or C). These are
+  // test-runtime only — they exist to back test/xxhash.test.ts and
+  // friends, and aren't part of a real user app. Skip them in slim
+  // builds to avoid registering symbols that nothing links against.
+  if (BUILD_MODE !== "test") {
+    info("Skipping in-tree native modules (test runtime only).");
+  }
   const zigModulesDir = join(ROOT_DIR, "zig-modules");
   const cModulesDir = join(ROOT_DIR, "c-modules");
-  const nativeModules: NativeModule[] = [
+  const nativeModules: NativeModule[] = BUILD_MODE !== "test" ? [] : [
     {
       name: "_xxhash",
       zig_src: join(zigModulesDir, "xxhash", "module.zig"),
@@ -573,6 +647,62 @@ exec zig cc -target wasm32-wasi -E "\${ARGS[@]}"
     }
   }
 
+  // Step 3f: Register recipe modules in config.c. Recipe .a/.o files are
+  // linked at wizer time (build-wizer.ts), but config.c registration must
+  // happen here so the compiled config.o references the recipe PyInit_*
+  // symbols at link time. Only register recipes whose build artifacts
+  // already exist; missing artifacts would cause an undefined-symbol link
+  // failure. Skip recipes whose native modules are already in
+  // `nativeModules` above — linking both would duplicate symbols (mirrors
+  // the skipRecipes set in build-wizer.ts).
+  //
+  // Only the "test" mode includes recipes; base/app builds are slimmer
+  // and don't ship the recipe-backed extensions (pydantic-core, etc.).
+  const skipRecipesPhase2 = new Set(["regex", "msgpack", "xxhash", "markupsafe"]);
+  const recipesDefDir = join(ROOT_DIR, "recipes");
+  const recipeBuildDir = join(ROOT_DIR, "build", "recipes");
+  if (BUILD_MODE === "test" && existsSync(recipesDefDir) && existsSync(configC) && statSync(configC).isFile()) {
+    let content = readFileSync(configC, "utf-8");
+    let changed = false;
+    for (const recipeFile of readdirSync(recipesDefDir)) {
+      if (!recipeFile.endsWith(".json")) continue;
+      const recipeName = recipeFile.replace(/\.json$/, "");
+      if (skipRecipesPhase2.has(recipeName)) continue;
+      const objDir = join(recipeBuildDir, recipeName, "obj");
+      if (!existsSync(objDir)) continue;
+      const hasArtifact = readdirSync(objDir).some(
+        (f) => f.endsWith(".a") || f.endsWith(".o"),
+      );
+      if (!hasArtifact) continue;
+      let recipeJson: { modules?: Record<string, string> };
+      try {
+        recipeJson = JSON.parse(
+          readFileSync(join(recipesDefDir, recipeFile), "utf-8"),
+        );
+      } catch {
+        continue;
+      }
+      const modules = recipeJson.modules ?? {};
+      for (const [modPath, initFunc] of Object.entries(modules)) {
+        if (content.includes(initFunc)) continue;
+        content = content.replace(
+          "/* -- ADDMODULE MARKER 1 -- */",
+          `extern PyObject* ${initFunc}(void);\n/* -- ADDMODULE MARKER 1 -- */`,
+        );
+        content = content.replace(
+          "/* -- ADDMODULE MARKER 2 -- */",
+          `    {"${modPath}", ${initFunc}},\n/* -- ADDMODULE MARKER 2 -- */`,
+        );
+        info(`  recipe ${recipeName}: registered ${modPath} → ${initFunc}`);
+        changed = true;
+      }
+    }
+    if (changed) {
+      writeFileSync(configC, content);
+      copyFileSync(configC, configCBase);
+    }
+  }
+
   // Step 4: Build
   info("Building CPython with zig cc (ReleaseSmall)...");
   const makefile = join(BUILD_DIR, "Makefile");
@@ -590,8 +720,86 @@ exec zig cc -target wasm32-wasi -E "\${ARGS[@]}"
       makefileAppend += `MODULE_OBJS += Modules/${cObjName}\n`;
     }
   }
+  // Include recipe artifacts in the phase2 link too — config.c (just patched
+  // above) now references their PyInit_* symbols. build-wizer.ts links them
+  // again, but the phase2 link must resolve the symbols on its own. Skip
+  // the same recipes as the registration block above to avoid duplicate
+  // symbols with the in-tree native modules. Only in "test" mode.
+  const phase2RecipeBuildDir = join(ROOT_DIR, "build", "recipes");
+  if (BUILD_MODE === "test" && existsSync(phase2RecipeBuildDir)) {
+    for (const recipe of readdirSync(phase2RecipeBuildDir)) {
+      if (skipRecipesPhase2.has(recipe)) continue;
+      const objDir = join(phase2RecipeBuildDir, recipe, "obj");
+      if (!existsSync(objDir)) continue;
+      for (const f of readdirSync(objDir)) {
+        if (f.endsWith(".a") || f.endsWith(".o")) {
+          makefileAppend += `MODULE_OBJS += ${join(objDir, f)}\n`;
+        }
+      }
+    }
+  }
+  // Step 3g: Scan bundled side-modules (worker/src/extensions/*.wasm) and
+  // generate `-Wl,--export-if-defined=<sym>` flags so wasm-ld retains the
+  // symbols each side-module imports (libc + libpython + GOT.* names).
+  // Without these exports, the dynamic linker at runtime can't satisfy the
+  // side-module's imports — numpy's _multiarray_umath.wasm has ~568 of them.
+  const extensionsDir = join(ROOT_DIR, "worker", "src", "extensions");
+  const sideModuleWasms: string[] = [];
+  if (existsSync(extensionsDir)) {
+    const walk = (d: string) => {
+      for (const f of readdirSync(d)) {
+        const p = join(d, f);
+        const st = statSync(p);
+        if (st.isDirectory()) walk(p);
+        else if (f.endsWith(".wasm")) sideModuleWasms.push(p);
+      }
+    };
+    walk(extensionsDir);
+  }
+  let exportFlags = "";
+  // Side-module dynamic linker is only relevant in the test runtime —
+  // base/app deploys don't ship the side modules (numpy, etc.) so they
+  // don't need the 550+ libc/libpython exports that bloat python.wasm.
+  if (BUILD_MODE === "test" && sideModuleWasms.length > 0) {
+    info(`Scanning ${sideModuleWasms.length} side-module wasm(s) for required exports...`);
+    const extractScript = join(ROOT_DIR, "scripts", "extract-side-module-imports.mjs");
+    const extractResult = spawnSync(
+      "node",
+      [extractScript, ...sideModuleWasms],
+      { encoding: "utf-8" },
+    );
+    if (extractResult.status !== 0) {
+      error(`extract-side-module-imports failed: ${extractResult.stderr}`);
+    }
+    const symbols = (extractResult.stdout || "")
+      .split("\n")
+      .map(s => s.trim())
+      .filter(Boolean);
+    info(`  ${symbols.length} symbols needed by side modules (after filtering C++ ABI)`);
+    // --export-dynamic catches all default-visibility symbols (most of
+    // CPython API). --export=<sym> for each hidden libc/compiler-rt
+    // symbol the side module needs (sinf, memcpy, __addtf3, etc.).
+    // Zig's wasm-ld wrapper doesn't accept @response-file or
+    // --export-if-defined, so we inline every flag. ~553 entries × 30B
+    // = ~16KB on the command line, well under ARG_MAX.
+    const perSymbolExports = symbols.map(s => `-Wl,--export=${s}`).join(" ");
+    // Note: --growable-table isn't supported by zig's wasm-ld wrapper;
+    // the post-wizer restore step patches the table limits instead.
+    exportFlags =
+      ` -Wl,--export-dynamic` +
+      ` -Wl,--export-table` +
+      ` -Wl,--export=__stack_pointer` +
+      ` -Wl,--export=__heap_base` +
+      ` -Wl,--export=__heap_end` +
+      ` ${perSymbolExports}`;
+  }
+  if (exportFlags) {
+    // Inject into LDFLAGS via Makefile override so the final link picks it up.
+    makefileAppend += `\nLDFLAGS += ${exportFlags}\n`;
+  }
   writeFileSync(makefile, readFileSync(makefile, "utf-8") + makefileAppend);
   info("  Added Modules/pymode_imports.o to MODULE_OBJS");
+  if (exportFlags) info(`  Added side-module export flags`);
   for (const mod of builtModules) {
     if (!mod.replaces_builtin) {
       info(`  Added ${mod.name} objects to MODULE_OBJS`);
@@ -658,12 +866,16 @@ exec zig cc -target wasm32-wasi -E "\${ARGS[@]}"
   if (which("wasm-opt")) {
     const origSize = statSync(pythonWasm).size;
 
-    info("Running wasm-opt -O2 (no asyncify — fan-out replay handles async)...");
+    info("Running wasm-opt -Oz --converge (size-first, fan-out replay handles async)...");
     const optimized = pythonWasm + ".opt";
     const optResult = spawnSync(
       "wasm-opt",
       [
-        "-O2",
+        "-Oz",
+        "--converge",
+        "--strip-debug",
+        "--strip-producers",
+        "--strip-target-features",
         "--enable-simd",
         "--enable-relaxed-simd",
         "--enable-nontrapping-float-to-int",
@@ -682,7 +894,7 @@ exec zig cc -target wasm32-wasi -E "\${ARGS[@]}"
       { stdio: "inherit" },
     );
     if (optResult.status !== 0) {
-      error("wasm-opt -O2 failed");
+      error("wasm-opt -Oz failed");
     }
     renameSync(optimized, pythonWasm);
 
@@ -737,9 +949,22 @@ exec wasmtime run \\
   // Step 9: Wizer pre-initialization (if wizer is available)
   if (which("wizer") && which("wasm-opt")) {
     info("");
-    info("Wizer detected -- creating pre-initialized snapshot...");
+    info(`Wizer detected -- creating pre-initialized snapshot (mode=${BUILD_MODE})...`);
     const wizerScript = join(SCRIPT_DIR, "build-wizer.ts");
-    const wizerResult = spawnSync("npx", ["tsx", wizerScript], { stdio: "inherit" });
+    const wizerEnv = {
+      ...process.env,
+      PYMODE_BUILD_MODE: BUILD_MODE,
+      PYMODE_APP_PREIMPORTS_HEADER: APP_PREIMPORT_HEADER,
+      // Forwarded so build-wizer.ts can mount the project's .py files
+      // into mergedStdlib/app/ — see APP_PROJECT_DIR/APP_ENTRY_MODULE
+      // handling there.
+      PYMODE_APP_PROJECT_DIR: process.env.PYMODE_APP_PROJECT_DIR || "",
+      PYMODE_APP_ENTRY_MODULE: process.env.PYMODE_APP_ENTRY_MODULE || "",
+    };
+    const wizerResult = spawnSync("npx", ["tsx", wizerScript], {
+      stdio: "inherit",
+      env: wizerEnv,
+    });
     if (wizerResult.status !== 0) {
       error("build-wizer.ts failed");
     }

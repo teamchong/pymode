@@ -29,6 +29,18 @@ const WIZER_DIR = path.join(ROOT_DIR, "lib", "wizer");
 const IMPORTS_DIR = path.join(ROOT_DIR, "lib", "pymode-imports");
 const OUTPUT = path.join(BUILD_DIR, "python-wizer.wasm");
 
+// Build mode coordinated with build-phase2.ts via env vars. See the
+// header comment in build-phase2.ts for what each mode means.
+const BUILD_MODE = (process.env.PYMODE_BUILD_MODE || "test") as "test" | "base" | "app";
+const APP_PREIMPORTS_HEADER = process.env.PYMODE_APP_PREIMPORTS_HEADER || "";
+const APP_PROJECT_DIR = process.env.PYMODE_APP_PROJECT_DIR || "";
+const APP_ENTRY_MODULE = process.env.PYMODE_APP_ENTRY_MODULE || "";
+
+const WORKER_WASM_FILENAME =
+  BUILD_MODE === "test" ? "python.wasm" :
+  BUILD_MODE === "base" ? "python-base.wasm" :
+  "python-app.wasm";
+
 // Asyncify removed — fan-out replay handles async imports at runtime.
 
 function mb(size: number): string {
@@ -94,23 +106,32 @@ function main(): void {
   console.log("=== Building Wizer-pre-initialized python.wasm ===");
   console.log();
 
-  // Step 1: Compile pymode_wizer.c
-  console.log("  [1/6] Compiling pymode_wizer.c...");
+  // Step 1: Compile pymode_wizer.c. Mode-dependent defines pick which
+  // preimport set goes into the wizer snapshot.
+  console.log(`  [1/6] Compiling pymode_wizer.c (mode=${BUILD_MODE})...`);
   fs.mkdirSync(path.join(BUILD_DIR, "Programs"), { recursive: true });
-  run([
-    "bash",
-    ZIG_CC,
-    "-c",
-    "-Os",
-    "-DPy_BUILD_CORE",
+  const wizerCompileFlags = [
+    "bash", ZIG_CC,
+    "-c", "-Os", "-DPy_BUILD_CORE",
     `-I${IMPORTS_DIR}`,
     `-I${CPYTHON}/Include`,
     `-I${CPYTHON}/Include/internal`,
     `-I${BUILD_DIR}`,
+  ];
+  if (BUILD_MODE === "test") {
+    wizerCompileFlags.push("-DPYMODE_HEAVY_PREIMPORTS=1");
+  }
+  if (BUILD_MODE === "app" && APP_PREIMPORTS_HEADER) {
+    wizerCompileFlags.push("-DPYMODE_APP_PREIMPORTS=1");
+    // The header sits next to pymode_wizer.c so #include "pymode_wizer_app_preimports.h" resolves.
+    wizerCompileFlags.push(`-I${path.dirname(APP_PREIMPORTS_HEADER)}`);
+  }
+  wizerCompileFlags.push(
     path.join(WIZER_DIR, "pymode_wizer.c"),
     "-o",
     path.join(BUILD_DIR, "Programs", "pymode_wizer.o"),
-  ]);
+  );
+  run(wizerCompileFlags);
 
   // Step 2: Compile clean config.o (without variant module entries like numpy)
   console.log("  [2/6] Compiling clean config.o...");
@@ -162,6 +183,14 @@ function main(): void {
     if (rel.includes("/recipes/") || rel.includes("/Modules/numpy/")) {
       continue;
     }
+    // Skip in-tree native modules in slim deploys — they're for the test
+    // runtime (xxhash, regex, msgpack, markupsafe speedups, _simd, …).
+    if (BUILD_MODE !== "test") {
+      const baseName = path.basename(filePath);
+      if (baseName.endsWith(".o") && /^(_xxhash|xxhash__|_regex|_regex_unicode__|_cmsgpack|_speedups__markupsafe_speedups|_simd|_zerobuf)\b/.test(baseName)) {
+        continue;
+      }
+    }
     const basename = path.basename(filePath);
     if (
       basename.endsWith(".o") &&
@@ -175,11 +204,12 @@ function main(): void {
   linkObjs.push(path.join(BUILD_DIR, "Programs", "pymode_wizer.o"));
   linkObjs.push(configWizerO);
 
-  // Include recipe static archives (pydantic-core, etc.)
-  // Skip recipes whose objects are already linked from the base build (regex)
+  // Include recipe static archives (pydantic-core, etc.) — only in the
+  // test runtime. Deploys pull only what the user's app actually needs
+  // (they wouldn't bundle pydantic-core if their app doesn't import it).
   const skipRecipes = new Set(["regex", "msgpack", "xxhash", "markupsafe"]);
   const recipesDir = path.join(ROOT_DIR, "build", "recipes");
-  if (fs.existsSync(recipesDir)) {
+  if (BUILD_MODE === "test" && fs.existsSync(recipesDir)) {
     for (const recipe of fs.readdirSync(recipesDir)) {
       if (skipRecipes.has(recipe)) continue;
       const objDir = path.join(recipesDir, recipe, "obj");
@@ -193,9 +223,9 @@ function main(): void {
     }
   }
 
-  // Include numpy objects if available
+  // Include numpy objects only in test mode.
   const numpyDir = path.join(BUILD_DIR, "Modules", "numpy");
-  if (fs.existsSync(numpyDir)) {
+  if (BUILD_MODE === "test" && fs.existsSync(numpyDir)) {
     for (const f of fs.readdirSync(numpyDir)) {
       if (f.endsWith(".o")) {
         linkObjs.push(path.join(numpyDir, f));
@@ -206,9 +236,58 @@ function main(): void {
 
   console.log(`    ${linkObjs.length} total link inputs`);
 
-  // Step 4: Link
+  // Step 4: Link. Mirror the side-module export logic from build-phase2.ts —
+  // build-wizer.ts produces its own pre-snapshot binary via a fresh link
+  // command, so flags applied to phase2's Makefile-driven link don't carry
+  // over. We re-derive the export list from the bundled side modules so
+  // the wizer binary (which becomes the runtime python.wasm) exposes the
+  // libc / libpython symbols the dynamic linker will need.
   console.log("  [4/6] Linking...");
   const wizerRaw = path.join(BUILD_DIR, "python-wizer-raw.wasm");
+
+  const extensionsDir = path.join(ROOT_DIR, "worker", "src", "extensions");
+  const sideModuleWasms: string[] = [];
+  if (fs.existsSync(extensionsDir)) {
+    const collect = (d: string) => {
+      for (const f of fs.readdirSync(d)) {
+        const p = path.join(d, f);
+        const st = fs.statSync(p);
+        if (st.isDirectory()) collect(p);
+        else if (f.endsWith(".wasm")) sideModuleWasms.push(p);
+      }
+    };
+    collect(extensionsDir);
+  }
+  const exportFlagArgs: string[] = [];
+  // Side-module dynamic-linker exports only matter for the test runtime —
+  // deploys don't carry the .wasm side modules, so don't bloat the binary
+  // with 550+ libc/libpython exports they'd reference.
+  if (BUILD_MODE === "test" && sideModuleWasms.length > 0) {
+    const extractScript = path.join(ROOT_DIR, "scripts", "extract-side-module-imports.mjs");
+    const extractResult = run(["node", extractScript, ...sideModuleWasms], { captureOutput: true });
+    if (extractResult.status !== 0) {
+      console.error(`    WARN: extract-side-module-imports failed: ${extractResult.stderr}`);
+    } else {
+      const symbols = (extractResult.stdout || "")
+        .split("\n")
+        .map(s => s.trim())
+        .filter(Boolean);
+      console.log(`    Side-module exports: ${symbols.length} symbols`);
+      exportFlagArgs.push(
+        "-Wl,--export-dynamic",
+        "-Wl,--export-table",
+        // The dynamic linker needs `table.grow()` at runtime for side
+        // modules, but zig's wasm-ld wrapper rejects `--growable-table`.
+        // The post-wizer `wizer-restore-exports.mjs` step patches the
+        // table to remove its max limit instead.
+        "-Wl,--export=__stack_pointer",
+        "-Wl,--export=__heap_base",
+        "-Wl,--export=__heap_end",
+        ...symbols.map(s => `-Wl,--export=${s}`),
+      );
+    }
+  }
+
   run([
     "bash",
     ZIG_CC,
@@ -216,6 +295,7 @@ function main(): void {
     "-o",
     wizerRaw,
     ...linkObjs,
+    ...exportFlagArgs,
     "-ldl",
     "-lwasi-emulated-signal",
     "-lwasi-emulated-getpid",
@@ -241,13 +321,17 @@ function main(): void {
     }
   }
 
-  // Step 5: Asyncify with wasm-opt
+  // Step 5: wasm-opt size-tuning (matches edgesharp/capnwasm flag set).
   if (which("wasm-opt")) {
-    console.log("  [5/6] Optimize with wasm-opt...");
+    console.log("  [5/6] Optimize with wasm-opt -Oz --converge...");
     const optOutput = wizerRaw + ".opt";
     run([
       "wasm-opt",
-      "-O2",
+      "-Oz",
+      "--converge",
+      "--strip-debug",
+      "--strip-producers",
+      "--strip-target-features",
       "--enable-simd",
       "--enable-relaxed-simd",
       "--enable-nontrapping-float-to-int",
@@ -321,6 +405,36 @@ function main(): void {
     ], { stdio: "pipe" });
   }
 
+  // App project source (for --mode=app builds). We copy the user's .py
+  // files into mergedStdlib/app/ so they sit at /stdlib/app/ inside the
+  // wasm — matching the runtime VFS layout user-files.ts produces. The
+  // wizer init imports the entry module from here so its top-level code
+  // (e.g. `_md = MarkdownIt()`, `_tmpl = Template(...)`) executes ONCE
+  // at build time and the resulting objects live in the snapshot.
+  if (BUILD_MODE === "app" && APP_PROJECT_DIR && fs.existsSync(APP_PROJECT_DIR)) {
+    const appDest = path.join(mergedStdlib, "app");
+    fs.mkdirSync(appDest, { recursive: true });
+    const copyTree = (src: string, dst: string) => {
+      for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+        const s = path.join(src, entry.name);
+        const d = path.join(dst, entry.name);
+        if (entry.isDirectory()) {
+          if (entry.name === "__pycache__" || entry.name === ".venv" ||
+              entry.name === ".pymode" || entry.name === "node_modules") continue;
+          fs.mkdirSync(d, { recursive: true });
+          copyTree(s, d);
+          continue;
+        }
+        if (entry.name.endsWith(".py")) {
+          fs.copyFileSync(s, d);
+        }
+      }
+    };
+    copyTree(APP_PROJECT_DIR, appDest);
+    const pyCount = spawnSync("find", [appDest, "-name", "*.py"], { encoding: "utf-8", stdio: "pipe" });
+    console.log(`    App source: ${(pyCount.stdout || "").split("\n").filter(Boolean).length} .py files (entry=${APP_ENTRY_MODULE})`);
+  }
+
   try {
     // Set PYTHONPATH so wizer init can find all packages
     const wizerEnv = { ...process.env };
@@ -340,8 +454,14 @@ function main(): void {
         "true",
         "--wasm-simd",
         "true",
+        // Mount site-packages contents at /wizer-sp (NOT /stdlib/site-packages.zip)
+        // so wasi-libc's preopen table doesn't bake a directory entry at the
+        // path where the runtime mounts the zip bytes as a file. Without this,
+        // the snapshot's frozen preopen makes runtime os.stat return S_IFDIR
+        // for the file mount, breaking zipimport. /wizer-ext-sp likewise.
         `--mapdir=/stdlib::${mergedStdlib}`,
-        `--mapdir=/stdlib/site-packages.zip::${sitePackagesDir}`,
+        `--mapdir=/wizer-sp::${sitePackagesDir}`,
+        ...(fs.existsSync(extDir) ? [`--mapdir=/wizer-ext-sp::${extDir}`] : []),
         `--mapdir=/tmp::${wizerTmp}`,
         `--mapdir=/data::${wizerTmp}`,
       ],
@@ -349,6 +469,23 @@ function main(): void {
     );
 
     if (result.status === 0) {
+      // Wizer strips all exports except _start/memory. Re-attach every
+      // export from the pre-wizer binary, remapping function indices for
+      // the imports Wizer dropped. The dynamic linker depends on these.
+      const restoreScript = path.join(ROOT_DIR, "scripts", "wizer-restore-exports.mjs");
+      if (fs.existsSync(restoreScript)) {
+        const restored = OUTPUT + ".restored";
+        const restoreResult = run(
+          ["node", restoreScript, wizerRaw, OUTPUT, restored],
+          { captureOutput: true },
+        );
+        if (restoreResult.status === 0 && fs.existsSync(restored)) {
+          fs.renameSync(restored, OUTPUT);
+          console.log(`    Restored exports stripped by Wizer`);
+        } else {
+          console.log(`    WARN: export-restore failed: ${restoreResult.stderr}`);
+        }
+      }
       const finalSize = fs.statSync(OUTPUT).size;
       console.log(`    Snapshot: ${mb(finalSize)}`);
     } else {
@@ -374,8 +511,11 @@ function main(): void {
   }
 
   // Replace python.wasm -- the wizer binary IS the default now.
-  const workerWasm = path.join(ROOT_DIR, "worker", "src", "python.wasm");
+  const workerWasm = path.join(ROOT_DIR, "worker", "src", WORKER_WASM_FILENAME);
   fs.copyFileSync(OUTPUT, workerWasm);
+  // Mirror to the .dat sidecar (the dynamic linker reads raw bytes from
+  // a Data binding while WebAssembly.Module compiles the same file).
+  // Only the test runtime ships the .dat for python.wasm.
 
   console.log();
   console.log("Done! python.wasm (wizer snapshot)");

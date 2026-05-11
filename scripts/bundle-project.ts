@@ -173,8 +173,10 @@ function main(): void {
       const content = fs.readFileSync(pyproject, "utf-8");
       const deps = parseDependenciesFromToml(content);
       if (deps.length > 0) {
-        warn(`Dependencies found: ${deps.join(", ")}`);
-        warn("Run: npx tsx scripts/bundle-packages.ts to bundle them into site-packages.zip");
+        // `pymode deploy` handles deps via uv pip install --target +
+        // bundle-app-packages.mjs. The stale warning fires whether or
+        // not deps were already bundled, so suppress it.
+        void deps;
       }
     } catch {
       // ignore

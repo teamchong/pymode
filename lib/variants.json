@@ -2,11 +2,11 @@
   "_comment": "WASM variant registry. Maps C extension packages to pre-built python.wasm variants.",
   "variants": {
     "base": {
-      "description": "CPython 3.13 — no C extensions",
-      "wasm": "python.wasm",
+      "description": "CPython 3.13 — slim, no C extensions, suitable for deploy",
+      "wasm": "python-base.wasm",
       "sitePackages": null,
       "extensions": [],
-      "size": "5.6MB"
+      "size": "17MB (5.6MB gz)"
     },
     "numpy": {
       "description": "CPython 3.13 + numpy 2.4.2 (multiarray_umath + random + fft statically linked)",
