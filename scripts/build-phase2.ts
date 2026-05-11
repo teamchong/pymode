@@ -39,16 +39,12 @@ const ZIG_WRAPPER_DIR = join(ROOT_DIR, "build", "zig-wrappers");
  *   "test"  — kitchen-sink runtime used by the vitest suite. Heavy wizer
  *             preimports (jinja2/pydantic/langchain/…) baked in; every
  *             recipe linked; full side-module dynamic linker exports.
- *             Output: worker/src/python.wasm (large, deploy-incompatible).
+ *             Output: worker/src/python.wasm.
  *
- *   "base"  — slim CPython runtime for deploys. Stdlib + pymode shims
- *             preimported only. No recipes, no kitchen-sink packages, no
- *             dynamic linker exports. Output: worker/src/python-base.wasm.
- *
- *   "app"   — per-app deploy build. Same trimmings as base, plus an
- *             auto-generated header with the user's imports preimported.
- *             Driven by scripts/generate-app-preimports.mjs and emits to
- *             worker/src/python-app.wasm.
+ *   "app"   — per-app deploy build. Auto-generated header with the
+ *             user's imports preimported. Driven by
+ *             scripts/generate-app-preimports.mjs.
+ *             Output: worker/src/python-app.wasm.
  */
 const CLI_ARGS = process.argv.slice(2);
 function getArg(flag: string, fallback: string): string {
@@ -60,9 +56,9 @@ function getArg(flag: string, fallback: string): string {
   }
   return fallback;
 }
-const BUILD_MODE = getArg("--mode", "test") as "test" | "base" | "app";
-if (!["test", "base", "app"].includes(BUILD_MODE)) {
-  console.error(`Invalid --mode=${BUILD_MODE}. Use test, base, or app.`);
+const BUILD_MODE = getArg("--mode", "test") as "test" | "app";
+if (!["test", "app"].includes(BUILD_MODE)) {
+  console.error(`Invalid --mode=${BUILD_MODE}. Use test or app.`);
   process.exit(2);
 }
 const APP_PREIMPORT_HEADER = getArg("--app-preimports", "");  // path to .h, only used in app mode
@@ -656,7 +652,7 @@ exec zig cc -target wasm32-wasi -E "\${ARGS[@]}"
   // `nativeModules` above — linking both would duplicate symbols (mirrors
   // the skipRecipes set in build-wizer.ts).
   //
-  // Only the "test" mode includes recipes; base/app builds are slimmer
+  // Only the "test" mode includes recipes; app builds are slimmer
   // and don't ship the recipe-backed extensions (pydantic-core, etc.).
   const skipRecipesPhase2 = new Set(["regex", "msgpack", "xxhash", "markupsafe"]);
   const recipesDefDir = join(ROOT_DIR, "recipes");

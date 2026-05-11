@@ -3,7 +3,7 @@
 // Reads lib/variants.json and maps package names to WASM variants.
 // Used by deploy, install, and add commands.
 
-import { readFileSync, existsSync, copyFileSync, mkdirSync } from "fs";
+import { readFileSync, existsSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 
@@ -90,56 +90,6 @@ export function checkPackage(packageName) {
     variantKey: variantKey,
     supported: variantKey !== null,
   };
-}
-
-/**
- * Copy the correct WASM binary and site-packages for a variant
- * into the worker/src directory (overwriting python.wasm).
- *
- * Returns the variant metadata.
- */
-export function applyVariant(repoRoot, variantKey) {
-  const registry = getRegistry();
-  const variant = registry.variants[variantKey];
-  if (!variant) {
-    throw new Error(`Unknown variant: ${variantKey}`);
-  }
-
-  const workerSrc = join(repoRoot, "worker", "src");
-  const targetWasm = join(workerSrc, "python.wasm");
-
-  // Copy variant WASM → python.wasm
-  const sourceWasm = join(workerSrc, variant.wasm);
-  if (!existsSync(sourceWasm)) {
-    throw new Error(
-      `Variant binary not found: ${sourceWasm}\n` +
-      `Build it with: python3 scripts/build-variant.py ${variantKey}`
-    );
-  }
-
-  // Only copy if source is different from target
-  if (variant.wasm !== "python.wasm") {
-    copyFileSync(sourceWasm, targetWasm);
-    console.log(`  Variant: ${variantKey} (${variant.wasm} → python.wasm)`);
-  } else {
-    console.log(`  Variant: base (python.wasm)`);
-  }
-
-  // Copy variant site-packages if present
-  if (variant.sitePackages) {
-    const sourcePkg = join(workerSrc, variant.sitePackages);
-    if (existsSync(sourcePkg)) {
-      // The worker already mounts site-packages.zip on PYTHONPATH.
-      // For extension packages, we also need the extension's Python layer.
-      // We copy the extension zip alongside site-packages.zip and
-      // the worker mounts both.
-      console.log(`  Extension packages: ${variant.sitePackages}`);
-    } else {
-      console.log(`  Warning: ${variant.sitePackages} not found, extension Python files may be missing`);
-    }
-  }
-
-  return variant;
 }
 
 /**

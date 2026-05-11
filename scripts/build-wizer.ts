@@ -31,15 +31,13 @@ const OUTPUT = path.join(BUILD_DIR, "python-wizer.wasm");
 
 // Build mode coordinated with build-phase2.ts via env vars. See the
 // header comment in build-phase2.ts for what each mode means.
-const BUILD_MODE = (process.env.PYMODE_BUILD_MODE || "test") as "test" | "base" | "app";
+const BUILD_MODE = (process.env.PYMODE_BUILD_MODE || "test") as "test" | "app";
 const APP_PREIMPORTS_HEADER = process.env.PYMODE_APP_PREIMPORTS_HEADER || "";
 const APP_PROJECT_DIR = process.env.PYMODE_APP_PROJECT_DIR || "";
 const APP_ENTRY_MODULE = process.env.PYMODE_APP_ENTRY_MODULE || "";
 
 const WORKER_WASM_FILENAME =
-  BUILD_MODE === "test" ? "python.wasm" :
-  BUILD_MODE === "base" ? "python-base.wasm" :
-  "python-app.wasm";
+  BUILD_MODE === "test" ? "python.wasm" : "python-app.wasm";
 
 // Asyncify removed — fan-out replay handles async imports at runtime.
 

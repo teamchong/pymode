@@ -1,9 +1,8 @@
 {
-  "_comment": "WASM variant registry. Maps C extension packages to pre-built python.wasm variants.",
+  "_comment": "WASM variant registry. Maps C extension packages to pre-built python.wasm variants. The 'base' variant is rebuilt per-deploy by build-phase2 --mode=app; numpy/pillow are prebuilt variants.",
   "variants": {
     "base": {
       "description": "CPython 3.13 — slim, no C extensions, suitable for deploy",
-      "wasm": "python-base.wasm",
       "sitePackages": null,
       "extensions": [],
       "size": "17MB (5.6MB gz)"
