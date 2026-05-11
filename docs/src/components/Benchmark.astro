@@ -13,33 +13,68 @@
 const PYMODE_BASE = "";  // empty = same origin (pymode.teamchong.net)
 const PYODIDE_BASE = "https://pyodide-bench.chong1222.workers.dev";
 
+const CSV_SAMPLE = [
+  "id,name,price,qty",
+  "1,widget,9.99,3",
+  "2,gadget,14.50,1",
+  "3,gizmo,7.25,8",
+  "4,thingamajig,22.00,2",
+  "5,doohickey,3.75,10",
+].join("\n");
+
+const LOG_SAMPLE = [
+  '192.168.1.10 - - [01/Jan/2026:10:00:01 +0000] "GET /index.html HTTP/1.1" 200 1024',
+  '10.0.0.42 - - [01/Jan/2026:10:00:02 +0000] "POST /api/login HTTP/1.1" 401 87',
+  '192.168.1.10 - - [01/Jan/2026:10:00:03 +0000] "GET /favicon.ico HTTP/1.1" 404 0',
+  '172.16.0.1 - - [01/Jan/2026:10:00:04 +0000] "GET /api/users HTTP/1.1" 500 142',
+  '10.0.0.42 - - [01/Jan/2026:10:00:05 +0000] "POST /api/login HTTP/1.1" 200 256',
+  '192.168.1.10 - - [01/Jan/2026:10:00:06 +0000] "GET /about HTTP/1.1" 200 2048',
+].join("\n");
+
+const HTML_SAMPLE = `<html><body>
+  <a href="https://example.com/a">A</a>
+  <a href="/relative/b">B</a>
+  <article>
+    <h1>Title</h1>
+    <p>Para <a href="https://example.com/c">C</a></p>
+    <ul>
+      <li><a href="/x">X</a></li>
+      <li><a href="/y">Y</a></li>
+    </ul>
+  </article>
+</body></html>`;
+
 const WORKLOADS = [
   {
-    key: "hash",
-    title: "SHA-256 hash",
-    description: "POST a body, return its SHA-256 hex digest. Content-addressing / dedup pattern. Pure stdlib hashlib.",
+    key: "csv",
+    title: "CSV → JSON aggregate",
+    description: "POST a CSV chunk, parse with stdlib csv.DictReader, return aggregated JSON (row count + numeric column means). Real S3 / Kinesis ETL ingest pattern. Both runtimes use stdlib.",
     method: "POST",
-    headers: () => ({}),
-    body: () => "the quick brown fox jumps over the lazy dog",
+    headers: () => ({ "content-type": "text/csv" }),
+    body: () => CSV_SAMPLE,
   },
   {
-    key: "webhook",
-    title: "Webhook HMAC verify",
-    description: "POST a signed payload with x-signature. Constant-time HMAC-SHA256 check. Stripe/GitHub webhook receiver pattern.",
+    key: "logs",
+    title: "Regex log extract",
+    description: "POST nginx-style access logs, regex-extract IPs and HTTP status codes, return per-status counts and unique-IP count. Real CloudWatch / log scrubbing pattern. Stdlib re.",
     method: "POST",
-    headers: () => ({
-      "x-signature": "4c1f93dbde6ce79065c7dc86311bb6b44bb7334abfb6e4bc131800ebd097b73b",
-    }),
-    body: () => '{"event":"order.created","id":"12345"}',
+    headers: () => ({ "content-type": "text/plain" }),
+    body: () => LOG_SAMPLE,
   },
   {
-    key: "jwt",
-    title: "JWT verify",
-    description: "POST with Authorization: Bearer. Base64-decode header+payload, HMAC-SHA256 verify the signature. Auth gateway pattern.",
+    key: "scrape",
+    title: "HTML link extract",
+    description: "POST HTML, parse with stdlib html.parser, return list of <a href> targets. Real RSS / sitemap scraping pattern. Stdlib only.",
     method: "POST",
-    headers: () => ({
-      "authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhbGljZSIsImV4cCI6OTk5OTk5OTk5OX0.ZtoXHh5JgJcM_WQQ1csaS1oBmucGl_maNKtewXJ2rJU",
-    }),
+    headers: () => ({ "content-type": "text/html" }),
+    body: () => HTML_SAMPLE,
+  },
+  {
+    key: "image",
+    title: "Image thumbnail (Pillow)",
+    description: "POST a JPEG, resize with Pillow. Real S3-image-upload trigger pattern. Requires Pillow — neither runtime has it deployed yet (pymode needs the variant wired into AOT; CF Pyodide can't load it). Both cells will be HTTP 501.",
+    method: "POST",
+    headers: () => ({ "content-type": "image/jpeg" }),
     body: () => "",
   },
 ];
@@ -54,11 +89,11 @@ const RUNTIMES = [
   <div class="bench-controls">
     <label>
       Warm iterations
-      <input id="iterations" type="number" value="20" min="5" max="200" />
+      <input id="iterations" type="number" value="10" min="5" max="200" />
     </label>
     <label>
       Cold pause (s)
-      <input id="cold-pause" type="number" value="10" min="0" max="60" />
+      <input id="cold-pause" type="number" value="0" min="0" max="60" />
     </label>
     <button id="run-bench" type="button">Run again</button>
     <p class="bench-status" id="bench-status">Auto-running benchmark…</p>
@@ -278,6 +313,7 @@ const RUNTIMES = [
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
     gap: 1rem;
+    align-items: stretch;
   }
 
   .workload-card {
@@ -285,6 +321,16 @@ const RUNTIMES = [
     border-radius: 8px;
     padding: 1rem;
     background: var(--sl-color-gray-7);
+    display: flex;
+    flex-direction: column;
+  }
+
+  .workload-card .description {
+    flex: 1;
+  }
+
+  .workload-card table {
+    margin-top: auto;
   }
 
   .workload-card h3 {
