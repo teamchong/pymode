@@ -248,6 +248,20 @@ export async function deploy(args) {
       writeFileSync(extDst, EMPTY_ZIP);
     }
 
+    // python-do.ts unconditionally imports worker/src/extensions/numpy/*.wasm
+    // so wrangler bundles them on every deploy. For non-numpy variants,
+    // overwrite those with 8-byte stub wasm modules — wrangler still bundles
+    // them, but they're tiny instead of 3.5MB each.
+    const numpyExtDir = join(workerSrc, "extensions", "numpy");
+    if (existsSync(numpyExtDir) && !(variant.extensions || []).includes("numpy")) {
+      const STUB_WASM = Buffer.from([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
+      const stubTargets = ["_multiarray_umath.wasm", "_multiarray_umath.wasm.dat"];
+      for (const name of stubTargets) {
+        const file = join(numpyExtDir, name);
+        if (existsSync(file)) writeFileSync(file, STUB_WASM);
+      }
+    }
+
     installDeps(projectDir);
 
     console.log("\n  Regenerating wizer preimports + rebuilding python.wasm for this app...\n");

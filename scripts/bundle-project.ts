@@ -94,7 +94,11 @@ function findEntryPoint(projectDir: string): string {
 }
 
 function collectPyFiles(projectDir: string): string[] {
-  const EXCLUDE = new Set(["__pycache__", ".venv", "node_modules"]);
+  // `.pymode/` holds the unpacked uv-pip-installed wheels for this app —
+  // those same files are already in site-packages.zip, so we must exclude
+  // them here to avoid bundling pip deps twice (which can MB-bloat the
+  // generated user-files.ts).
+  const EXCLUDE = new Set(["__pycache__", ".venv", "node_modules", ".pymode"]);
   const pyFiles: string[] = [];
 
   function walk(dir: string): void {
