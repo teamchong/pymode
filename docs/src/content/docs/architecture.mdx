@@ -8,32 +8,32 @@ description: How PyMode compiles CPython to WASM and runs it on Cloudflare Worke
 PyMode compiles upstream CPython 3.13 to `wasm32-wasi` using `zig cc`, then runs it inside Cloudflare Workers via Durable Objects. Each request gets its own sandboxed Python runtime.
 
 ```
-┌─────────────────────────────────────────────────────┐
-│  Cloudflare Edge                                     │
+┌───────────────────────────────────────────────────────┐
+│  Cloudflare Edge                                      │
 │                                                       │
-│  ┌──────────┐     ┌──────────────────────────────┐   │
-│  │  Worker   │────▶│  PythonDO (Durable Object)   │   │
-│  │(stateless)│     │                              │   │
-│  └──────────┘     │  ┌────────────────────────┐  │   │
-│                    │  │  python.wasm (CPython)  │  │   │
-│                    │  │                        │  │   │
-│                    │  │  on_fetch(req, env)     │  │   │
-│                    │  │       │                 │  │   │
-│                    │  │       ▼                 │  │   │
-│                    │  │  WASM Host Imports      │  │   │
-│                    │  └───────┬────────────────┘  │   │
-│                    │          │                    │   │
-│                    │    ┌─────▼─────┐             │   │
-│                    │    │ Asyncify  │             │   │
-│                    │    │ (suspend/ │             │   │
-│                    │    │  resume)  │             │   │
-│                    │    └─────┬─────┘             │   │
-│                    └──────────┼───────────────────┘   │
+│  ┌───────────┐     ┌───────────────────────────────┐  │
+│  │  Worker   │────▶│  PythonDO (Durable Object)    │  │
+│  │(stateless)│     │                               │  │
+│  └───────────┘     │  ┌─────────────────────────┐  │  │
+│                    │  │  python.wasm (CPython)  │  │  │
+│                    │  │                         │  │  │
+│                    │  │  on_fetch(req, env)     │  │  │
+│                    │  │       │                 │  │  │
+│                    │  │       ▼                 │  │  │
+│                    │  │  WASM Host Imports      │  │  │
+│                    │  └───────┬─────────────────┘  │  │
+│                    │          │                    │  │
+│                    │    ┌─────▼─────┐              │  │
+│                    │    │ Asyncify  │              │  │
+│                    │    │ (suspend/ │              │  │
+│                    │    │  resume)  │              │  │
+│                    │    └─────┬─────┘              │  │
+│                    └──────────┼────────────────────┘  │
 │                               │                       │
-│                    ┌──────────▼───────────────┐       │
+│                    ┌──────────▼─────────────────┐     │
 │                    │  KV │ R2 │ D1 │ TCP │ HTTP │     │
-│                    └─────────────────────────────┘    │
-└─────────────────────────────────────────────────────┘
+│                    └────────────────────────────┘     │
+└───────────────────────────────────────────────────────┘
 ```
 
 ## Build Pipeline
