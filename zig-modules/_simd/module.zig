@@ -169,7 +169,7 @@ fn get_f64_buffer(obj: ?*py.PyObject) ?struct { ptr: [*]f64, len: usize, buf: py
         if (py.PyObject_GetBuffer(obj, &buf, py.PyBUF_FORMAT) != 0) return null;
     }
     // Verify format is 'd' (double/f64)
-    if (buf.format != null and buf.format.?[0] != 'd') {
+    if (buf.format != null and buf.format[0] != 'd') {
         py.PyBuffer_Release(&buf);
         _ = py.PyErr_Format(py.PyExc_TypeError, "expected array of doubles (format 'd'), got '%s'", buf.format);
         return null;
@@ -185,7 +185,7 @@ fn get_f64_buffer(obj: ?*py.PyObject) ?struct { ptr: [*]f64, len: usize, buf: py
 fn get_f64_buffer_ro(obj: ?*py.PyObject) ?struct { ptr: [*]const f64, len: usize, buf: py.Py_buffer } {
     var buf: py.Py_buffer = undefined;
     if (py.PyObject_GetBuffer(obj, &buf, py.PyBUF_FORMAT) != 0) return null;
-    if (buf.format != null and buf.format.?[0] != 'd') {
+    if (buf.format != null and buf.format[0] != 'd') {
         py.PyBuffer_Release(&buf);
         _ = py.PyErr_Format(py.PyExc_TypeError, "expected array of doubles (format 'd'), got '%s'", buf.format);
         return null;
@@ -201,7 +201,7 @@ fn get_f64_buffer_ro(obj: ?*py.PyObject) ?struct { ptr: [*]const f64, len: usize
 fn get_i32_buffer_ro(obj: ?*py.PyObject) ?struct { ptr: [*]const i32, len: usize, buf: py.Py_buffer } {
     var buf: py.Py_buffer = undefined;
     if (py.PyObject_GetBuffer(obj, &buf, py.PyBUF_FORMAT) != 0) return null;
-    if (buf.format != null and buf.format.?[0] != 'i') {
+    if (buf.format != null and buf.format[0] != 'i') {
         py.PyBuffer_Release(&buf);
         _ = py.PyErr_Format(py.PyExc_TypeError, "expected array of ints (format 'i'), got '%s'", buf.format);
         return null;
