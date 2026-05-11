@@ -8,14 +8,20 @@
  * PYMODE_APP_PREIMPORTS), baking the app's imports into the snapshot so
  * cold-start `import jinja2` etc. takes zero time at request time.
  *
+ * Skip list comes from the user's pyproject.toml — nothing is hardcoded:
+ *
+ *   [tool.pymode]
+ *   preimport_skip = ["pydantic", "numpy"]
+ *
+ * Modules listed there are NOT preimported into the wizer snapshot. They
+ * load on first request from site-packages.zip. Use this for packages
+ * heavy enough that baking them in pushes the worker past the 10MB limit.
+ *
  * We shell out to python3 -c "import ast" because that's the only place
  * Python's import syntax is parseable accurately without re-implementing
  * the AST in JS.
  *
- * Usage: generate-app-preimports.mjs <project-dir> <output-header.h>
- *
- * The output header is fed via -I<dirname> in build-wizer.ts and the C
- * include is `#include "pymode_wizer_app_preimports.h"`.
+ * Usage: generate-app-preimports.mjs <project-dir> <output-header.h> [<entry.py>]
  */
 
 import fs from "node:fs";
@@ -28,24 +34,19 @@ if (!projectDir || !outputHeader) {
   process.exit(2);
 }
 
-// Modules that are part of the Python stdlib or pymode's runtime shims —
-// already preimported by the base wizer. Skip them to avoid duplicate
-// preimports (idempotent but wasteful).
-const STDLIB_LIKE = new Set([
-  // stdlib
-  "sys", "os", "io", "json", "re", "collections", "functools", "itertools",
-  "pathlib", "typing", "dataclasses", "hashlib", "base64", "struct", "math",
-  "datetime", "decimal", "enum", "abc", "importlib", "traceback", "string",
-  "textwrap", "copy", "operator", "contextlib", "asyncio", "logging",
-  "argparse", "csv", "email", "hmac", "html", "http", "ipaddress",
-  "secrets", "shutil", "socket", "subprocess", "sys", "tempfile", "threading",
-  "time", "unicodedata", "urllib", "uuid", "warnings", "weakref", "xml",
-  "zipfile", "zlib", "binascii", "queue", "random", "select", "tomllib",
-  "concurrent", "ctypes", "platform", "ssl", "signal", "statistics",
-  "_thread", "_weakref", "_io", "_collections", "_functools",
-  // pymode shims (always preimported)
-  "pymode", "_wasi_compat", "_pymode",
-]);
+function readSkipFromPyproject(projectDir) {
+  const pyproject = path.join(projectDir, "pyproject.toml");
+  if (!fs.existsSync(pyproject)) return [];
+  const content = fs.readFileSync(pyproject, "utf-8");
+  const section = content.match(/\[tool\.pymode\]([\s\S]*?)(?=\n\[|\n*$)/);
+  if (!section) return [];
+  const skip = section[1].match(/preimport_skip\s*=\s*\[([\s\S]*?)\]/);
+  if (!skip) return [];
+  return skip[1]
+    .split(",")
+    .map(s => s.trim().replace(/^["']|["']$/g, ""))
+    .filter(Boolean);
+}
 
 function collectImports(file) {
   const cmd = "import ast, sys, json; " +
@@ -83,12 +84,18 @@ function walkPython(dir) {
   return out;
 }
 
+const userSkip = new Set(readSkipFromPyproject(projectDir));
+
 const pyFiles = walkPython(projectDir);
 const imports = new Set();
+const skipped = new Set();
 for (const file of pyFiles) {
   for (const name of collectImports(file)) {
     if (!name) continue;
-    if (STDLIB_LIKE.has(name)) continue;
+    if (userSkip.has(name)) {
+      skipped.add(name);
+      continue;
+    }
     imports.add(name);
   }
 }
@@ -107,11 +114,9 @@ for (const name of sorted) {
   lines.push(`_preimport("${escaped}");`);
 }
 
-// Final: preimport the user's entry module last, so its top-level
-// statements (`_md = MarkdownIt()`, `_tmpl = Template(...)`) execute at
-// wizer time. The resulting Python objects live in the snapshot, so per-
-// request handlers only invoke the function and never re-run module
-// initialization.
+// Preimport the user's entry module last, so its top-level statements
+// execute at wizer time. The resulting Python objects live in the
+// snapshot, so per-request handlers don't re-run module initialization.
 if (entryPathArg) {
   const entryModule = entryPathArg
     .replace(/\.py$/, "")
@@ -129,3 +134,8 @@ console.log(
   (entryPathArg ? ` + entry "${entryPathArg}"` : "") +
   `: ${sorted.join(", ") || "(none)"}`,
 );
+if (skipped.size > 0) {
+  console.log(
+    `  Skipped via pyproject.toml [tool.pymode] preimport_skip: ${[...skipped].sort().join(", ")}`,
+  );
+}

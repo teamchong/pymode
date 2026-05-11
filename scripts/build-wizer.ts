@@ -484,8 +484,47 @@ function main(): void {
           console.log(`    WARN: export-restore failed: ${restoreResult.stderr}`);
         }
       }
-      const finalSize = fs.statSync(OUTPUT).size;
-      console.log(`    Snapshot: ${mb(finalSize)}`);
+      const preOptSize = fs.statSync(OUTPUT).size;
+      console.log(`    Snapshot: ${mb(preOptSize)}`);
+
+      // Post-wizer wasm-opt: wizer inflates the data segment with the
+      // preimported heap (bytecode, module objects, interned strings).
+      // That data has never been through -Oz. wasm-opt's data-segment
+      // dedup + zero-page elimination claws back substantial size on
+      // pydantic-class apps (~20-40%).
+      if (which("wasm-opt")) {
+        console.log("    Post-wizer wasm-opt -Oz --converge...");
+        const postOpt = OUTPUT + ".opt";
+        const optResult = run([
+          "wasm-opt",
+          "-Oz",
+          "--converge",
+          "--strip-debug",
+          "--strip-producers",
+          "--strip-target-features",
+          "--enable-simd",
+          "--enable-relaxed-simd",
+          "--enable-nontrapping-float-to-int",
+          "--enable-bulk-memory",
+          "--enable-bulk-memory-opt",
+          "--enable-sign-ext",
+          "--enable-mutable-globals",
+          "--enable-multivalue",
+          "--enable-tail-call",
+          "--enable-reference-types",
+          "--enable-extended-const",
+          OUTPUT,
+          "-o",
+          postOpt,
+        ], { captureOutput: true });
+        if (optResult.status === 0 && fs.existsSync(postOpt)) {
+          fs.renameSync(postOpt, OUTPUT);
+          const postSize = fs.statSync(OUTPUT).size;
+          console.log(`    Optimized: ${mb(preOptSize)} -> ${mb(postSize)}`);
+        } else {
+          console.log(`    WARN: post-wizer wasm-opt failed: ${optResult.stderr}`);
+        }
+      }
     } else {
       console.log();
       console.log("    Wizer snapshot failed.");
