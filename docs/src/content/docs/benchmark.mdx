@@ -1,18 +1,13 @@
 ---
 title: Benchmark
-description: Live latency measurements for the deployed pymode worker — markdown render, dataclass validation, JSON roundtrip.
+description: Live side-by-side comparison of pymode and Cloudflare's Pyodide-based Python Workers across three realistic serverless workloads.
 ---
 
 import Benchmark from "../../components/Benchmark.astro";
 
-Three Python serverless workloads, all running on this site's worker
-(`pymode.teamchong.net`). Click **Run benchmark** to measure live from
-your browser — there are no baked-in numbers.
+Three realistic Python serverless workloads measured live from your
+browser against two deployed workers — pymode (this domain) and
+Cloudflare's Pyodide-based Python Workers (a separate `*.workers.dev`
+deployment with the same handler source).
 
 <Benchmark />
-
-Each workload posts a small body to one of the worker endpoints and
-times the full round-trip with `performance.now()`. The reported cold
-sample is the first request after the chosen idle pause; warm p50 / p99
-come from the remaining iterations sorted by latency. Numbers include
-network round-trip from your machine to the closest Cloudflare PoP.

@@ -1,56 +1,67 @@
 ---
 /**
- * Live benchmark — three real Python serverless workloads handled by
- * the pymode worker at /api/{markdown,validate,json}. Click "Run" to
- * fire N requests per endpoint from the browser and summarise
- * cold (first request) + warm p50 + warm p99 latencies.
+ * Side-by-side latency comparison between pymode (this worker) and
+ * Cloudflare's Pyodide-based Python Workers (deployed separately).
  *
- * No baked-in numbers, no comparison column. The endpoint code lives
- * in the test app at /tmp/pymode-deploy-test/src/entry.py and is
- * deployed via `pymode deploy`.
+ * Auto-runs on page load against /api/{hash,webhook,jwt} on both
+ * endpoints. No baked-in numbers — every cell starts as "—" and is
+ * filled from real measurements.
+ *
+ * Workloads are stdlib-only (hmac/hashlib/base64/json) so the same
+ * Python source ships to both runtimes.
  */
+const PYMODE_BASE = "";  // empty = same origin (pymode.teamchong.net)
+const PYODIDE_BASE = "https://pyodide-bench.chong1222.workers.dev";
+
 const WORKLOADS = [
   {
-    key: "markdown",
-    title: "Markdown render",
-    description: "POST a markdown body, get HTML wrapped in a jinja2 template. Exercises markdown_it + jinja2 — both pure-Python packages loaded from the wizer snapshot.",
-    sampleBody: "# Hello pymode\n\nReal CPython 3.13 on Cloudflare Workers — **markdown_it** parses this, **jinja2** wraps it.\n\n- Item one\n- Item two\n- Item three\n",
-    contentType: "text/plain",
+    key: "hash",
+    title: "SHA-256 hash",
+    description: "POST a body, return its SHA-256 hex digest. Content-addressing / dedup pattern. Pure stdlib hashlib.",
+    method: "POST",
+    headers: () => ({}),
+    body: () => "the quick brown fox jumps over the lazy dog",
   },
   {
-    key: "validate",
-    title: "Dataclass validate",
-    description: "POST JSON, parse with stdlib json, construct a dataclass with __post_init__ checks, return validated JSON. Pure stdlib — no pydantic_core dependency.",
-    sampleBody: '{"name":"alice","age":30,"email":"alice@example.com"}',
-    contentType: "application/json",
+    key: "webhook",
+    title: "Webhook HMAC verify",
+    description: "POST a signed payload with x-signature. Constant-time HMAC-SHA256 check. Stripe/GitHub webhook receiver pattern.",
+    method: "POST",
+    headers: () => ({
+      "x-signature": "4c1f93dbde6ce79065c7dc86311bb6b44bb7334abfb6e4bc131800ebd097b73b",
+    }),
+    body: () => '{"event":"order.created","id":"12345"}',
   },
   {
-    key: "json",
-    title: "JSON roundtrip",
-    description: "POST JSON, parse, re-serialise with a count field. Tightest hot path — only stdlib json + string ops.",
-    sampleBody: '{"items":[1,2,3,4,5,6,7,8,9,10]}',
-    contentType: "application/json",
+    key: "jwt",
+    title: "JWT verify",
+    description: "POST with Authorization: Bearer. Base64-decode header+payload, HMAC-SHA256 verify the signature. Auth gateway pattern.",
+    method: "POST",
+    headers: () => ({
+      "authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhbGljZSIsImV4cCI6OTk5OTk5OTk5OX0.ZtoXHh5JgJcM_WQQ1csaS1oBmucGl_maNKtewXJ2rJU",
+    }),
+    body: () => "",
   },
+];
+
+const RUNTIMES = [
+  { key: "pymode",  label: "pymode",                                 base: PYMODE_BASE,  color: "var(--sl-color-accent)" },
+  { key: "pyodide", label: "Cloudflare Python Workers (Pyodide)",   base: PYODIDE_BASE, color: "var(--sl-color-orange, #f48120)" },
 ];
 ---
 
-<div class="benchmark-root">
-  <div class="benchmark-controls">
-    <div class="control-row">
-      <label>
-        Iterations (warm)
-        <input id="iterations" type="number" value="30" min="5" max="200" />
-      </label>
-      <label>
-        Cold pause (seconds)
-        <input id="cold-pause" type="number" value="15" min="0" max="60" />
-        <span class="hint">Wait before the cold-start measurement.</span>
-      </label>
-      <button id="run-bench" type="button">Run benchmark</button>
-    </div>
-    <p class="bench-status" id="bench-status">
-      Idle. Click "Run benchmark" to measure each endpoint live from your browser.
-    </p>
+<div class="bench-root">
+  <div class="bench-controls">
+    <label>
+      Warm iterations
+      <input id="iterations" type="number" value="20" min="5" max="200" />
+    </label>
+    <label>
+      Cold pause (s)
+      <input id="cold-pause" type="number" value="10" min="0" max="60" />
+    </label>
+    <button id="run-bench" type="button">Run again</button>
+    <p class="bench-status" id="bench-status">Auto-running benchmark…</p>
   </div>
 
   <div class="workload-grid">
@@ -59,209 +70,213 @@ const WORKLOADS = [
         <h3>{w.title}</h3>
         <p class="subtitle">POST <code>/api/{w.key}</code></p>
         <p class="description">{w.description}</p>
-        <dl>
-          <div>
-            <dt>Cold</dt>
-            <dd data-metric="cold">—</dd>
-          </div>
-          <div>
-            <dt>Warm p50</dt>
-            <dd data-metric="p50">—</dd>
-          </div>
-          <div>
-            <dt>Warm p99</dt>
-            <dd data-metric="p99">—</dd>
-          </div>
-          <div>
-            <dt>Samples</dt>
-            <dd data-metric="samples">—</dd>
-          </div>
-        </dl>
-        <details class="sample-body">
-          <summary>Sample request body</summary>
-          <pre><code>{w.sampleBody}</code></pre>
-        </details>
+        <table>
+          <thead>
+            <tr><th></th><th>Cold</th><th>p50</th><th>p99</th><th>OK</th></tr>
+          </thead>
+          <tbody>
+            {RUNTIMES.map(rt => (
+              <tr data-runtime={rt.key}>
+                <th scope="row">{rt.label}</th>
+                <td data-metric="cold">—</td>
+                <td data-metric="p50">—</td>
+                <td data-metric="p99">—</td>
+                <td data-metric="samples">—</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </article>
     ))}
   </div>
+
+  <p class="bench-footnote">
+    Both endpoints serve the same stdlib-only Python source. pymode runs on
+    this domain; the Pyodide baseline lives at
+    <a href={PYODIDE_BASE}><code>{PYODIDE_BASE}</code></a>. Latencies include
+    network round-trip from your browser.
+  </p>
 </div>
 
-<script type="module" define:vars={{ WORKLOADS }}>
+<script type="module" define:vars={{ WORKLOADS, RUNTIMES }}>
   const statusEl = document.getElementById("bench-status");
   const runBtn = document.getElementById("run-bench");
   const iterationsInput = document.getElementById("iterations");
   const coldPauseInput = document.getElementById("cold-pause");
 
-  function setMetric(workloadKey, metric, value) {
+  function setMetric(workloadKey, runtimeKey, metric, value) {
     const card = document.querySelector(`.workload-card[data-workload="${workloadKey}"]`);
     if (!card) return;
-    const el = card.querySelector(`[data-metric="${metric}"]`);
-    if (el) el.textContent = value;
+    const row = card.querySelector(`tr[data-runtime="${runtimeKey}"]`);
+    if (!row) return;
+    const cell = row.querySelector(`[data-metric="${metric}"]`);
+    if (cell) cell.textContent = value;
   }
 
   function fmt(ms) {
-    if (ms === null || ms === undefined) return "—";
+    if (ms == null) return "—";
     if (ms < 10) return `${ms.toFixed(1)} ms`;
+    if (ms >= 1000) return `${(ms / 1000).toFixed(2)} s`;
     return `${Math.round(ms)} ms`;
   }
 
-  async function timeRequest(url, body, contentType) {
+  async function timeReq(url, workload) {
+    const init = {
+      method: workload.method,
+      headers: workload.headers(),
+    };
+    const body = workload.body();
+    if (body) init.body = body;
     const t0 = performance.now();
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "content-type": contentType },
-      body,
-    });
-    // Drain the body to include full transfer time
+    const res = await fetch(url, init);
     await res.text();
-    const t1 = performance.now();
-    return { ms: t1 - t0, status: res.status };
+    return { ms: performance.now() - t0, status: res.status };
   }
 
-  function percentile(sorted, p) {
+  function pct(sorted, p) {
     if (sorted.length === 0) return null;
-    const idx = Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length));
-    return sorted[idx];
+    return sorted[Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length))];
   }
 
-  async function runWorkload(workload, iterations, coldPauseMs, signal) {
-    setMetric(workload.key, "cold", "...");
-    setMetric(workload.key, "p50", "...");
-    setMetric(workload.key, "p99", "...");
-    setMetric(workload.key, "samples", "...");
+  async function runOne(runtime, workload, iterations, coldPauseMs, signal) {
+    const url = `${runtime.base}/api/${workload.key}`;
 
-    const url = `/api/${workload.key}`;
-
-    // Cold pause
     if (coldPauseMs > 0) {
-      statusEl.textContent = `${workload.title}: waiting ${coldPauseMs / 1000}s before cold measurement…`;
+      statusEl.textContent = `${runtime.label} / ${workload.title}: waiting ${coldPauseMs / 1000}s…`;
       await new Promise(r => setTimeout(r, coldPauseMs));
       if (signal.aborted) return;
     }
 
-    statusEl.textContent = `${workload.title}: cold request…`;
-    const cold = await timeRequest(url, workload.sampleBody, workload.contentType);
-    if (cold.status !== 200) {
-      setMetric(workload.key, "cold", `HTTP ${cold.status}`);
+    statusEl.textContent = `${runtime.label} / ${workload.title}: cold…`;
+    const cold = await timeReq(url, workload);
+    if (cold.status >= 400) {
+      setMetric(workload.key, runtime.key, "cold", `HTTP ${cold.status}`);
       return;
     }
-    setMetric(workload.key, "cold", fmt(cold.ms));
+    setMetric(workload.key, runtime.key, "cold", fmt(cold.ms));
 
-    // Warm samples
     const warm = [];
+    let ok = 0;
     for (let i = 0; i < iterations; i++) {
       if (signal.aborted) return;
-      statusEl.textContent = `${workload.title}: warm ${i + 1}/${iterations}…`;
-      const r = await timeRequest(url, workload.sampleBody, workload.contentType);
-      if (r.status === 200) warm.push(r.ms);
-      setMetric(workload.key, "samples", `${warm.length}/${i + 1}`);
+      statusEl.textContent = `${runtime.label} / ${workload.title}: warm ${i + 1}/${iterations}…`;
+      const r = await timeReq(url, workload);
+      if (r.status < 400) {
+        warm.push(r.ms);
+        ok++;
+      }
+      setMetric(workload.key, runtime.key, "samples", `${ok}/${i + 1}`);
     }
     warm.sort((a, b) => a - b);
-    setMetric(workload.key, "p50", fmt(percentile(warm, 50)));
-    setMetric(workload.key, "p99", fmt(percentile(warm, 99)));
-    setMetric(workload.key, "samples", `${warm.length}`);
+    setMetric(workload.key, runtime.key, "p50", fmt(pct(warm, 50)));
+    setMetric(workload.key, runtime.key, "p99", fmt(pct(warm, 99)));
+    setMetric(workload.key, runtime.key, "samples", `${ok}/${iterations}`);
   }
 
-  let currentRun = null;
-  runBtn.addEventListener("click", async () => {
-    if (currentRun) {
-      currentRun.abort();
-      currentRun = null;
-      runBtn.textContent = "Run benchmark";
+  let current = null;
+  async function runAll() {
+    if (current) {
+      current.abort();
+      current = null;
+      runBtn.textContent = "Run again";
       statusEl.textContent = "Cancelled.";
       return;
     }
-    currentRun = new AbortController();
+    current = new AbortController();
     runBtn.textContent = "Cancel";
 
-    const iterations = Math.max(5, Math.min(200, Number(iterationsInput.value) || 30));
+    const iterations = Math.max(5, Math.min(200, Number(iterationsInput.value) || 20));
     const coldPauseMs = Math.max(0, Math.min(60, Number(coldPauseInput.value) || 0)) * 1000;
+
+    // Reset all cells
+    for (const w of WORKLOADS) for (const rt of RUNTIMES) {
+      for (const m of ["cold", "p50", "p99", "samples"]) setMetric(w.key, rt.key, m, "…");
+    }
 
     try {
       for (const workload of WORKLOADS) {
-        if (currentRun.signal.aborted) break;
-        await runWorkload(workload, iterations, coldPauseMs, currentRun.signal);
+        if (current.signal.aborted) break;
+        // Run pymode and pyodide in parallel for each workload —
+        // saves wall time and gives them comparable conditions.
+        await Promise.all(RUNTIMES.map(rt =>
+          runOne(rt, workload, iterations, coldPauseMs, current.signal)
+        ));
       }
-      statusEl.textContent = "Done.";
+      if (!current.signal.aborted) statusEl.textContent = "Done.";
     } catch (e) {
       statusEl.textContent = `Error: ${e?.message ?? e}`;
     } finally {
-      currentRun = null;
-      runBtn.textContent = "Run benchmark";
+      current = null;
+      runBtn.textContent = "Run again";
     }
-  });
+  }
+
+  runBtn.addEventListener("click", runAll);
+  // Auto-run on page load.
+  runAll();
 </script>
 
 <style>
-  .benchmark-root {
+  .bench-root {
     margin: 1.5rem 0;
     font-family: var(--sl-font-system, system-ui);
   }
 
-  .benchmark-controls {
+  .bench-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 0.75rem 1.25rem;
     border: 1px solid var(--sl-color-gray-5);
     border-radius: 8px;
-    padding: 1rem;
-    margin-bottom: 1.5rem;
+    padding: 0.85rem 1rem;
+    margin-bottom: 1.25rem;
     background: var(--sl-color-gray-7);
   }
 
-  .control-row {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 1rem;
-    align-items: flex-end;
-  }
-
-  .control-row label {
+  .bench-controls label {
     display: flex;
     flex-direction: column;
-    font-size: 0.85rem;
+    font-size: 0.8rem;
     font-weight: 600;
     gap: 0.25rem;
   }
 
-  .control-row input {
-    padding: 0.4rem 0.6rem;
+  .bench-controls input {
+    padding: 0.35rem 0.55rem;
     border-radius: 4px;
     border: 1px solid var(--sl-color-gray-5);
     background: var(--sl-color-bg);
     color: var(--sl-color-text);
     font-family: inherit;
-    width: 8rem;
-  }
-
-  .hint {
-    font-size: 0.7rem;
-    font-weight: 400;
-    color: var(--sl-color-gray-3);
+    width: 6rem;
   }
 
   #run-bench {
-    padding: 0.5rem 1rem;
+    padding: 0.45rem 0.9rem;
     background: var(--sl-color-accent);
-    color: var(--sl-color-accent-low, white);
+    color: white;
     border: none;
     border-radius: 4px;
     font-weight: 600;
     cursor: pointer;
-    font-size: 0.9rem;
+    font-size: 0.85rem;
+    height: fit-content;
   }
 
-  #run-bench:hover {
-    filter: brightness(1.1);
-  }
+  #run-bench:hover { filter: brightness(1.1); }
 
   .bench-status {
-    margin: 0.75rem 0 0;
-    font-size: 0.85rem;
+    flex: 1 1 100%;
+    margin: 0;
+    font-size: 0.8rem;
     color: var(--sl-color-gray-3);
     font-family: var(--sl-font-mono, ui-monospace, monospace);
   }
 
   .workload-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
     gap: 1rem;
   }
 
@@ -274,75 +289,73 @@ const WORKLOADS = [
 
   .workload-card h3 {
     margin: 0 0 0.25rem;
-    font-size: 1.1rem;
+    font-size: 1.05rem;
   }
 
   .workload-card .subtitle {
     margin: 0 0 0.5rem;
-    font-size: 0.85rem;
+    font-size: 0.8rem;
     color: var(--sl-color-gray-3);
   }
 
   .workload-card .subtitle code {
     background: var(--sl-color-gray-6);
-    padding: 0.1rem 0.35rem;
+    padding: 0.05rem 0.3rem;
     border-radius: 3px;
-    font-size: 0.85em;
   }
 
   .workload-card .description {
-    font-size: 0.85rem;
+    font-size: 0.78rem;
     color: var(--sl-color-gray-2);
-    margin: 0 0 0.85rem;
-    line-height: 1.4;
-  }
-
-  .workload-card dl {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 0.5rem 1rem;
     margin: 0 0 0.75rem;
+    line-height: 1.45;
   }
 
-  .workload-card dl > div {
-    display: flex;
-    flex-direction: column;
+  .workload-card table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.82rem;
   }
 
-  .workload-card dt {
+  .workload-card th,
+  .workload-card td {
+    padding: 0.35rem 0.45rem;
+    text-align: right;
+    font-family: var(--sl-font-mono, ui-monospace, monospace);
+    border-bottom: 1px solid var(--sl-color-gray-6);
+  }
+
+  .workload-card th[scope="row"] {
+    text-align: left;
+    font-weight: 600;
+    font-family: var(--sl-font-system, inherit);
+    font-size: 0.78rem;
+  }
+
+  .workload-card thead th {
     font-size: 0.7rem;
     text-transform: uppercase;
     letter-spacing: 0.05em;
     color: var(--sl-color-gray-3);
-    margin: 0;
+    font-weight: 500;
+    text-align: right;
   }
 
-  .workload-card dd {
-    margin: 0;
-    font-size: 1.05rem;
-    font-weight: 600;
-    font-family: var(--sl-font-mono, ui-monospace, monospace);
-    color: var(--sl-color-text);
+  .workload-card thead th:first-child { text-align: left; }
+
+  .workload-card tbody tr:last-child th,
+  .workload-card tbody tr:last-child td {
+    border-bottom: none;
   }
 
-  .sample-body {
-    border-top: 1px solid var(--sl-color-gray-6);
-    padding-top: 0.5rem;
-    font-size: 0.8rem;
-  }
-
-  .sample-body summary {
-    cursor: pointer;
+  .bench-footnote {
+    margin-top: 1.5rem;
+    font-size: 0.78rem;
     color: var(--sl-color-gray-3);
+    line-height: 1.5;
   }
 
-  .sample-body pre {
-    margin: 0.5rem 0 0;
-    padding: 0.5rem;
-    background: var(--sl-color-bg);
-    border-radius: 4px;
-    font-size: 0.75rem;
-    max-height: 200px;
-    overflow: auto;
+  .bench-footnote code {
+    font-size: 0.9em;
   }
 </style>
