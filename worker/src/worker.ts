@@ -138,6 +138,9 @@ interface Env {
   TCP_POOL?: DurableObjectNamespace;
   PYTHON_DO?: DurableObjectNamespace;
   THREAD_DO?: DurableObjectNamespace;
+  /** Static assets binding from wrangler.toml [assets] — serves the
+   *  Astro docs site at the root of pymode.teamchong.net. */
+  ASSETS?: { fetch: (req: Request) => Promise<Response> };
   [key: string]: unknown;
 }
 
@@ -605,8 +608,22 @@ export default {
     }
 
     try {
-      // ---- Sandbox API: route /sandbox/* to SandboxDO for hermes-agent ----
       const url = new URL(request.url);
+
+      // ---- Static assets (Astro docs site) ----
+      // Anything that isn't an explicit API path falls through to the
+      // ASSETS binding, which serves the built docs at the same origin.
+      // API surface:
+      //   /api/*       → Python handler (POST markdown body → HTML)
+      //   /sandbox/*   → SandboxDO
+      //   everything else → static docs (index.html, /benchmark/, …)
+      const isApi = url.pathname.startsWith("/api/")
+        || url.pathname.startsWith("/sandbox/");
+      if (!isApi && env.ASSETS) {
+        return env.ASSETS.fetch(request);
+      }
+
+      // ---- Sandbox API: route /sandbox/* to SandboxDO for hermes-agent ----
       if (url.pathname.startsWith("/sandbox/") && (env as any).SANDBOX_DO) {
         // /sandbox/{session_id}/exec → SandboxDO(session_id).fetch(/exec)
         const pathParts = url.pathname.slice("/sandbox/".length).split("/");

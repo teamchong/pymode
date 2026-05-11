@@ -2,6 +2,20 @@ name = "pymode"
 main = "src/worker.ts"
 compatibility_date = "2024-04-03"
 
+# Custom domain — Cloudflare provisions the route + TLS automatically when
+# the zone (teamchong.net) is on the same account.
+[[routes]]
+pattern = "pymode.teamchong.net"
+custom_domain = true
+
+# Static assets — serves the built Astro docs site alongside the worker.
+# `not_found_handling = "single-page-application"` makes deep links work
+# (e.g. /benchmark/ falls back to index.html if there's no exact match).
+[assets]
+directory = "../docs/dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
 [limits]
 cpu_ms = 30000
 

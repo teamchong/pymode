@@ -57,30 +57,78 @@ export function buildDirIndex(files: Record<string, Uint8Array>): Map<string, st
 const _encoder = new TextEncoder();
 const _decoder = new TextDecoder();
 
+/**
+ * Mutable, per-request state owned by the WASI shim. When we want to
+ * reuse a wasm instance across requests (persistent-DO mode), the caller
+ * keeps a reference to this object and resets the per-request fields
+ * (`stdinData`, `stdinOffset`, `stdoutChunks`, `stderrChunks`, `exitCode`)
+ * between `_start()` invocations.
+ */
+export interface WasiState {
+  stdinData?: Uint8Array;
+  stdinOffset: number;
+  stdoutChunks: Uint8Array[];
+  stderrChunks: Uint8Array[];
+  exitCode: number;
+  /** Set true when proc_exit was called; lets the caller distinguish a
+   *  clean exit from a wasm trap or other failure. */
+  exited: boolean;
+}
+
+export function makeWasiState(stdinData?: Uint8Array): WasiState {
+  return {
+    stdinData,
+    stdinOffset: 0,
+    stdoutChunks: [],
+    stderrChunks: [],
+    exitCode: 0,
+    exited: false,
+  };
+}
+
 export function createWasi(
   args: string[],
   env: Record<string, string>,
   files: Record<string, Uint8Array>,
   getMemory: () => WebAssembly.Memory,
-  stdinData?: Uint8Array,
+  stdinDataOrState?: Uint8Array | WasiState,
   baseDirIndex?: Map<string, string[]>
 ) {
+  // Back-compat shim: callers historically passed `stdinData` as a
+  // Uint8Array. New persistent-instance callers pass a WasiState object
+  // so they can mutate stdin/stdout between requests without rebuilding
+  // the wasi imports.
+  const externalState: WasiState | null =
+    stdinDataOrState && typeof stdinDataOrState === "object" && "stdoutChunks" in stdinDataOrState
+      ? stdinDataOrState as WasiState
+      : null;
+  const stdinData: Uint8Array | undefined =
+    externalState ? externalState.stdinData : stdinDataOrState as Uint8Array | undefined;
   const FD_STDIN = 0;
   const FD_STDOUT = 1;
   const FD_STDERR = 2;
-  const FD_PREOPEN = 3;       // /stdlib (read-only stdlib + pymode runtime)
-  const FD_DATA_PREOPEN = 4;  // /data (read-write, backed by CF KV)
-  const FD_TMP_PREOPEN = 5;   // /tmp (writable temp directory)
+  // Preopen FDs MUST match wizer's --mapdir order in build-wizer.ts because
+  // wasi-libc's preopen table is captured into the snapshot and frozen.
+  // Order there: /stdlib, /wizer-sp, /wizer-ext-sp, /tmp, /data.
+  const FD_PREOPEN = 3;          // /stdlib (read-only stdlib + pymode runtime)
+  const FD_WIZER_SP = 4;         // /wizer-sp (wizer-only; preimports cached in sys.modules)
+  const FD_WIZER_EXT_SP = 5;     // /wizer-ext-sp (same)
+  const FD_TMP_PREOPEN = 6;      // /tmp (writable temp directory)
+  const FD_DATA_PREOPEN = 7;     // /data (read-write, R2-backed)
 
   const preopenPath = "/stdlib";
-  const dataPreopenPath = "/data";
+  const wizerSpPath = "/wizer-sp";
+  const wizerExtSpPath = "/wizer-ext-sp";
   const tmpPreopenPath = "/tmp";
+  const dataPreopenPath = "/data";
 
   // Pre-encode preopen paths (called repeatedly during WASI init)
   const preopenPaths: Record<number, { str: string; bytes: Uint8Array }> = {
     [FD_PREOPEN]: { str: preopenPath, bytes: _encoder.encode(preopenPath) },
-    [FD_DATA_PREOPEN]: { str: dataPreopenPath, bytes: _encoder.encode(dataPreopenPath) },
+    [FD_WIZER_SP]: { str: wizerSpPath, bytes: _encoder.encode(wizerSpPath) },
+    [FD_WIZER_EXT_SP]: { str: wizerExtSpPath, bytes: _encoder.encode(wizerExtSpPath) },
     [FD_TMP_PREOPEN]: { str: tmpPreopenPath, bytes: _encoder.encode(tmpPreopenPath) },
+    [FD_DATA_PREOPEN]: { str: dataPreopenPath, bytes: _encoder.encode(dataPreopenPath) },
   };
 
   interface OpenFile {
@@ -92,11 +140,14 @@ export function createWasi(
   }
 
   const openFiles = new Map<number, OpenFile>();
-  let nextFd = FD_TMP_PREOPEN + 1;
+  let nextFd = FD_DATA_PREOPEN + 1;
 
-  const stdoutChunks: Uint8Array[] = [];
-  const stderrChunks: Uint8Array[] = [];
-  let stdinOffset = 0;
+  // When an external WasiState was passed, share its chunk arrays so the
+  // caller can reset/drain them between requests. Otherwise allocate
+  // private buffers (the original behaviour).
+  const stdoutChunks: Uint8Array[] = externalState ? externalState.stdoutChunks : [];
+  const stderrChunks: Uint8Array[] = externalState ? externalState.stderrChunks : [];
+  const stdinOffsetRef = externalState ? externalState : { stdinOffset: 0 };
 
   // Writable files layer — sits on top of the read-only files map
   const writtenFiles = new Map<string, Uint8Array>();
@@ -216,6 +267,12 @@ export function createWasi(
     if (dirFd === FD_PREOPEN) return normalizePath(relPath);
     if (dirFd === FD_DATA_PREOPEN) return normalizePath("data/" + relPath);
     if (dirFd === FD_TMP_PREOPEN) return normalizePath("tmp/" + relPath);
+    // Wizer-only preopens — wasi-libc has them in its snapshot table but at
+    // runtime they alias to /stdlib (the preimported modules they served at
+    // wizer time are already cached in sys.modules).
+    if (dirFd === FD_WIZER_SP || dirFd === FD_WIZER_EXT_SP) {
+      return normalizePath(relPath);
+    }
     const dir = openFiles.get(dirFd);
     if (!dir) return null;
     if (dir.path === "") return normalizePath(relPath);
@@ -323,20 +380,22 @@ export function createWasi(
       const v = view();
       const m = mem();
       if (fd === FD_STDIN) {
-        if (!stdinData || stdinOffset >= stdinData.length) {
+        // Read current stdin from the state object (set per request when
+        // an external WasiState was provided; static otherwise).
+        const currentStdin = externalState ? externalState.stdinData : stdinData;
+        if (!currentStdin || stdinOffsetRef.stdinOffset >= currentStdin.length) {
           v.setUint32(retPtr, 0, true);
           return ESUCCESS;
         }
-        // Read from stdin buffer
         let totalRead = 0;
         for (let i = 0; i < iovsLen; i++) {
           const ptr = v.getUint32(iovsPtr + i * 8, true);
           const len = v.getUint32(iovsPtr + i * 8 + 4, true);
-          const remaining = stdinData.length - stdinOffset;
+          const remaining = currentStdin.length - stdinOffsetRef.stdinOffset;
           const toRead = Math.min(len, remaining);
           if (toRead > 0) {
-            m.set(stdinData.subarray(stdinOffset, stdinOffset + toRead), ptr);
-            stdinOffset += toRead;
+            m.set(currentStdin.subarray(stdinOffsetRef.stdinOffset, stdinOffsetRef.stdinOffset + toRead), ptr);
+            stdinOffsetRef.stdinOffset += toRead;
             totalRead += toRead;
           }
           if (toRead < len) break;
@@ -379,7 +438,7 @@ export function createWasi(
     },
 
     fd_close(fd: number): number {
-      if (fd <= FD_TMP_PREOPEN) return ESUCCESS;
+      if (fd <= FD_DATA_PREOPEN) return ESUCCESS;
       openFiles.delete(fd);
       return ESUCCESS;
     },
@@ -415,7 +474,8 @@ export function createWasi(
         v.setBigUint64(retPtr + 16, BigInt(0x1FF), true);
         return ESUCCESS;
       }
-      if (fd === FD_PREOPEN || fd === FD_DATA_PREOPEN || fd === FD_TMP_PREOPEN) {
+      if (fd === FD_PREOPEN || fd === FD_DATA_PREOPEN || fd === FD_TMP_PREOPEN
+          || fd === FD_WIZER_SP || fd === FD_WIZER_EXT_SP) {
         v.setUint8(retPtr, 3); // DIRECTORY
         v.setBigUint64(retPtr + 8, BigInt(0x1FFFFFF), true);
         v.setBigUint64(retPtr + 16, BigInt(0x1FFFFFF), true);
@@ -511,7 +571,8 @@ export function createWasi(
         v.setBigUint64(retPtr + 24, BigInt(1), true);
         return ESUCCESS;
       }
-      if (fd === FD_PREOPEN || fd === FD_DATA_PREOPEN || fd === FD_TMP_PREOPEN) {
+      if (fd === FD_PREOPEN || fd === FD_DATA_PREOPEN || fd === FD_TMP_PREOPEN
+          || fd === FD_WIZER_SP || fd === FD_WIZER_EXT_SP) {
         v.setUint8(retPtr + 16, 3);
         v.setBigUint64(retPtr + 24, BigInt(1), true);
         return ESUCCESS;
@@ -529,11 +590,14 @@ export function createWasi(
       cookie: bigint, retPtr: number
     ): number {
       const file = openFiles.get(fd);
-      if (!file && fd !== FD_PREOPEN && fd !== FD_DATA_PREOPEN && fd !== FD_TMP_PREOPEN) return EBADF;
+      const isPreopen = fd === FD_PREOPEN || fd === FD_DATA_PREOPEN
+        || fd === FD_TMP_PREOPEN || fd === FD_WIZER_SP || fd === FD_WIZER_EXT_SP;
+      if (!file && !isPreopen) return EBADF;
       let dirPath: string;
       if (fd === FD_PREOPEN) dirPath = "";
       else if (fd === FD_DATA_PREOPEN) dirPath = "data";
       else if (fd === FD_TMP_PREOPEN) dirPath = "tmp";
+      else if (fd === FD_WIZER_SP || fd === FD_WIZER_EXT_SP) dirPath = "";
       else dirPath = file!.path;
       const entries = dirChildren.get(dirPath) || [];
       const v = view();
@@ -661,6 +725,16 @@ export function createWasi(
     },
 
     proc_exit(code: number) {
+      // Record exit + return normally when an external WasiState was
+      // supplied — this lets a persistent-instance caller reuse the
+      // wasm instance across requests. Without an external state we
+      // preserve the original throw behaviour so the per-pass fanout
+      // path continues to work.
+      if (externalState) {
+        externalState.exitCode = code;
+        externalState.exited = true;
+        return;
+      }
       throw new ProcExit(code);
     },
   };

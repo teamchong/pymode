@@ -12,7 +12,7 @@
 
 import { DurableObject } from "cloudflare:workers";
 import pythonWasm from "./python.wasm";
-import { ProcExit, createWasi } from "./wasi";
+import { ProcExit, createWasi, makeWasiState, type WasiState } from "./wasi";
 import { encoder as _encoder, decoder as _decoder, stdlibBin, stdlibDirIndex, extensionPackagesBin } from "./stdlib-bin";
 import { buildHostImports, zbReadResponse } from "./host-imports";
 import type { MemoryAccessor } from "./host-imports";
@@ -23,6 +23,31 @@ import { FanoutContext, resolveAll } from "./fanout";
 import sitePackagesZip from "./site-packages.zip";
 const _sitePackagesBin: Uint8Array | undefined =
   sitePackagesZip.byteLength > 22 ? new Uint8Array(sitePackagesZip) : undefined;
+
+// Pre-compiled side modules for C extensions that go through the
+// pymode.dl_open path (numpy, etc). Each is bundled twice:
+//   1. As CompiledWasm (`.wasm`) — JS instantiates this with WebAssembly.Instance.
+//   2. As a Data module (`.wasm.dat` — sibling copy of the same bytes) so the
+//      dynamic linker can read the dylink.0 custom section + import list at
+//      runtime. wrangler's Data rule matches `.dat`, CompiledWasm matches `.wasm`,
+//      so we can have both for the same logical artifact.
+// @ts-ignore — CompiledWasm Data module import
+import numpyMultiarrayUmath from "./extensions/numpy/_multiarray_umath.wasm";
+// @ts-ignore — Data module import (ArrayBuffer)
+import numpyMultiarrayUmathBytes from "./extensions/numpy/_multiarray_umath.wasm.dat";
+import { linkSideModule } from "./dynamic-linker";
+
+interface SideModuleEntry { module: WebAssembly.Module; bytes: Uint8Array }
+function _sideEntry(mod: unknown, bytes: unknown): SideModuleEntry {
+  return {
+    module: mod as WebAssembly.Module,
+    bytes: bytes instanceof ArrayBuffer ? new Uint8Array(bytes) : (bytes as Uint8Array),
+  };
+}
+const _extensionModules: ReadonlyMap<string, SideModuleEntry> = new Map([
+  ["_multiarray_umath.wasm", _sideEntry(numpyMultiarrayUmath, numpyMultiarrayUmathBytes)],
+  ["numpy/_core/_multiarray_umath.wasm", _sideEntry(numpyMultiarrayUmath, numpyMultiarrayUmathBytes)],
+]);
 
 interface PythonDOEnv {
   THREAD_DO?: DurableObjectNamespace;
@@ -45,11 +70,34 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
   private nextDlHandle = 1;
   private dlLastError: string | null = null;
 
-  // Pre-compiled C extension .wasm modules (set by worker before calling run())
-  public extensionModules = new Map<string, WebAssembly.Module>();
+  // Pre-compiled C extension .wasm modules. Seeded from the module-level
+  // _extensionModules (bundled by wrangler), settable by worker for tests.
+  // Each entry has both the CompiledWasm Module (for instantiation) and
+  // the raw bytes (for dylink.0 parsing by the dynamic linker).
+  public extensionModules = new Map<string, SideModuleEntry>(_extensionModules);
 
   // Stored references for dynamic loading
   private wasmInstance: WebAssembly.Instance | null = null;
+
+  /**
+   * Persistent runner — when the previous request completed without
+   * registering a pending fanout call, we cache the wasm instance + the
+   * wasi state object so the next request can just reset stdin/stdout
+   * and call _start() again. This avoids the ~30–50 ms per-request
+   * instantiation + data-segment copy cost.
+   *
+   * Reused across requests as long as the user-files set is stable.
+   * Fanout-using requests fall back to the original per-pass fresh-
+   * instance path because the fanout context needs per-pass replay.
+   */
+  private persistentRunner: {
+    instance: WebAssembly.Instance;
+    wasiState: WasiState;
+    wasi: ReturnType<typeof createWasi>;
+    /** Hash of the user-files set used at instantiation time. If a
+     *  later request has different user files, we invalidate. */
+    userFilesKey: string;
+  } | null = null;
 
   // R2-backed filesystem: persisted /data files across requests
   private dataFiles = new Map<string, Uint8Array>();
@@ -194,11 +242,66 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
     let exitCode = 0;
     let lastWrittenFiles: Map<string, Uint8Array> | null = null;
 
+    // ── Persistent fast path ────────────────────────────────────────
+    // If a previous request left a cached instance and the user-files
+    // set hasn't changed, reuse it. proc_exit no-longer-throws when
+    // the WasiState is external, so _start can be re-called on the
+    // same instance.
+    const userFilesKey = userFiles
+      ? Object.keys(userFiles).sort().join("\n")
+      : "";
+    if (this.persistentRunner && this.persistentRunner.userFilesKey === userFilesKey) {
+      const { instance, wasiState, wasi } = this.persistentRunner;
+      // Reset per-request state.
+      wasiState.stdinData = stdinData;
+      wasiState.stdinOffset = 0;
+      wasiState.stdoutChunks.length = 0;
+      wasiState.stderrChunks.length = 0;
+      wasiState.exited = false;
+      wasiState.exitCode = 0;
+      try {
+        (instance.exports._start as () => void)();
+      } catch (e) {
+        // Cached instance trapped — burn the cache and fall through to the slow path.
+        this.persistentRunner = null;
+        if (!(e instanceof ProcExit)) throw e;
+      }
+      if (this.persistentRunner && !fanout.hasPending) {
+        stdout = _decoder.decode(wasi.getStdout());
+        stderr = _decoder.decode(wasi.getStderr());
+        exitCode = wasiState.exitCode;
+        lastWrittenFiles = wasi.getWrittenFiles();
+        if (lastWrittenFiles && lastWrittenFiles.size > 0) {
+          await this.flushDataFiles(lastWrittenFiles);
+        }
+        return { stdout, stderr, exitCode };
+      }
+      // Fanout was pending — handler needs replay, fall back to the
+      // original fresh-instance loop. Invalidate the cache.
+      this.persistentRunner = null;
+      fanout.resetPass();
+    }
+
+    // Promote stdin to a WasiState if it isn't already; this is what
+    // proc_exit uses to decide whether to throw (slow-path fanout) or
+    // record-and-return (fast-path persistent). On the *last* pass that
+    // completes without fanout, we'll stash the state on `persistentRunner`
+    // so the next request can take the fast path.
+    const slowPathWasiState = makeWasiState(stdinData);
+
     for (let pass = 0; pass < MAX_REPLAY_PASSES; pass++) {
       fanout.resetPass();
 
+      // Reset slowPathWasiState for this pass.
+      slowPathWasiState.stdinData = stdinData;
+      slowPathWasiState.stdinOffset = 0;
+      slowPathWasiState.stdoutChunks.length = 0;
+      slowPathWasiState.stderrChunks.length = 0;
+      slowPathWasiState.exited = false;
+      slowPathWasiState.exitCode = 0;
+
       const files = { ...baseFiles };
-      const wasi = createWasi(args, wasmEnv, files, () => this.wasmMemory!, stdinData, stdlibDirIndex);
+      const wasi = createWasi(args, wasmEnv, files, () => this.wasmMemory!, slowPathWasiState, stdlibDirIndex);
       const zbOpts: { memory?: WebAssembly.Memory } = {};
 
       const pymodeImports = buildHostImports({
@@ -212,31 +315,48 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
           open: (path: string): number => {
             self.dlLastError = null;
             const basename = path.split("/").pop() || "";
-            let wasmModule = self.extensionModules.get(path);
-            if (!wasmModule && basename) wasmModule = self.extensionModules.get(basename);
-            if (!wasmModule) {
+            let entry = self.extensionModules.get(path);
+            if (!entry && basename) entry = self.extensionModules.get(basename);
+            if (!entry) {
               for (const [key, mod] of self.extensionModules) {
                 if (path.endsWith(key) || (basename && key.endsWith(basename))) {
-                  wasmModule = mod;
+                  entry = mod;
                   break;
                 }
               }
             }
-            if (!wasmModule) {
+            if (!entry) {
               self.dlLastError = `module not found: ${path}`;
               return -1;
             }
-            // Dynamic loading is sync — instantiate synchronously
             try {
-              const sideImports: WebAssembly.Imports = {
-                env: { memory: self.wasmMemory! },
-              };
-              const inst = new WebAssembly.Instance(wasmModule, sideImports);
+              const mainExports = self.wasmInstance?.exports;
+              if (!mainExports) {
+                self.dlLastError = "main wasm not yet instantiated";
+                return -1;
+              }
+              console.log(`[dynlink] loading ${basename} (${entry.bytes.byteLength} bytes)`);
+              const linked = linkSideModule(entry.module, entry.bytes, {
+                mainExports,
+                sideModuleName: basename,
+              });
+              console.log(`[dynlink] ${basename} linked: missing=${linked.missing.length} memoryBase=${linked.memoryBase} tableBase=${linked.tableBase}`);
+              if (linked.missing.length > 0) {
+                console.warn(
+                  `[dynlink] ${basename}: first 5 unresolved: ${linked.missing.slice(0, 5).join(", ")}`,
+                );
+              }
               const handle = self.nextDlHandle++;
-              self.dlModules.set(handle, { instance: inst, exports: inst.exports });
+              self.dlModules.set(handle, {
+                instance: linked.instance,
+                exports: linked.exports,
+              });
               return handle;
             } catch (e: unknown) {
-              self.dlLastError = `failed to load ${path}: ${e instanceof Error ? e.message : String(e)}`;
+              const msg = e instanceof Error ? e.message : String(e);
+              console.error(`[dynlink] failed to load ${path}: ${msg}`);
+              if (e instanceof Error && e.stack) console.error(e.stack);
+              self.dlLastError = `failed to load ${path}: ${msg}`;
               return -1;
             }
           },
@@ -285,12 +405,25 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
         else throw e;
       }
 
+      // proc_exit with external state records exitCode + returns. Pick
+      // up either signal.
+      if (slowPathWasiState.exited) exitCode = slowPathWasiState.exitCode;
+
       stdout = _decoder.decode(wasi.getStdout());
       stderr = _decoder.decode(wasi.getStderr());
       lastWrittenFiles = wasi.getWrittenFiles();
 
-      // If no pending async calls, we're done
-      if (!fanout.hasPending) break;
+      // If no pending async calls, we're done. Promote the instance to
+      // the persistent cache so the next request skips instantiation.
+      if (!fanout.hasPending) {
+        this.persistentRunner = {
+          instance,
+          wasiState: slowPathWasiState,
+          wasi,
+          userFilesKey,
+        };
+        break;
+      }
 
       // Resolve all pending calls in parallel, then replay
       await resolveAll(fanout, this.env as Record<string, unknown>);
