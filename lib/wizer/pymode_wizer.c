@@ -161,6 +161,13 @@ void wizer_initialize(void) {
 #include "pymode_wizer_app_preimports.h"
 #endif
 
+#if defined(PYMODE_VARIANT_PREIMPORT)
+    /* Variant-mode preimport: import the C-extension package this
+     * variant ships so wizer warms it into the snapshot. The exact
+     * name is passed via -DPYMODE_VARIANT_PREIMPORT=\"name\". */
+    _preimport(PYMODE_VARIANT_PREIMPORT);
+#endif
+
     /* MUST be last — rewrites the third-party packages' __path__ entries
      * from wizer-time paths (/wizer-sp/<pkg>, /wizer-ext-sp/<pkg>) to the
      * runtime zip-mount paths (/stdlib/site-packages.zip/<pkg>, …) so

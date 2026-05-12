@@ -31,13 +31,24 @@ const OUTPUT = path.join(BUILD_DIR, "python-wizer.wasm");
 
 // Build mode coordinated with build-phase2.ts via env vars. See the
 // header comment in build-phase2.ts for what each mode means.
-const BUILD_MODE = (process.env.PYMODE_BUILD_MODE || "test") as "test" | "app";
+const BUILD_MODE = (process.env.PYMODE_BUILD_MODE || "test") as "test" | "app" | "variant";
 const APP_PREIMPORTS_HEADER = process.env.PYMODE_APP_PREIMPORTS_HEADER || "";
 const APP_PROJECT_DIR = process.env.PYMODE_APP_PROJECT_DIR || "";
 const APP_ENTRY_MODULE = process.env.PYMODE_APP_ENTRY_MODULE || "";
 
+// Variant mode: include exactly the listed recipes (comma-separated) and
+// produce python-<variant-name>.wasm. The variant name itself is also
+// the preimport target (e.g., "ujson" → import ujson at wizer time).
+const VARIANT_NAME = process.env.PYMODE_VARIANT_NAME || "";
+const VARIANT_RECIPES = (process.env.PYMODE_VARIANT_RECIPES || "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+
 const WORKER_WASM_FILENAME =
-  BUILD_MODE === "test" ? "python.wasm" : "python-app.wasm";
+  BUILD_MODE === "test" ? "python.wasm"
+  : BUILD_MODE === "variant" ? `python-${VARIANT_NAME}.wasm`
+  : "python-app.wasm";
 
 // Asyncify removed — fan-out replay handles async imports at runtime.
 
@@ -124,6 +135,15 @@ function main(): void {
     // The header sits next to pymode_wizer.c so #include "pymode_wizer_app_preimports.h" resolves.
     wizerCompileFlags.push(`-I${path.dirname(APP_PREIMPORTS_HEADER)}`);
   }
+  if (BUILD_MODE === "variant" && VARIANT_NAME) {
+    // Import the variant's package at wizer time. The recipe's package
+    // name might differ from the variant name (e.g., variant
+    // "pydantic-core" → import name "pydantic_core") so we use the
+    // first VARIANT_RECIPES entry's normalised module name where set,
+    // falling back to VARIANT_NAME.
+    const importName = (VARIANT_RECIPES[0] || VARIANT_NAME).replace(/-/g, "_");
+    wizerCompileFlags.push(`-DPYMODE_VARIANT_PREIMPORT="${importName}"`);
+  }
   wizerCompileFlags.push(
     path.join(WIZER_DIR, "pymode_wizer.c"),
     "-o",
@@ -202,21 +222,29 @@ function main(): void {
   linkObjs.push(path.join(BUILD_DIR, "Programs", "pymode_wizer.o"));
   linkObjs.push(configWizerO);
 
-  // Include recipe static archives (pydantic-core, etc.) — only in the
-  // test runtime. Deploys pull only what the user's app actually needs
-  // (they wouldn't bundle pydantic-core if their app doesn't import it).
+  // Include recipe static archives:
+  //   test mode    — include every built recipe (kitchen sink).
+  //   variant mode — include only the recipes listed in
+  //                  PYMODE_VARIANT_RECIPES.
+  //   app mode     — include none (slim deploy).
   const skipRecipes = new Set(["regex", "msgpack", "xxhash", "markupsafe"]);
   const recipesDir = path.join(ROOT_DIR, "build", "recipes");
-  if (BUILD_MODE === "test" && fs.existsSync(recipesDir)) {
-    for (const recipe of fs.readdirSync(recipesDir)) {
-      if (skipRecipes.has(recipe)) continue;
-      const objDir = path.join(recipesDir, recipe, "obj");
-      if (!fs.existsSync(objDir)) continue;
-      for (const f of fs.readdirSync(objDir)) {
-        if (f.endsWith(".a") || f.endsWith(".o")) {
-          linkObjs.push(path.join(objDir, f));
-          console.log(`    Including recipe: ${recipe}/${f}`);
-        }
+  const recipesToInclude: string[] =
+    BUILD_MODE === "test" && fs.existsSync(recipesDir)
+      ? fs.readdirSync(recipesDir).filter((r) => !skipRecipes.has(r))
+      : BUILD_MODE === "variant"
+      ? VARIANT_RECIPES
+      : [];
+  for (const recipe of recipesToInclude) {
+    const objDir = path.join(recipesDir, recipe, "obj");
+    if (!fs.existsSync(objDir)) {
+      console.log(`    WARN: variant recipe ${recipe} has no built objects at ${objDir}`);
+      continue;
+    }
+    for (const f of fs.readdirSync(objDir)) {
+      if (f.endsWith(".a") || f.endsWith(".o")) {
+        linkObjs.push(path.join(objDir, f));
+        console.log(`    Including recipe: ${recipe}/${f}`);
       }
     }
   }

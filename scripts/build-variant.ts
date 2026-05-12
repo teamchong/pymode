@@ -68,11 +68,62 @@ function run(cmd: string[], opts?: { captureOutput?: boolean }): {
   };
 }
 
+/**
+ * Build a variant by delegating to build-wizer.ts in variant mode.
+ * Produces a wizer-warmed python-<variant>.wasm that boots fast on CF
+ * (the legacy no-wizer link path skipped this and ended up over the
+ * cold-start budget).
+ */
+function buildVariantViaWizer(recipeNames: string[]): void {
+  const variantName = recipeNames.join("-");
+  console.log(`Building variant via wizer: python-${variantName}.wasm`);
+  console.log(`  Recipes: ${recipeNames.join(" ")}`);
+  console.log();
+
+  // First make sure each recipe's objects exist; if a recipe has no
+  // build/recipes/<name>/obj/, run build-recipe.ts to produce them.
+  for (const r of recipeNames) {
+    const objDir = path.join(ROOT_DIR, "build", "recipes", r, "obj");
+    const hasObjs = fs.existsSync(objDir) && fs.readdirSync(objDir).some((f) => f.endsWith(".o"));
+    if (!hasObjs) {
+      console.log(`  Recipe ${r} not built — invoking build-recipe.ts...`);
+      const res = spawnSync("npx", ["tsx", path.join(SCRIPT_DIR, "build-recipe.ts"), r], {
+        stdio: "inherit",
+        cwd: ROOT_DIR,
+      });
+      if (res.status !== 0) {
+        console.log(`  ERROR: build-recipe.ts ${r} failed`);
+        process.exit(1);
+      }
+    }
+  }
+
+  // Hand off to build-wizer.ts in variant mode. It will compile
+  // pymode_wizer.c with -DPYMODE_VARIANT_PREIMPORT, link all .o files
+  // + the variant recipe objects, run wizer, and write the result to
+  // worker/src/python-<variant>.wasm.
+  const env = {
+    ...process.env,
+    PYMODE_BUILD_MODE: "variant",
+    PYMODE_VARIANT_NAME: variantName,
+    PYMODE_VARIANT_RECIPES: recipeNames.join(","),
+  };
+  const res = spawnSync("npx", ["tsx", path.join(SCRIPT_DIR, "build-wizer.ts")], {
+    stdio: "inherit",
+    cwd: ROOT_DIR,
+    env,
+  });
+  if (res.status !== 0) {
+    console.log("  ERROR: build-wizer.ts failed");
+    process.exit(1);
+  }
+}
+
 function main(): void {
   const args = process.argv.slice(2);
 
   if (args.length === 0) {
-    console.log("Usage: build-variant.ts <recipe-name> [<recipe-name>...]");
+    console.log("Usage: build-variant.ts <recipe-name> [<recipe-name>...] [--no-wizer]");
     console.log();
     console.log("Available recipes:");
     for (const r of globFiles(RECIPES_DIR, "*.json").sort()) {
@@ -81,6 +132,16 @@ function main(): void {
       console.log(`  ${name} (${recipe.version})`);
     }
     process.exit(0);
+  }
+
+  // --no-wizer skips the wizer warm-up pass. By default we delegate the
+  // final link + wizer step to build-wizer.ts so the variant wasm has
+  // wizer.initialize and starts within CF's cold-start budget.
+  const skipWizer = args.includes("--no-wizer");
+  const recipeArgs = args.filter((a) => !a.startsWith("--"));
+
+  if (!skipWizer) {
+    return buildVariantViaWizer(recipeArgs);
   }
 
   // Check prerequisites
