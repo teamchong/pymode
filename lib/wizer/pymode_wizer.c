@@ -181,6 +181,88 @@ void wizer_initialize(void) {
 }
 
 /*
+ * pymode_warm_run — exported entry point for persistent-instance reuse.
+ *
+ * Calling wasi-libc's _start a second time on the same wasm instance
+ * traps with "unreachable" because the wrapper invokes
+ * __wasm_call_ctors() (constructors guard against double-init), then
+ * calls __wasi_proc_exit(rc) and emits an `unreachable` after.
+ *
+ * This function does the same thing as main()'s warm path but is
+ * callable repeatedly from JS without going through wasi-libc's
+ * one-shot _start wrapper. JS sets PYTHONPATH via env, sets stdin via
+ * the wasi shim, then calls pymode_warm_run(module_name_ptr, len).
+ *
+ * Returns the exit code; non-zero on Python-level error.
+ */
+__attribute__((export_name("pymode_warm_run")))
+int pymode_warm_run(const char *entry_module, int entry_len) {
+    if (!_pymode_initialized) return -1;
+
+    /* Reset sys.path from PYTHONPATH each call — fresh state per req. */
+    const char *pythonpath = getenv("PYTHONPATH");
+    if (pythonpath) {
+        PyObject *sys_mod = PyImport_ImportModule("sys");
+        if (sys_mod) {
+            PyObject *path_list = PyObject_GetAttrString(sys_mod, "path");
+            if (path_list && PyList_Check(path_list)) {
+                PyList_SetSlice(path_list, 0, PyList_Size(path_list), NULL);
+                const char *start = pythonpath;
+                while (*start) {
+                    const char *end = strchr(start, ':');
+                    if (!end) end = start + strlen(start);
+                    PyObject *entry = PyUnicode_FromStringAndSize(start, end - start);
+                    if (entry) { PyList_Append(path_list, entry); Py_DECREF(entry); }
+                    start = (*end) ? end + 1 : end;
+                }
+                Py_DECREF(path_list);
+            }
+            Py_DECREF(sys_mod);
+        }
+    }
+
+    /* Match the slow-path argv shape: [pymode._handler, <entry_module>].
+     * The handler reads sys.argv[1] to learn which user module to run. */
+    PyObject *sys_mod = PyImport_ImportModule("sys");
+    if (sys_mod) {
+        PyObject *argv_list = PyList_New(0);
+        PyObject *handler_str = PyUnicode_FromString("pymode._handler");
+        PyList_Append(argv_list, handler_str);
+        Py_DECREF(handler_str);
+        PyObject *entry_str = PyUnicode_FromStringAndSize(entry_module, entry_len);
+        PyList_Append(argv_list, entry_str);
+        Py_DECREF(entry_str);
+        PyObject_SetAttrString(sys_mod, "argv", argv_list);
+        Py_DECREF(argv_list);
+        Py_DECREF(sys_mod);
+    }
+
+    /* Always run pymode._handler (which dispatches to the user module).
+     * Do NOT run the user module directly — runpy.run_module on a
+     * sys.modules-cached submodule emits a RuntimeWarning and the
+     * handler init code never executes. */
+    int exitcode = 0;
+    PyObject *result = PyRun_String(
+        "import runpy; runpy.run_module('pymode._handler', run_name='__main__')",
+        Py_file_input, _pymode_globals, _pymode_locals);
+    if (!result) { PyErr_Print(); exitcode = 1; }
+    else { Py_DECREF(result); }
+
+    /* Flush */
+    PyObject *flush = PySys_GetObject("stdout");
+    if (flush) {
+        PyObject *r = PyObject_CallMethod(flush, "flush", NULL);
+        if (r) Py_DECREF(r); else PyErr_Clear();
+    }
+    flush = PySys_GetObject("stderr");
+    if (flush) {
+        PyObject *r = PyObject_CallMethod(flush, "flush", NULL);
+        if (r) Py_DECREF(r); else PyErr_Clear();
+    }
+    return exitcode;
+}
+
+/*
  * Phase 2: Run user code on the pre-initialized interpreter.
  * Called at request time. If Wizer was used, the interpreter is already warm.
  * If Wizer was NOT used, falls back to full init + run via Py_BytesMain.

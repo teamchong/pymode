@@ -97,6 +97,10 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
     /** Hash of the user-files set used at instantiation time. If a
      *  later request has different user files, we invalidate. */
     userFilesKey: string;
+    /** Wasm __stack_pointer value captured after first _start() returns.
+     *  Reset to this before each subsequent _start() so wasi-libc's
+     *  one-shot _start wrapper sees a fresh stack. */
+    initialStackPointer?: number;
   } | null = null;
 
   // R2-backed filesystem: persisted /data files across requests
@@ -253,8 +257,17 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
     const userFilesKey = userFiles
       ? Object.keys(userFiles).sort().join("\n")
       : "";
-    if (this.persistentRunner && this.persistentRunner.userFilesKey === userFilesKey) {
-      const { instance, wasiState, wasi } = this.persistentRunner;
+    console.log("[PR] enter handleRequest, persistentRunner=" +
+      (this.persistentRunner ? "set" : "null") +
+      " matches=" + (this.persistentRunner?.userFilesKey === userFilesKey));
+    // Recover the entry module from args: python -S -m pymode._handler <entryModule>.
+    const mIdx = args.indexOf("-m");
+    const entryModule = mIdx >= 0 && mIdx + 2 < args.length ? args[mIdx + 2] : "";
+    const warmRunFn = this.persistentRunner?.instance.exports.pymode_warm_run as
+      ((ptr: number, len: number) => number) | undefined;
+    if (this.persistentRunner && this.persistentRunner.userFilesKey === userFilesKey && warmRunFn && entryModule) {
+      console.log("[PR] taking persistent fast path via pymode_warm_run, entry=" + entryModule);
+      const { instance, wasiState, wasi, initialStackPointer } = this.persistentRunner;
       // Reset per-request state.
       wasiState.stdinData = stdinData;
       wasiState.stdinOffset = 0;
@@ -262,28 +275,40 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
       wasiState.stderrChunks.length = 0;
       wasiState.exited = false;
       wasiState.exitCode = 0;
+      // Reset wasm stack pointer in case it was clobbered by a prior
+      // call that exited via proc_exit (which throws mid-function).
+      const sp = instance.exports.__stack_pointer as WebAssembly.Global | undefined;
+      if (sp && initialStackPointer !== undefined) {
+        sp.value = initialStackPointer;
+      }
       let trapped = false;
+      let warmExitCode = 0;
       try {
-        (instance.exports._start as () => void)();
+        // pymode_warm_run does runpy.run_module(<entryModule>) without
+        // going through wasi-libc's one-shot _start wrapper. We pass
+        // the module name via a malloc'd buffer.
+        const enc = _encoder.encode(entryModule);
+        const malloc = instance.exports.PyMem_RawMalloc as ((n: number) => number);
+        const free = instance.exports.PyMem_RawFree as ((p: number) => void);
+        const ptr = malloc(enc.length);
+        const memBytes = new Uint8Array((instance.exports.memory as WebAssembly.Memory).buffer);
+        memBytes.set(enc, ptr);
+        try {
+          warmExitCode = warmRunFn(ptr, enc.length);
+        } finally {
+          free(ptr);
+        }
       } catch (e) {
-        // Cached instance trapped — capture diagnostics and fall through.
         const trapStderr = _decoder.decode(wasi.getStderr());
-        const trapStdout = _decoder.decode(wasi.getStdout());
-        console.error("[persistent-runner] _start trap:", e instanceof Error ? e.message : String(e));
-        if (trapStderr) console.error("[persistent-runner] stderr:", trapStderr.slice(0, 1500));
-        if (trapStdout) console.error("[persistent-runner] stdout:", trapStdout.slice(0, 500));
+        console.log("[PR] TRAP on pymode_warm_run:", e instanceof Error ? e.message : String(e));
+        if (trapStderr) console.log("[PR] trap stderr:", trapStderr.slice(0, 1500));
         this.persistentRunner = null;
         trapped = true;
-        if (!(e instanceof ProcExit)) {
-          // Don't rethrow — fall through to the slow path and serve the
-          // request from a fresh instance. Keeps user requests succeeding
-          // while we collect diagnostic data.
-        }
       }
-      if (this.persistentRunner && !trapped && !fanout.hasPending) {
+      if (!trapped && !fanout.hasPending) {
         stdout = _decoder.decode(wasi.getStdout());
         stderr = _decoder.decode(wasi.getStderr());
-        exitCode = wasiState.exitCode;
+        exitCode = warmExitCode;
         lastWrittenFiles = wasi.getWrittenFiles();
         if (lastWrittenFiles && lastWrittenFiles.size > 0) {
           await this.flushDataFiles(lastWrittenFiles);
@@ -411,6 +436,12 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
       // Set memory reference for JIT zerobuf allocation
       zbOpts.memory = this.wasmMemory;
 
+      // Capture the fresh stack pointer BEFORE _start runs. We restore
+      // this on every persistent-runner re-entry so wasi-libc's _start
+      // wrapper sees a clean SP each call.
+      const spExport = instance.exports.__stack_pointer as WebAssembly.Global | undefined;
+      const freshStackPointer = spExport ? (spExport.value as number) : undefined;
+
       exitCode = 0;
       try {
         (instance.exports._start as Function)();
@@ -427,9 +458,17 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
       stderr = _decoder.decode(wasi.getStderr());
       lastWrittenFiles = wasi.getWrittenFiles();
 
-      // If no pending async calls, we're done. (Persistent-cache
-      // promotion disabled — see the fast-path block above for why.)
+      // If no pending async calls, we're done. Promote the instance to
+      // the persistent cache so the next request can skip instantiation.
       if (!fanout.hasPending) {
+        console.log("[PR] slow path complete, promoting to cache, SP=" + freshStackPointer);
+        this.persistentRunner = {
+          instance,
+          wasiState: slowPathWasiState,
+          wasi,
+          userFilesKey,
+          initialStackPointer: freshStackPointer,
+        };
         break;
       }
 

@@ -752,10 +752,19 @@ exec zig cc -target wasm32-wasi -E "\${ARGS[@]}"
     };
     walk(extensionsDir);
   }
-  let exportFlags = "";
+  // Always export the basic wasm metadata symbols. The persistent-DO
+  // path needs __stack_pointer to reset SP between requests, otherwise
+  // re-entering _start traps after wasi-libc's _start wrapper falls off
+  // the end at its (intercepted) proc_exit call.
+  let exportFlags =
+    " -Wl,--export-dynamic" +
+    " -Wl,--export-table" +
+    " -Wl,--export=__stack_pointer" +
+    " -Wl,--export=__heap_base" +
+    " -Wl,--export=__heap_end";
   // Side-module dynamic linker is only relevant in the test runtime —
-  // base/app deploys don't ship the side modules (numpy, etc.) so they
-  // don't need the 550+ libc/libpython exports that bloat python.wasm.
+  // app deploys don't ship the side modules (numpy, etc.) so they don't
+  // need the 550+ libc/libpython exports that bloat python.wasm.
   if (BUILD_MODE === "test" && sideModuleWasms.length > 0) {
     info(`Scanning ${sideModuleWasms.length} side-module wasm(s) for required exports...`);
     const extractScript = join(ROOT_DIR, "scripts", "extract-side-module-imports.mjs");
@@ -781,13 +790,7 @@ exec zig cc -target wasm32-wasi -E "\${ARGS[@]}"
     const perSymbolExports = symbols.map(s => `-Wl,--export=${s}`).join(" ");
     // Note: --growable-table isn't supported by zig's wasm-ld wrapper;
     // the post-wizer restore step patches the table limits instead.
-    exportFlags =
-      ` -Wl,--export-dynamic` +
-      ` -Wl,--export-table` +
-      ` -Wl,--export=__stack_pointer` +
-      ` -Wl,--export=__heap_base` +
-      ` -Wl,--export=__heap_end` +
-      ` ${perSymbolExports}`;
+    exportFlags += ` ${perSymbolExports}`;
   }
   if (exportFlags) {
     // Inject into LDFLAGS via Makefile override so the final link picks it up.

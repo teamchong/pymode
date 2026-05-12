@@ -257,6 +257,21 @@ function main(): void {
     collect(extensionsDir);
   }
   const exportFlagArgs: string[] = [];
+  // Always export the basic wasm metadata symbols. The persistent-DO
+  // path needs __stack_pointer to reset SP between requests, and it
+  // calls pymode_warm_run as a bypass for wasi-libc's one-shot _start.
+  // PyMem_RawMalloc/Free are also called from JS to pass the module
+  // name into wasm memory.
+  exportFlagArgs.push(
+    "-Wl,--export-dynamic",
+    "-Wl,--export-table",
+    "-Wl,--export=__stack_pointer",
+    "-Wl,--export=__heap_base",
+    "-Wl,--export=__heap_end",
+    "-Wl,--export=pymode_warm_run",
+    "-Wl,--export=PyMem_RawMalloc",
+    "-Wl,--export=PyMem_RawFree",
+  );
   // Side-module dynamic-linker exports only matter for the test runtime —
   // deploys don't carry the .wasm side modules, so don't bloat the binary
   // with 550+ libc/libpython exports they'd reference.
@@ -272,15 +287,10 @@ function main(): void {
         .filter(Boolean);
       console.log(`    Side-module exports: ${symbols.length} symbols`);
       exportFlagArgs.push(
-        "-Wl,--export-dynamic",
-        "-Wl,--export-table",
         // The dynamic linker needs `table.grow()` at runtime for side
         // modules, but zig's wasm-ld wrapper rejects `--growable-table`.
         // The post-wizer `wizer-restore-exports.mjs` step patches the
         // table to remove its max limit instead.
-        "-Wl,--export=__stack_pointer",
-        "-Wl,--export=__heap_base",
-        "-Wl,--export=__heap_end",
         ...symbols.map(s => `-Wl,--export=${s}`),
       );
     }
@@ -487,44 +497,13 @@ function main(): void {
       const preOptSize = fs.statSync(OUTPUT).size;
       console.log(`    Snapshot: ${mb(preOptSize)}`);
 
-      // Post-wizer wasm-opt: wizer inflates the data segment with the
-      // preimported heap (bytecode, module objects, interned strings).
-      // That data has never been through -Oz. wasm-opt's data-segment
-      // dedup + zero-page elimination claws back substantial size on
-      // pydantic-class apps (~20-40%).
-      if (which("wasm-opt")) {
-        console.log("    Post-wizer wasm-opt -Oz --converge...");
-        const postOpt = OUTPUT + ".opt";
-        const optResult = run([
-          "wasm-opt",
-          "-Oz",
-          "--converge",
-          "--strip-debug",
-          "--strip-producers",
-          "--strip-target-features",
-          "--enable-simd",
-          "--enable-relaxed-simd",
-          "--enable-nontrapping-float-to-int",
-          "--enable-bulk-memory",
-          "--enable-bulk-memory-opt",
-          "--enable-sign-ext",
-          "--enable-mutable-globals",
-          "--enable-multivalue",
-          "--enable-tail-call",
-          "--enable-reference-types",
-          "--enable-extended-const",
-          OUTPUT,
-          "-o",
-          postOpt,
-        ], { captureOutput: true });
-        if (optResult.status === 0 && fs.existsSync(postOpt)) {
-          fs.renameSync(postOpt, OUTPUT);
-          const postSize = fs.statSync(OUTPUT).size;
-          console.log(`    Optimized: ${mb(preOptSize)} -> ${mb(postSize)}`);
-        } else {
-          console.log(`    WARN: post-wizer wasm-opt failed: ${optResult.stderr}`);
-        }
-      }
+      // Note: a post-wizer wasm-opt pass would shave ~5% off the binary
+      // by deduping the wizer-inflated data segment, but it strips the
+      // restored exports (including __stack_pointer) which the
+      // persistent-DO path needs to reset stack state between requests.
+      // The 5% size win isn't worth losing the warm-latency win, so we
+      // skip post-wizer optimization. wizer-restore-exports has already
+      // re-attached all pre-wizer exports above.
     } else {
       console.log();
       console.log("    Wizer snapshot failed.");

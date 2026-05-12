@@ -725,15 +725,14 @@ export function createWasi(
     },
 
     proc_exit(code: number) {
-      // Record exit + return normally when an external WasiState was
-      // supplied — this lets a persistent-instance caller reuse the
-      // wasm instance across requests. Without an external state we
-      // preserve the original throw behaviour so the per-pass fanout
-      // path continues to work.
+      // Always throw — wasi-libc's _start wrapper emits an `unreachable`
+      // immediately after calling proc_exit, so returning would trap the
+      // wasm. When an external WasiState is set, we also record the exit
+      // info so the caller can read it from the catch block instead of
+      // from the throw.
       if (externalState) {
         externalState.exitCode = code;
         externalState.exited = true;
-        return;
       }
       throw new ProcExit(code);
     },
