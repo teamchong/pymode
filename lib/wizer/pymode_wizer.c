@@ -133,6 +133,8 @@ void wizer_initialize(void) {
     _preimport("pymode.env");
     _preimport("pymode.workers");
     _preimport("pymode.mcp");
+    _preimport("pymode._handler");  /* warm path calls _run() directly */
+    _preimport("runpy");            /* fallback for slow path */
     _preimport("_wasi_compat");
 
     /* Heavy preimports. The default (PYMODE_HEAVY_PREIMPORTS=1) is the
@@ -195,16 +197,38 @@ void wizer_initialize(void) {
  *
  * Returns the exit code; non-zero on Python-level error.
  */
+/* Cached references — initialised on first warm_run call, reused thereafter. */
+static PyObject *_cached_sys = NULL;
+static PyObject *_cached_handler_run = NULL;   /* pymode._handler._run */
+static PyObject *_cached_argv_handler_str = NULL;  /* "pymode._handler" */
+static int _cached_path_set = 0;                   /* sys.path initialised? */
+static char _last_entry_module[256] = {0};
+static int _last_entry_len = -1;
+static PyObject *_cached_argv_list = NULL;     /* reusable list [pymode._handler, entry] */
+
 __attribute__((export_name("pymode_warm_run")))
 int pymode_warm_run(const char *entry_module, int entry_len) {
     if (!_pymode_initialized) return -1;
 
-    /* Reset sys.path from PYTHONPATH each call — fresh state per req. */
-    const char *pythonpath = getenv("PYTHONPATH");
-    if (pythonpath) {
-        PyObject *sys_mod = PyImport_ImportModule("sys");
-        if (sys_mod) {
-            PyObject *path_list = PyObject_GetAttrString(sys_mod, "path");
+    /* First-call setup: cache module + function refs, set sys.path. */
+    if (!_cached_sys) {
+        _cached_sys = PyImport_ImportModule("sys");
+        PyObject *handler_mod = PyImport_ImportModule("pymode._handler");
+        if (handler_mod) {
+            _cached_handler_run = PyObject_GetAttrString(handler_mod, "_run");
+            Py_DECREF(handler_mod);
+        }
+        _cached_argv_handler_str = PyUnicode_FromString("pymode._handler");
+    }
+    if (!_cached_sys || !_cached_handler_run) return -2;
+
+    /* sys.path: only rebuild on first call. PYTHONPATH doesn't change
+     * across requests for the same DO instance, so the cached path is
+     * fine after the initial setup. */
+    if (!_cached_path_set) {
+        const char *pythonpath = getenv("PYTHONPATH");
+        if (pythonpath) {
+            PyObject *path_list = PyObject_GetAttrString(_cached_sys, "path");
             if (path_list && PyList_Check(path_list)) {
                 PyList_SetSlice(path_list, 0, PyList_Size(path_list), NULL);
                 const char *start = pythonpath;
@@ -217,34 +241,31 @@ int pymode_warm_run(const char *entry_module, int entry_len) {
                 }
                 Py_DECREF(path_list);
             }
-            Py_DECREF(sys_mod);
         }
+        _cached_path_set = 1;
     }
 
-    /* Match the slow-path argv shape: [pymode._handler, <entry_module>].
-     * The handler reads sys.argv[1] to learn which user module to run. */
-    PyObject *sys_mod = PyImport_ImportModule("sys");
-    if (sys_mod) {
-        PyObject *argv_list = PyList_New(0);
-        PyObject *handler_str = PyUnicode_FromString("pymode._handler");
-        PyList_Append(argv_list, handler_str);
-        Py_DECREF(handler_str);
+    /* sys.argv: only rebuild when the entry module name actually changed. */
+    if (entry_len != _last_entry_len ||
+        (entry_len > 0 && memcmp(entry_module, _last_entry_module, entry_len) != 0)) {
+        Py_XDECREF(_cached_argv_list);
+        _cached_argv_list = PyList_New(0);
+        Py_INCREF(_cached_argv_handler_str);
+        PyList_Append(_cached_argv_list, _cached_argv_handler_str);
+        Py_DECREF(_cached_argv_handler_str);
         PyObject *entry_str = PyUnicode_FromStringAndSize(entry_module, entry_len);
-        PyList_Append(argv_list, entry_str);
+        PyList_Append(_cached_argv_list, entry_str);
         Py_DECREF(entry_str);
-        PyObject_SetAttrString(sys_mod, "argv", argv_list);
-        Py_DECREF(argv_list);
-        Py_DECREF(sys_mod);
+        PyObject_SetAttrString(_cached_sys, "argv", _cached_argv_list);
+        int copy_len = entry_len < (int)(sizeof(_last_entry_module) - 1) ? entry_len : (int)(sizeof(_last_entry_module) - 1);
+        memcpy(_last_entry_module, entry_module, copy_len);
+        _last_entry_module[copy_len] = 0;
+        _last_entry_len = entry_len;
     }
 
-    /* Always run pymode._handler (which dispatches to the user module).
-     * Do NOT run the user module directly — runpy.run_module on a
-     * sys.modules-cached submodule emits a RuntimeWarning and the
-     * handler init code never executes. */
+    /* Direct function call — no PyRun_String compile, no runpy. */
     int exitcode = 0;
-    PyObject *result = PyRun_String(
-        "import runpy; runpy.run_module('pymode._handler', run_name='__main__')",
-        Py_file_input, _pymode_globals, _pymode_locals);
+    PyObject *result = PyObject_CallNoArgs(_cached_handler_run);
     if (!result) { PyErr_Print(); exitcode = 1; }
     else { Py_DECREF(result); }
 

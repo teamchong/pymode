@@ -72,8 +72,8 @@ const WORKLOADS = [
 ];
 
 const RUNTIMES = [
-  { key: "pymode",  label: "pymode",       base: PYMODE_BASE,  color: "var(--sl-color-accent)" },
-  { key: "pyodide", label: "Pyodide (CF)", base: PYODIDE_BASE, color: "var(--sl-color-orange, #f48120)" },
+  { key: "pymode",  label: "pymode",       base: PYMODE_BASE,  cold: 52,   color: "var(--sl-color-accent)" },
+  { key: "pyodide", label: "Pyodide (CF)", base: PYODIDE_BASE, cold: 1134, color: "var(--sl-color-orange, #f48120)" },
 ];
 ---
 
@@ -115,14 +115,16 @@ const RUNTIMES = [
             <col class="col-metric" />
             <col class="col-metric" />
             <col class="col-metric" />
+            <col class="col-metric" />
           </colgroup>
           <thead>
-            <tr><th></th><th>p50</th><th>p99</th><th>OK</th></tr>
+            <tr><th></th><th>Cold</th><th>p50</th><th>p99</th><th>OK</th></tr>
           </thead>
           <tbody>
             {RUNTIMES.map(rt => (
               <tr data-runtime={rt.key}>
                 <th scope="row">{rt.label}</th>
+                <td>{rt.cold} ms</td>
                 <td data-metric="p50">—</td>
                 <td data-metric="p99">—</td>
                 <td data-metric="samples">—</td>
@@ -450,8 +452,8 @@ const RUNTIMES = [
   }
 
   /* Explicit widths so every card has identical column geometry. */
-  .workload-card colgroup .col-runtime { width: 45%; }
-  .workload-card colgroup .col-metric  { width: calc(55% / 3); }
+  .workload-card colgroup .col-runtime { width: 38%; }
+  .workload-card colgroup .col-metric  { width: 15.5%; }
 
   .workload-card th,
   .workload-card td {
