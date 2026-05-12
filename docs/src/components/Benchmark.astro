@@ -48,7 +48,7 @@ const WORKLOADS = [
   {
     key: "csv",
     title: "CSV → JSON aggregate",
-    description: "POST a CSV chunk, parse with stdlib csv.DictReader, return aggregated JSON (row count + numeric column means). Real S3 / Kinesis ETL ingest pattern. Both runtimes use stdlib.",
+    description: "S3 / Kinesis ingestion ETL. Stdlib csv.DictReader parses; returns row count and per-column numeric means.",
     method: "POST",
     headers: { "content-type": "text/csv" },
     body: CSV_SAMPLE,
@@ -56,7 +56,7 @@ const WORKLOADS = [
   {
     key: "logs",
     title: "Regex log extract",
-    description: "POST nginx-style access logs, regex-extract IPs and HTTP status codes, return per-status counts and unique-IP count. Real CloudWatch / log scrubbing pattern. Stdlib re.",
+    description: "CloudWatch log scrub. Stdlib re extracts IPs and HTTP statuses; returns per-status counts and unique-IP count.",
     method: "POST",
     headers: { "content-type": "text/plain" },
     body: LOG_SAMPLE,
@@ -64,18 +64,10 @@ const WORKLOADS = [
   {
     key: "scrape",
     title: "HTML link extract",
-    description: "POST HTML, parse with stdlib html.parser, return list of <a href> targets. Real RSS / sitemap scraping pattern. Stdlib only.",
+    description: "RSS / sitemap scrape. Stdlib html.parser walks the HTML; returns every <a href> target as a JSON list.",
     method: "POST",
     headers: { "content-type": "text/html" },
     body: HTML_SAMPLE,
-  },
-  {
-    key: "image",
-    title: "Image thumbnail (Pillow)",
-    description: "POST a JPEG, resize with Pillow. Real S3-image-upload trigger pattern. Requires Pillow — neither runtime has it deployed yet (pymode needs the variant wired into AOT; CF Pyodide can't load it). Both cells will be HTTP 501.",
-    method: "POST",
-    headers: { "content-type": "image/jpeg" },
-    body: "",
   },
 ];
 
@@ -372,11 +364,12 @@ const RUNTIMES = [
   .workload-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
-    grid-auto-rows: 1fr;
     gap: 1rem;
-    align-items: stretch;
   }
 
+  /* Cards are a fixed 18rem tall so every card matches regardless of
+     viewport width, description length, or row position. Descriptions
+     are short single sentences so they don't need clamping. */
   .workload-card {
     border: 1px solid var(--sl-color-gray-5);
     border-radius: 8px;
@@ -384,10 +377,7 @@ const RUNTIMES = [
     background: var(--sl-color-gray-7);
     display: flex;
     flex-direction: column;
-  }
-
-  .workload-card .description {
-    flex: 1;
+    height: 18rem;
   }
 
   .workload-card table {
@@ -412,18 +402,10 @@ const RUNTIMES = [
   }
 
   .workload-card .description {
-    font-size: 0.78rem;
+    font-size: 0.82rem;
     color: var(--sl-color-gray-2);
     margin: 0 0 0.75rem;
-    line-height: 1.45;
-    /* Fix card height: clamp descriptions to 5 lines so every card has
-       the same content height regardless of how much text was written. */
-    display: -webkit-box;
-    -webkit-line-clamp: 5;
-    -webkit-box-orient: vertical;
-    line-clamp: 5;
-    overflow: hidden;
-    min-height: calc(5 * 1.45em);
+    line-height: 1.5;
   }
 
   .workload-card table {
