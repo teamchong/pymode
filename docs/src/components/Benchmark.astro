@@ -416,6 +416,14 @@ const RUNTIMES = [
     color: var(--sl-color-gray-2);
     margin: 0 0 0.75rem;
     line-height: 1.45;
+    /* Fix card height: clamp descriptions to 5 lines so every card has
+       the same content height regardless of how much text was written. */
+    display: -webkit-box;
+    -webkit-line-clamp: 5;
+    -webkit-box-orient: vertical;
+    line-clamp: 5;
+    overflow: hidden;
+    min-height: calc(5 * 1.45em);
   }
 
   .workload-card table {
