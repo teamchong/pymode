@@ -4,9 +4,9 @@
 
 > **Note:** This project is experimental and under active development. APIs and features may change.
 
-CPython 3.13 compiled to WASM with `zig cc`. 5.7MB binary (1.8MB gzipped). Runs on Workers with full access to KV, R2, D1, TCP, and HTTP.
+CPython 3.13 compiled to WASM with `zig cc`. Runs on Workers with access to KV, R2, D1, TCP, and HTTP via custom host imports.
 
-> **Why PyMode?** Cloudflare's [Python Workers](https://blog.cloudflare.com/python-workers) (based on Pyodide/Emscripten) are in limited beta with an uncertain roadmap. PyMode takes a different approach: we compile **upstream CPython** directly to `wasm32-wasi` using `zig cc` — no Emscripten, no Pyodide, no patched fork. The runtime is purpose-built for Cloudflare Workers via Durable Objects, using custom WASM host imports (`pymode.*`) for KV, R2, D1, TCP, HTTP, and dynamic loading. This means you get the real CPython 3.13 runtime with full language support and a 3x smaller binary.
+> **Why another Python-on-Workers project?** Cloudflare's [Python Workers](https://blog.cloudflare.com/python-workers) ship Pyodide (a CPython fork built with Emscripten) and are the official, supported path. PyMode is a community project that takes a different approach: compile **upstream CPython 3.13** directly to `wasm32-wasi` using `zig cc` — no Emscripten, no Pyodide patches. The trade-off is real: PyMode deploys take minutes (the wasm is built per-app at deploy time), but you get exact upstream-CPython semantics, host imports patched into direct JS stubs at AOT time, and the option to compile any C extension Pyodide doesn't ship. If your workload is well-served by Pyodide's catalog and you want fast deploy iteration, the official Workers will be the easier path. PyMode is the better fit when you want upstream CPython, a specific C extension not in Pyodide, or per-request overhead optimisation.
 
 ## Quick Start
 
@@ -257,31 +257,29 @@ See [`examples/ts-python-service/`](examples/ts-python-service/) for a complete 
 
 ### Deploy-Time Snapshots (Wizer)
 
-Pre-initialize the interpreter at deploy time for ~5ms cold starts:
+`pymode deploy` always runs wizer on the build — it pre-imports stdlib
+and your project's modules into a memory snapshot baked directly into
+`python.wasm`. Every isolate boot reads from that snapshot.
 
-```bash
-pymode deploy --wizer
-```
-
-Or enable permanently in `pyproject.toml`:
-
-```toml
-[tool.pymode]
-wizer = true
-```
-
-| | Without Wizer | With Wizer |
-|---|---|---|
-| Cold start | ~28ms | ~5ms |
+The CF-reported `Worker Startup Time` after `pymode deploy` is typically
+40–60 ms (varies per app's preimports). This is the cost an isolate
+pays on first request to a fresh deploy or after eviction — not per
+request. Once the isolate is warm, requests don't pay it.
 
 ## Binary Size
 
-| Build | Size | Gzipped |
+The numbers below are the wasm artifact PyMode produces for a deploy:
+
+| Build | Raw | Gzipped |
 |-------|------|---------|
-| Pyodide (Emscripten) | ~20 MB | ~6.4 MB |
-| CPython WASI SDK | 28 MB | ~8 MB |
-| **PyMode (zig cc)** | **5.7 MB** | **1.8 MB** |
-| PyMode + Asyncify | ~7.4 MB | ~2.3 MB |
+| CPython WASI SDK (reference) | ~28 MB | ~8 MB |
+| **PyMode `python-base.wasm`** | **~17 MB** | **~5.6 MB** |
+| PyMode per-app build (with project preimports) | ~18–25 MB | ~6–8 MB |
+
+Pyodide is a different shape entirely — your deploy artifact is small
+(~1.5 MB of vendored Python modules), but Cloudflare loads a ~6.4 MB
+Pyodide runtime alongside it at request time. The two architectures
+aren't directly comparable on artifact size alone.
 
 ## Architecture
 
@@ -387,23 +385,27 @@ npm run test:pydantic
 
 ## Comparison: PyMode vs CF Python Workers
 
-Cloudflare's Python Workers use Pyodide (CPython compiled via Emscripten) and are currently in limited beta. PyMode compiles **upstream CPython 3.13** directly to `wasm32-wasi` with `zig cc` — no fork, no Emscripten, no Pyodide.
+Cloudflare's Python Workers use Pyodide (a CPython fork compiled via Emscripten). PyMode compiles **upstream CPython 3.13** directly to `wasm32-wasi` with `zig cc` — no fork, no Emscripten. Both target the same Cloudflare Workers platform.
 
 | | CF Python Workers (Pyodide) | PyMode |
 |---|---|---|
-| Status | Limited beta | Active |
-| CPython build | Pyodide fork (Emscripten) | Upstream CPython 3.13 (zig cc → wasm32-wasi) |
-| Handler pattern | `on_fetch(request, env)` | `on_fetch(request, env)` |
+| Python source | Pyodide's CPython fork (Emscripten) | Upstream CPython 3.13 (zig cc → wasm32-wasi) |
+| Handler pattern | `WorkerEntrypoint.fetch` (via `workers-py`) | `def on_fetch(request, env)` |
 | Multi-file projects | Yes | Yes |
-| Env bindings | `env.MY_KV.get()` (JS interop) | `env.MY_KV.get()` (host imports) |
-| Async I/O | Emscripten Asyncify | Binaryen Asyncify |
-| Binary size | ~20MB+ | ~7.4MB |
-| Cold start | ~50ms (snapshot) | ~5ms (Wizer) |
-| TCP connections | No | Yes |
-| Threading | `asyncio.gather` only | Real parallelism (child DOs) |
-| C extensions | Pyodide pre-built wheels only | Any C ext via dlopen polyfill (.wasm side modules) |
-| Package support | 280+ (Pyodide wheels) | Pure-Python PyPI + C extensions |
-| Portability | CF only (Emscripten) | CF Workers (Durable Objects) |
+| Env bindings | `env.MY_KV.get()` via JsProxy/PyProxy translation | `env.MY_KV.get()` via AOT-patched JS stubs |
+| Pure-Python pip packages | Any (uv install at deploy via `pywrangler`) | Any (uv install at deploy time) |
+| C extensions | Pyodide ships a curated set (numpy, pandas, Pillow, lxml…) | Any C ext that cross-compiles to wasm32-wasi via `zig cc` (recipe-based) |
+| DurableObject classes | Yes (Python class extending `DurableObject`) | Yes (`PythonDO` is internal to runtime) |
+| TCP connections | Limited (see CF docs) | Yes (via PyModeSocket on TcpPoolDO) |
+| Threading | `asyncio` cooperative | `pymode.parallel` (real parallelism via child DOs) |
+| Deploy artifact | ~1.5 MB modules + ~6.4 MB Pyodide runtime loaded at request time | one tailored wasm per deploy (~5-8 MB gzipped) |
+| Deploy iteration | seconds | minutes (full AOT rebuild per project) |
+| Worker Startup Time at deploy | ~1-2 s | tens of ms |
+
+The "Worker Startup Time" line is the CF-reported deploy-time signal —
+it bounds the cold-isolate cost but isn't paid on every request, and
+Cloudflare's production snapshotting can reduce real cold-isolate
+spin-up further.
 
 ## License
 

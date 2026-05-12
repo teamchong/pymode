@@ -55,7 +55,12 @@ Opens a local dev server at `http://localhost:8787`. Changes to your Python file
 pymode deploy
 ```
 
-Your handler is live on Cloudflare's edge network within seconds.
+The first deploy takes several minutes — `pymode deploy` AOT-builds a wasm
+tailored to your project's imports (statically analyses your `.py` files,
+pre-imports the required modules into a wizer snapshot, links the result
+into `python.wasm`). Subsequent deploys with the same import set reuse
+cached objects and are faster. Once it lands, your handler is live on
+Cloudflare's edge.
 
 ## Project Structure
 
@@ -80,7 +85,7 @@ version = "0.1.0"
 
 [tool.pymode]
 main = "src/entry.py"
-# wizer = true    # Enable deploy-time snapshots (~5ms cold starts)
+# preimport_skip = ["pydantic"]   # opt out heavy packages from the wizer snapshot
 
 [tool.pymode.kv_namespaces]
 MY_KV = "kv-namespace-id"

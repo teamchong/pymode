@@ -1,9 +1,9 @@
 ---
 title: pymode
-description: Run Python on Cloudflare Workers with CPython 3.13 compiled to WebAssembly.
+description: Upstream CPython 3.13 on Cloudflare Workers, compiled to WebAssembly via zig cc.
 template: splash
 hero:
-  tagline: Full CPython 3.13 on Cloudflare Workers. Write Python handlers with direct access to KV, R2, D1, and TCP — compiled to a 1.8MB gzipped WASM binary using zig cc.
+  tagline: Upstream CPython 3.13 on Cloudflare Workers. Write Python handlers with access to KV, R2, D1, and TCP — compiled to wasm via zig cc, deployed as a single AOT-built worker per app.
   actions:
     - text: Get Started
       link: /getting-started/
@@ -18,20 +18,20 @@ import { Card, CardGrid } from "@astrojs/starlight/components";
 
 ## Why PyMode?
 
-Cloudflare's Python Workers (Pyodide-based) are in limited beta with an uncertain roadmap. PyMode takes a different approach — upstream CPython compiled to WASM via `zig cc`, purpose-built for Cloudflare Workers with Durable Objects.
+Cloudflare's official Python Workers ship Pyodide — a CPython fork built with Emscripten — and are the easier path for most users. PyMode is a community alternative that compiles **upstream CPython** directly to `wasm32-wasi` via `zig cc`. The trade-off is real: deploys take minutes (AOT-build per app) instead of seconds, in exchange for upstream-CPython semantics, the option to compile arbitrary C extensions Pyodide doesn't ship, and AOT-patched host imports that bypass the Python ↔ JS FFI translation Pyodide pays per call.
 
 <CardGrid>
   <Card title="Upstream CPython 3.13" icon="seti:python">
-    No patches or forks. Vanilla CPython compiled with `zig cc` to `wasm32-wasi`. [See bundled modules](/limitations/).
+    Vanilla CPython compiled with `zig cc` to `wasm32-wasi`. No Pyodide-specific patches; semantics match what `python3.13` does on a normal machine. [See bundled modules](/limitations/).
   </Card>
-  <Card title="1.8MB Gzipped" icon="rocket">
-    5.7MB raw, 1.8MB gzipped — vs Pyodide's 20MB/6.4MB. Fits well within CF's 10MB limit.
+  <Card title="AOT host imports" icon="rocket">
+    `pymode deploy` patches host import sites (KV, R2, D1, fetch) into direct JS stubs in the wasm. Skips the JsProxy/PyProxy translation Pyodide pays per call.
   </Card>
-  <Card title="Native CF Bindings" icon="puzzle">
-    Direct WASM host imports for KV, R2, D1, TCP, and HTTP. No JS interop overhead.
+  <Card title="Compile any C extension" icon="puzzle">
+    Pyodide ships a curated set of compiled wheels (numpy, pandas, Pillow…). PyMode lets you build arbitrary C extensions via `zig cc` to wasm32-wasi when you need a package Pyodide doesn't carry.
   </Card>
-  <Card title="5ms Cold Starts" icon="star">
-    Optional Wizer snapshots reduce cold start from ~28ms to ~5ms.
+  <Card title="Wizer snapshot at deploy" icon="star">
+    The build pre-imports stdlib + your project's modules into a memory snapshot baked into the wasm. Worker Startup Time on CF (the cost of bringing an isolate up) is typically 40–60 ms.
   </Card>
 </CardGrid>
 

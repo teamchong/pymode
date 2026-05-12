@@ -16,7 +16,7 @@ PyMode runs upstream CPython 3.13 compiled to `wasm32-wasi` inside Cloudflare Wo
 | **No signals** | Signal handling is emulated (`-lwasi-emulated-signal`), limited functionality. |
 | **30s CPU limit** | Per-request CPU time is capped at 30 seconds (CF Workers limit). |
 | **128MB memory** | Per-DO memory limit. Large data processing should use `pymode.parallel` to distribute across DOs. |
-| **10MB bundle size** | Total compressed worker size. PyMode itself uses ~2-3MB gzipped, leaving ~7MB for your code and dependencies. |
+| **10MB bundle size** | CF Workers' paid-tier limit on compressed deploy. A typical `pymode deploy` produces a 6-8 MB gzipped wasm depending on which packages are AOT-preimported; the remainder is your project sources + site-packages. Heavy native deps (numpy/pandas) consume more of the budget. |
 
 ## Bundled Stdlib Modules
 
@@ -105,7 +105,7 @@ These modules have been added to the stdlib bundle since initial release:
 | `sysconfig` | pydantic, setuptools |
 | `unittest` | pyparsing |
 
-> **Requesting a module:** If you need a stdlib module that's not bundled, [open an issue](https://github.com/teamchong/pymode/issues) or add it to `BOOT_FILES` in `scripts/generate-stdlib-fs.py`.
+> **Requesting a module:** If you need a stdlib module that's not bundled, [open an issue](https://github.com/teamchong/pymode/issues) or add it to the bundle list in `scripts/generate-stdlib-fs.ts`.
 
 ## Python Language Support
 
@@ -144,7 +144,9 @@ These packages have conformance tests running in the actual workerd runtime:
 | **attrs** | Pure Python | 1 passing | Validators, asdict |
 | **starlette** | Pure Python | 1 passing | ASGI routing |
 
-Total: **261 tests** across all test suites.
+The vitest suite covers these against the actual workerd runtime. Run
+`npm test` to see the current count and pass/fail status for your
+local environment.
 
 ### Polyfilled C/Rust Extensions
 
@@ -159,23 +161,17 @@ These packages have native extensions replaced with pure-Python polyfills:
 | `markupsafe` | C (`_speedups`) | Pure Python fallback (built-in) |
 | `multiprocessing` | C (process model) | Polyfill: `cpu_count()=1`, exception classes |
 
-### Architecture: Each Package Gets Its Own DO
+### Memory budget
 
-Memory constraints (128MB Worker / 256MB DO) apply **per DO**, not globally. Heavy packages run in dedicated DOs communicating via Worker RPC:
+A single Durable Object has a 128 MB memory budget. Most pure-Python
+packages run comfortably; CPython itself plus a typical handler costs
+~20-40 MB depending on imports. Packages that allocate large arrays
+(pandas, numpy) reach the limit faster.
 
-```
-Orchestrator DO          Package DOs (each 256MB)
-┌────────────┐          ┌─────────────┐
-│  Your app  │───RPC───▶│  numpy DO   │
-│  routing   │          └─────────────┘
-│  logic     │───RPC───▶│  pandas DO  │
-│            │          └─────────────┘
-└────────────┘───RPC───▶│  langchain  │
-                        │  DO         │
-                        └─────────────┘
-```
-
-This means even pandas (~100MB) can work — it just needs its own DO. The `threading.Thread` polyfill already spawns child DOs via `pymode.parallel`.
+The `pymode.parallel` API spawns child DOs for compute parallelism —
+each child has its own memory budget. This pattern can in principle
+fan out work that's too large for one DO, but isn't automatic; you
+opt in by calling `spawn()` / `gather()` from your handler.
 
 ### Won't Work in WASM (any DO)
 
