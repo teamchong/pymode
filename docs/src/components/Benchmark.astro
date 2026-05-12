@@ -406,6 +406,17 @@ const RUNTIMES = [
     color: var(--sl-color-gray-2);
     margin: 0 0 0.75rem;
     line-height: 1.5;
+    /* Fixed height so the table below sits at the same y-coordinate
+       across every card regardless of title or sentence length. */
+    height: 3.5rem;
+    overflow: hidden;
+  }
+
+  .workload-card h3 {
+    /* Force one-line title — wider viewports already give us 340px+. */
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .workload-card table {
