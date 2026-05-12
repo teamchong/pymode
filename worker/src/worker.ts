@@ -580,6 +580,7 @@ function deserializeResponse(stdout: string, stderr: string): Response {
 
     const headers: Record<string, string> = data.headers || {};
     headers["X-Powered-By"] = "PyMode";
+    addCorsHeaders(headers);
 
     return new Response(body, {
       status: data.status || 200,
@@ -588,6 +589,23 @@ function deserializeResponse(stdout: string, stderr: string): Response {
   } catch {
     // stdout wasn't valid JSON — return as plain text (legacy mode output)
     return textResponse(stdout);
+  }
+}
+
+/** Permissive CORS so the benchmark page (or any other origin) can
+ *  fetch `/api/*` directly without preflight failures. Workers running
+ *  on pymode.teamchong.net often live alongside front-ends on different
+ *  origins — keep the default open. User code can override by setting
+ *  the same headers explicitly on its Response. */
+function addCorsHeaders(headers: Record<string, string>): void {
+  if (!headers["access-control-allow-origin"]) {
+    headers["access-control-allow-origin"] = "*";
+  }
+  if (!headers["access-control-allow-headers"]) {
+    headers["access-control-allow-headers"] = "content-type, authorization, x-signature";
+  }
+  if (!headers["access-control-allow-methods"]) {
+    headers["access-control-allow-methods"] = "GET, POST, PUT, DELETE, OPTIONS";
   }
 }
 
@@ -616,6 +634,14 @@ export default {
 
     try {
       const url = new URL(request.url);
+
+      // CORS preflight: return 204 with the open CORS headers before
+      // touching Python. Saves a full handler round-trip for OPTIONS.
+      if (request.method === "OPTIONS") {
+        const headers: Record<string, string> = {};
+        addCorsHeaders(headers);
+        return new Response(null, { status: 204, headers });
+      }
 
       // ---- Static assets (Astro docs site) ----
       // Anything that isn't an explicit API path falls through to the
