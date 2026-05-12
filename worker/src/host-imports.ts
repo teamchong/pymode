@@ -340,6 +340,21 @@ export function buildHostImports(opts: HostImportOptions): Record<string, any> {
       }
     },
 
+    // --- Legacy HTTP API (older variant wasms) ---
+    // The pre-built variant wasms (python-numpy.wasm, python-pillow.wasm,
+    // etc.) were compiled against an older host-import surface that used
+    // a handle-based HTTP API: http_fetch returns a handle, then
+    // http_response_status / header / read are called against it. The
+    // current code uses http_fetch_full which returns everything in one
+    // call. These stubs return failure sentinels so the wasm can
+    // instantiate (no LinkError) — variant deploys that don't actually
+    // make HTTP calls work fine. If Python code calls fetch, it gets a
+    // -1 and surfaces as an exception.
+    http_fetch: (..._args: number[]): number => -1,
+    http_response_status: (_handle: number): number => 0,
+    http_response_header: (..._args: number[]): number => 0,
+    http_response_read: (..._args: number[]): number => 0,
+
     // --- KV ---
     kv_get: (keyPtr: number, keyLen: number, bufPtr: number, bufLen: number): number => {
       try {

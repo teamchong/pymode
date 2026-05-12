@@ -249,71 +249,74 @@ export async function deploy(args) {
     }
 
     // python-do.ts unconditionally imports worker/src/extensions/numpy/*.wasm
-    // so wrangler bundles them on every deploy. For non-numpy variants,
-    // overwrite those with 8-byte stub wasm modules — wrangler still bundles
-    // them, but they're tiny instead of 3.5MB each.
+    // so wrangler bundles them on every deploy. Canonical artifacts live
+    // in build/extensions/numpy/ (gitignored) — we stage real ones in
+    // worker/src/extensions/numpy/ for numpy deploys, stubs otherwise.
     const numpyExtDir = join(workerSrc, "extensions", "numpy");
-    if (existsSync(numpyExtDir) && !(variant.extensions || []).includes("numpy")) {
-      const STUB_WASM = Buffer.from([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
-      const stubTargets = ["_multiarray_umath.wasm", "_multiarray_umath.wasm.dat"];
-      for (const name of stubTargets) {
-        const file = join(numpyExtDir, name);
-        if (existsSync(file)) writeFileSync(file, STUB_WASM);
+    const numpyCanonical = join(repoRoot, "build", "extensions", "numpy", "_multiarray_umath.wasm");
+    if (existsSync(numpyExtDir)) {
+      const isNumpy = (variant.extensions || []).includes("numpy");
+      if (isNumpy && existsSync(numpyCanonical)) {
+        copyFileSync(numpyCanonical, join(numpyExtDir, "_multiarray_umath.wasm"));
+        copyFileSync(numpyCanonical, join(numpyExtDir, "_multiarray_umath.wasm.dat"));
+      } else {
+        const STUB_WASM = Buffer.from([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
+        for (const name of ["_multiarray_umath.wasm", "_multiarray_umath.wasm.dat"]) {
+          const file = join(numpyExtDir, name);
+          if (existsSync(file)) writeFileSync(file, STUB_WASM);
+        }
       }
     }
 
     installDeps(projectDir);
 
-    // C-extension variant detection: if the project depends on a package
-    // that needs a pre-built variant (numpy, pillow, pydantic_core, …),
-    // the AOT path below won't include the native code and the deploy
-    // would fail at runtime with ImportError.
-    //
-    // The pre-built variant wasms in worker/src/ exist but were built
-    // against an older host-import surface; the current worker.ts /
-    // wasm-runner.ts don't supply the imports they expect. Until the
-    // variants are rebuilt against the current surface (or the worker
-    // adds back-compat aliases), variant deploys are not viable.
-    //
-    // For now, refuse cleanly instead of producing a broken deploy.
+    // Two deploy paths:
+    //  - Variant (numpy/Pillow/pydantic_core/...): use the pre-built
+    //    variant wasm. The worker now provides back-compat shims for
+    //    the legacy http_fetch handle-based API so old variants can
+    //    instantiate. Variant deploys are fast (no AOT rebuild).
+    //  - AOT (pure-Python only): build a tailored python.wasm with
+    //    wizer-preimported app modules. Slower deploy.
     if (variant.wasm) {
-      console.error(
-        `\n  C-extension variant "${variantKey}" detected but variant deploy isn't wired ` +
-        `end-to-end yet. The pre-built ${variant.wasm} exists but uses an older ` +
-        `host-import surface than the current worker. See docs/limitations for the ` +
-        `current state of C-extension package support.\n`
+      console.log(`\n  Using pre-built ${variant.wasm} (variant: ${variantKey})...`);
+      const variantWasm = join(workerSrc, variant.wasm);
+      if (!existsSync(variantWasm)) {
+        throw new Error(
+          `Variant wasm not found: ${variant.wasm}\n` +
+          `  Build it with: npx tsx scripts/build-variant.ts ${variantKey}`
+        );
+      }
+      copyFileSync(variantWasm, join(workerSrc, "python.wasm"));
+    } else {
+      console.log("\n  Regenerating wizer preimports + rebuilding python.wasm for this app...\n");
+      const headerPath = join(repoRoot, "lib", "wizer", "pymode_wizer_app_preimports.h");
+      const genResult = spawnSync(
+        "node",
+        [join(repoRoot, "scripts", "generate-app-preimports.mjs"), projectDir, headerPath, entryPoint],
+        { stdio: "inherit" },
       );
-      process.exit(1);
+      if (genResult.status !== 0) throw new Error("generate-app-preimports failed");
+
+      const entryModuleName = entryPoint
+        .replace(/\.py$/, "")
+        .replace(/\//g, ".");
+
+      const buildEnv = {
+        ...process.env,
+        PYMODE_APP_PROJECT_DIR: projectDir,
+        PYMODE_APP_ENTRY_MODULE: entryModuleName,
+      };
+      const buildResult = spawnSync(
+        "npx",
+        ["tsx", join(repoRoot, "scripts", "build-phase2.ts"), "--mode=app", `--app-preimports=${headerPath}`],
+        { stdio: "inherit", cwd: repoRoot, env: buildEnv },
+      );
+      if (buildResult.status !== 0) throw new Error("build-phase2 --mode=app failed");
+
+      const appWasm = join(workerSrc, "python-app.wasm");
+      if (!existsSync(appWasm)) throw new Error("python-app.wasm not produced");
+      copyFileSync(appWasm, join(workerSrc, "python.wasm"));
     }
-
-    console.log("\n  Regenerating wizer preimports + rebuilding python.wasm for this app...\n");
-    const headerPath = join(repoRoot, "lib", "wizer", "pymode_wizer_app_preimports.h");
-    const genResult = spawnSync(
-      "node",
-      [join(repoRoot, "scripts", "generate-app-preimports.mjs"), projectDir, headerPath, entryPoint],
-      { stdio: "inherit" },
-    );
-    if (genResult.status !== 0) throw new Error("generate-app-preimports failed");
-
-    const entryModuleName = entryPoint
-      .replace(/\.py$/, "")
-      .replace(/\//g, ".");
-
-    const buildEnv = {
-      ...process.env,
-      PYMODE_APP_PROJECT_DIR: projectDir,
-      PYMODE_APP_ENTRY_MODULE: entryModuleName,
-    };
-    const buildResult = spawnSync(
-      "npx",
-      ["tsx", join(repoRoot, "scripts", "build-phase2.ts"), "--mode=app", `--app-preimports=${headerPath}`],
-      { stdio: "inherit", cwd: repoRoot, env: buildEnv },
-    );
-    if (buildResult.status !== 0) throw new Error("build-phase2 --mode=app failed");
-
-    const appWasm = join(workerSrc, "python-app.wasm");
-    if (!existsSync(appWasm)) throw new Error("python-app.wasm not produced");
-    copyFileSync(appWasm, join(workerSrc, "python.wasm"));
 
     // Replace the test-runtime site-packages.zip with one assembled from
     // this app's wheels only. Empty zip if the app has no PyPI deps.

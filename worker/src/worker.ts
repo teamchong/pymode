@@ -670,16 +670,30 @@ export default {
         return sandbox.fetch(new Request(sandboxUrl.toString(), request));
       }
 
-      // ---- Project mode: run inline in the worker isolate ----
-      // Skips the DO RPC round-trip by running wasm directly in the
-      // module-scope WasmRunner. The persistent-instance cache lives
-      // in the runner so each isolate amortises instance setup across
-      // every request it handles.
+      // ---- Project mode: pick inline vs PythonDO path ----
       //
-      // PythonDO is still used for paths that need cross-isolate
-      // stateful resources (sandbox sessions, TCP pools).
+      // For pure-Python + stdlib deploys, run wasm inline in the worker
+      // isolate (no DO RPC overhead). For deploys using a C-extension
+      // variant (numpy, Pillow, etc.) — detected by extensionPackagesBin
+      // being present — route through PythonDO because the dynamic
+      // linker for side modules lives there.
       if (userFilesModule) {
         const requestJson = await serializeRequest(request, env);
+        const needsDynamicLinker = extensionPackagesBin != null;
+
+        if (needsDynamicLinker && env.PYTHON_DO) {
+          const doId = env.PYTHON_DO.idFromName("default");
+          const pythonDO = env.PYTHON_DO.get(doId) as any;
+          const result = await pythonDO.handleRequest(
+            userFilesModule.entryModule,
+            userFilesModule.userFiles,
+            pythonPath,
+            requestJson,
+          );
+          if (result.stderr) console.error("[PyMode stderr]", result.stderr);
+          return deserializeResponse(result.stdout, result.stderr);
+        }
+
         const result = await _inlineRunner.handleRequest(
           userFilesModule.entryModule,
           userFilesModule.userFiles,
