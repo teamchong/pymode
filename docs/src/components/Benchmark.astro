@@ -18,8 +18,10 @@ const PYMODE_LOGS_URL     = "https://logs.pymode.teamchong.net";
 const PYMODE_MARKDOWN_URL = "https://markdown.pymode.teamchong.net";
 const PYMODE_SCRAPE_URL   = "https://scrape.pymode.teamchong.net";
 const PYMODE_KV_URL       = "https://kv.pymode.teamchong.net";
+const PYMODE_NUMPY_URL    = "https://numpy.pymode.teamchong.net";
 const PYODIDE_URL         = "https://pyodide-bench.chong1222.workers.dev";
 const PYODIDE_KV_URL      = "https://pyodide-kv-bench.chong1222.workers.dev";
+const PYODIDE_NUMPY_URL   = "https://pyodide-numpy-bench.chong1222.workers.dev";
 
 // Cold = CF "Worker Startup Time" reported at deploy. This is NOT
 // per-request cold-isolate latency in production (CF uses memory
@@ -35,8 +37,10 @@ const PYMODE_LOGS_COLD     = 43;
 const PYMODE_MARKDOWN_COLD = 61;
 const PYMODE_SCRAPE_COLD   = 55;
 const PYMODE_KV_COLD       = 60;
+const PYMODE_NUMPY_COLD    = 34;
 const PYODIDE_COLD = 1827;
-const PYODIDE_KV_COLD = 545;   // CF Worker Startup Time on pyodide-kv-bench
+const PYODIDE_KV_COLD = 545;
+const PYODIDE_NUMPY_COLD = 1559;
 
 const LOG_SAMPLE = [
   '192.168.1.10 - - [01/Jan/2026:10:00:01 +0000] "GET /index.html HTTP/1.1" 200 1024',
@@ -120,6 +124,16 @@ const WORKLOADS = [
     body: "",
     pymode:  { url: PYMODE_KV_URL,       cold: PYMODE_KV_COLD },
     pyodide: { url: PYODIDE_KV_URL,      cold: PYODIDE_KV_COLD },
+  },
+  {
+    key: "numpy",
+    title: "numpy: array mean + sum",
+    description: "np.array([1..5]).mean() + sum(). Real numpy import + native array ops. pymode loads numpy via the python-numpy.wasm variant (linalg stubbed); Pyodide loads its pre-built numpy wheel.",
+    method: "POST",
+    headers: { "content-type": "text/plain" },
+    body: "",
+    pymode:  { url: PYMODE_NUMPY_URL,    cold: PYMODE_NUMPY_COLD },
+    pyodide: { url: PYODIDE_NUMPY_URL,   cold: PYODIDE_NUMPY_COLD },
   },
 ];
 

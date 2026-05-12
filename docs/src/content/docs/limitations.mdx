@@ -124,27 +124,34 @@ Full CPython 3.13 language support including:
 
 ### C-extension packages: current state
 
-This is the most important honesty checkpoint. **`pymode deploy` only
-ships pure-Python + stdlib today.** Any project that depends on a C
-extension (numpy, pandas, Pillow, lxml, cryptography, scipy,
-scikit-learn, pydantic, …) cannot be deployed via `pymode deploy`
-end-to-end yet.
+`pymode deploy` auto-detects when your project depends on a C-extension
+package and, if a variant wasm exists, uses that variant directly (fast
+deploy — no AOT rebuild). The numpy variant is wired and verified
+end-to-end as of this writing.
 
-The repo contains pre-built variants for `numpy`, `Pillow`,
-`pydantic-core`, and `markupsafe`, plus a recipe system for building
-arbitrary C extensions, plus a dynamic linker in the worker. **The
-plumbing connecting the deploy CLI to these variants is incomplete:**
-the existing variant wasms were built against an older host-import
-surface and don't load in the current worker without a rebuild. Until
-that's fixed, `pymode deploy` rejects projects that list known
-C-extension deps with a clear error rather than producing a broken
-deploy.
+| Package | Variant in repo | Verified deployable today |
+|---|---|---|
+| numpy | ✅ `python-numpy.wasm` | ✅ (linalg stubbed — see below) |
+| Pillow | ✅ `python-pillow.wasm` | needs verification pass |
+| pydantic_core | ✅ `python-pydantic-core.wasm` | needs verification pass |
+| markupsafe | ✅ statically linked | yes |
+| regex / msgpack / xxhash | ✅ statically linked | yes |
+| pandas | ❌ | no |
+| scipy | ❌ | no |
+| scikit-learn | ❌ | no |
+| lxml | ❌ | no |
+| cryptography | ❌ | no |
 
-For comparison, **Cloudflare's official Python Workers ships pre-built
-wheels for numpy, pandas, scipy, scikit-learn, Pillow, lxml,
-cryptography, matplotlib, and ~80 other packages** via Pyodide. For
-any project that needs these, the official runtime is the working
-answer today.
+**numpy caveats**: the variant ships `_multiarray_umath` (array core +
+random + FFT) but does not ship `_umath_linalg`. Linear algebra
+functions in `numpy.linalg` are stubbed and raise `ImportError` if
+called. Everything else (arrays, math, FFT, random) works.
+
+For projects needing pandas / scipy / scikit-learn / lxml /
+cryptography, **Cloudflare's official Python Workers ships pre-built
+wheels for those via Pyodide** — that's the working answer today.
+Closing pymode's catalog gap is a multi-month engineering project; we
+do it package-by-package as needed.
 
 ### Tested & Working
 
