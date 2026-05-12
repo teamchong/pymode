@@ -129,18 +129,23 @@ package and, if a variant wasm exists, uses that variant directly (fast
 deploy — no AOT rebuild). The numpy variant is wired and verified
 end-to-end as of this writing.
 
-| Package | Variant in repo | Verified deployable today |
+| Package | How it's served | Verified deployable today |
 |---|---|---|
-| numpy | ✅ `python-numpy.wasm` | ✅ (linalg stubbed — see below) |
-| Pillow | ✅ `python-pillow.wasm` | needs verification pass |
-| pydantic_core | ✅ `python-pydantic-core.wasm` | needs verification pass |
-| markupsafe | ✅ statically linked | yes |
-| regex / msgpack / xxhash | ✅ statically linked | yes |
-| pandas | ❌ | no |
-| scipy | ❌ | no |
-| scikit-learn | ❌ | no |
-| lxml | ❌ | no |
-| cryptography | ❌ | no |
+| numpy | `python-numpy.wasm` variant | ✅ (linalg stubbed) |
+| Pillow | `python-pillow.wasm` variant | ✅ |
+| pydantic_core | `python-pydantic-core.wasm` variant | ✅ |
+| pyyaml | pure-Python fallback (uv pip) | ✅ |
+| multidict / yarl / frozenlist / propcache | pure-Python fallback (uv pip) | likely (same pattern as pyyaml) |
+| msgpack | pure-Python fallback (uv pip) | likely |
+| markupsafe | statically linked | yes |
+| regex / xxhash | statically linked | yes |
+| pandas | needs numpy + Cython compile pass | no |
+| scipy | needs Fortran cross-compile | no |
+| scikit-learn | depends on scipy | no |
+| lxml | needs libxml2 + libxslt cross-compile | no |
+| cryptography | needs OpenSSL cross-compile | no |
+| orjson / ujson | Rust/C-only (no pure-Python fallback) | no |
+| cffi | runtime C-compile model incompatible with WASM | no |
 
 **numpy caveats**: the variant ships `_multiarray_umath` (array core +
 random + FFT) but does not ship `_umath_linalg`. Linear algebra
