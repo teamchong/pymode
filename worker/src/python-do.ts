@@ -242,18 +242,18 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
     let exitCode = 0;
     let lastWrittenFiles: Map<string, Uint8Array> | null = null;
 
-    // ── Persistent fast path (DISABLED) ─────────────────────────────
-    // Calling _start() twice on the same wasm instance currently traps
-    // with `RuntimeError: unreachable`. Until the underlying state
-    // isn't reset between calls (likely __stack_pointer or some Python
-    // C-level global), force a fresh instance per request. The slow
-    // path is still ~150ms per request — slower than the cached path
-    // would be but correct.
+    // ── Persistent fast path ────────────────────────────────────────
+    // Reuse a cached wasm Instance across requests when the user-files
+    // set hasn't changed. Skips the ~100ms memcpy of the 20MB wizer
+    // snapshot into a fresh linear memory.
+    //
+    // Known issue: second _start() call can trap with
+    // "RuntimeError: unreachable". When that happens we capture stderr
+    // for diagnostic output and fall back to a fresh instance.
     const userFilesKey = userFiles
       ? Object.keys(userFiles).sort().join("\n")
       : "";
-    const ENABLE_PERSISTENT_RUNNER = false;
-    if (ENABLE_PERSISTENT_RUNNER && this.persistentRunner && this.persistentRunner.userFilesKey === userFilesKey) {
+    if (this.persistentRunner && this.persistentRunner.userFilesKey === userFilesKey) {
       const { instance, wasiState, wasi } = this.persistentRunner;
       // Reset per-request state.
       wasiState.stdinData = stdinData;
@@ -262,14 +262,25 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
       wasiState.stderrChunks.length = 0;
       wasiState.exited = false;
       wasiState.exitCode = 0;
+      let trapped = false;
       try {
         (instance.exports._start as () => void)();
       } catch (e) {
-        // Cached instance trapped — burn the cache and fall through to the slow path.
+        // Cached instance trapped — capture diagnostics and fall through.
+        const trapStderr = _decoder.decode(wasi.getStderr());
+        const trapStdout = _decoder.decode(wasi.getStdout());
+        console.error("[persistent-runner] _start trap:", e instanceof Error ? e.message : String(e));
+        if (trapStderr) console.error("[persistent-runner] stderr:", trapStderr.slice(0, 1500));
+        if (trapStdout) console.error("[persistent-runner] stdout:", trapStdout.slice(0, 500));
         this.persistentRunner = null;
-        if (!(e instanceof ProcExit)) throw e;
+        trapped = true;
+        if (!(e instanceof ProcExit)) {
+          // Don't rethrow — fall through to the slow path and serve the
+          // request from a fresh instance. Keeps user requests succeeding
+          // while we collect diagnostic data.
+        }
       }
-      if (this.persistentRunner && !fanout.hasPending) {
+      if (this.persistentRunner && !trapped && !fanout.hasPending) {
         stdout = _decoder.decode(wasi.getStdout());
         stderr = _decoder.decode(wasi.getStderr());
         exitCode = wasiState.exitCode;

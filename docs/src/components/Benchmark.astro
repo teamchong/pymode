@@ -86,14 +86,26 @@ const RUNTIMES = [
 ---
 
 <div class="bench-root">
+  <section class="cold-start-stats">
+    <h3>Cold start (CF-reported at deploy time)</h3>
+    <p class="hint">Cloudflare prints "Worker Startup Time" after every <code>wrangler deploy</code>, measured before any traffic hits the worker. These are the only honest cold-start numbers — a live page-load benchmark always finds the isolate already warmed up by someone else.</p>
+    <table>
+      <thead>
+        <tr><th>Runtime</th><th>Worker Startup Time</th></tr>
+      </thead>
+      <tbody>
+        <tr><th scope="row">pymode</th><td><strong>52 ms</strong></td></tr>
+        <tr><th scope="row">Cloudflare Python Workers (Pyodide)</th><td>1134 ms</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <h3 class="warm-bench-heading">Warm latency (live, from your browser)</h3>
+
   <div class="bench-controls">
     <label>
-      Warm iterations
+      Iterations
       <input id="iterations" type="number" value="10" min="5" max="200" />
-    </label>
-    <label>
-      Cold pause (s)
-      <input id="cold-pause" type="number" value="0" min="0" max="60" />
     </label>
     <button id="run-bench" type="button">Run again</button>
     <p class="bench-status" id="bench-status">Auto-running benchmark…</p>
@@ -107,13 +119,12 @@ const RUNTIMES = [
         <p class="description">{w.description}</p>
         <table>
           <thead>
-            <tr><th></th><th>Cold</th><th>p50</th><th>p99</th><th>OK</th></tr>
+            <tr><th></th><th>p50</th><th>p99</th><th>OK</th></tr>
           </thead>
           <tbody>
             {RUNTIMES.map(rt => (
               <tr data-runtime={rt.key}>
                 <th scope="row">{rt.label}</th>
-                <td data-metric="cold">—</td>
                 <td data-metric="p50">—</td>
                 <td data-metric="p99">—</td>
                 <td data-metric="samples">—</td>
@@ -128,8 +139,10 @@ const RUNTIMES = [
   <p class="bench-footnote">
     Both endpoints serve the same stdlib-only Python source. pymode runs on
     this domain; the Pyodide baseline lives at
-    <a href={PYODIDE_BASE}><code>{PYODIDE_BASE}</code></a>. Latencies include
-    network round-trip from your browser.
+    <a href={PYODIDE_BASE}><code>{PYODIDE_BASE}</code></a>. The first request
+    of each measurement is discarded as a warmup so the reported p50/p99
+    reflect steady-state behaviour. Latencies include network round-trip
+    from your browser.
   </p>
 </div>
 
@@ -137,7 +150,6 @@ const RUNTIMES = [
   const statusEl = document.getElementById("bench-status");
   const runBtn = document.getElementById("run-bench");
   const iterationsInput = document.getElementById("iterations");
-  const coldPauseInput = document.getElementById("cold-pause");
 
   function setMetric(workloadKey, runtimeKey, metric, value) {
     const card = document.querySelector(`.workload-card[data-workload="${workloadKey}"]`);
@@ -172,28 +184,26 @@ const RUNTIMES = [
     return sorted[Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length))];
   }
 
-  async function runOne(runtime, workload, iterations, coldPauseMs, signal) {
+  async function runOne(runtime, workload, iterations, signal) {
     const url = `${runtime.base}/api/${workload.key}`;
 
-    if (coldPauseMs > 0) {
-      statusEl.textContent = `${runtime.label} / ${workload.title}: waiting ${coldPauseMs / 1000}s…`;
-      await new Promise(r => setTimeout(r, coldPauseMs));
-      if (signal.aborted) return;
-    }
-
-    statusEl.textContent = `${runtime.label} / ${workload.title}: cold…`;
-    const cold = await timeReq(url, workload);
-    if (cold.status >= 400) {
-      setMetric(workload.key, runtime.key, "cold", `HTTP ${cold.status}`);
+    // Fire one warmup request that we don't count, so the first measured
+    // request isn't disproportionately polluted by isolate spin-up. The
+    // honest cold-start number is shown separately at the top of the page.
+    statusEl.textContent = `${runtime.label} / ${workload.title}: warmup…`;
+    const warmup = await timeReq(url, workload);
+    if (warmup.status >= 400) {
+      setMetric(workload.key, runtime.key, "p50", `HTTP ${warmup.status}`);
+      setMetric(workload.key, runtime.key, "p99", `HTTP ${warmup.status}`);
+      setMetric(workload.key, runtime.key, "samples", `0/0`);
       return;
     }
-    setMetric(workload.key, runtime.key, "cold", fmt(cold.ms));
 
     const warm = [];
     let ok = 0;
     for (let i = 0; i < iterations; i++) {
       if (signal.aborted) return;
-      statusEl.textContent = `${runtime.label} / ${workload.title}: warm ${i + 1}/${iterations}…`;
+      statusEl.textContent = `${runtime.label} / ${workload.title}: ${i + 1}/${iterations}…`;
       const r = await timeReq(url, workload);
       if (r.status < 400) {
         warm.push(r.ms);
@@ -219,12 +229,11 @@ const RUNTIMES = [
     current = new AbortController();
     runBtn.textContent = "Cancel";
 
-    const iterations = Math.max(5, Math.min(200, Number(iterationsInput.value) || 20));
-    const coldPauseMs = Math.max(0, Math.min(60, Number(coldPauseInput.value) || 0)) * 1000;
+    const iterations = Math.max(5, Math.min(200, Number(iterationsInput.value) || 10));
 
     // Reset all cells
     for (const w of WORKLOADS) for (const rt of RUNTIMES) {
-      for (const m of ["cold", "p50", "p99", "samples"]) setMetric(w.key, rt.key, m, "…");
+      for (const m of ["p50", "p99", "samples"]) setMetric(w.key, rt.key, m, "…");
     }
 
     try {
@@ -233,7 +242,7 @@ const RUNTIMES = [
         // Run pymode and pyodide in parallel for each workload —
         // saves wall time and gives them comparable conditions.
         await Promise.all(RUNTIMES.map(rt =>
-          runOne(rt, workload, iterations, coldPauseMs, current.signal)
+          runOne(rt, workload, iterations, current.signal)
         ));
       }
       if (!current.signal.aborted) statusEl.textContent = "Done.";
@@ -254,6 +263,58 @@ const RUNTIMES = [
   .bench-root {
     margin: 1.5rem 0;
     font-family: var(--sl-font-system, system-ui);
+  }
+
+  .cold-start-stats {
+    border: 1px solid var(--sl-color-gray-5);
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    margin-bottom: 1.5rem;
+    background: var(--sl-color-gray-7);
+  }
+
+  .cold-start-stats h3 {
+    margin: 0 0 0.4rem;
+    font-size: 1rem;
+  }
+
+  .cold-start-stats .hint {
+    font-size: 0.8rem;
+    color: var(--sl-color-gray-2);
+    margin: 0 0 0.75rem;
+    line-height: 1.45;
+  }
+
+  .cold-start-stats table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+  }
+
+  .cold-start-stats th,
+  .cold-start-stats td {
+    padding: 0.4rem 0.6rem;
+    text-align: left;
+    border-bottom: 1px solid var(--sl-color-gray-6);
+  }
+
+  .cold-start-stats tbody th[scope="row"] {
+    font-weight: 600;
+  }
+
+  .cold-start-stats td {
+    text-align: right;
+    font-family: var(--sl-font-mono, ui-monospace, monospace);
+  }
+
+  .cold-start-stats tbody tr:last-child th,
+  .cold-start-stats tbody tr:last-child td {
+    border-bottom: none;
+  }
+
+  .warm-bench-heading {
+    margin: 0 0 0.75rem;
+    font-size: 1rem;
   }
 
   .bench-controls {
@@ -311,6 +372,7 @@ const RUNTIMES = [
   .workload-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+    grid-auto-rows: 1fr;
     gap: 1rem;
     align-items: stretch;
   }
