@@ -16,9 +16,9 @@ hero:
 
 import { Card, CardGrid } from "@astrojs/starlight/components";
 
-## Why PyMode?
+## About this project
 
-Cloudflare's official Python Workers ship Pyodide — a CPython fork built with Emscripten — and are the easier path for most users. PyMode is a community alternative that compiles **upstream CPython** directly to `wasm32-wasi` via `zig cc`. The trade-off is real: deploys take minutes (AOT-build per app) instead of seconds, in exchange for upstream-CPython semantics, the option to compile arbitrary C extensions Pyodide doesn't ship, and AOT-patched host imports that bypass the Python ↔ JS FFI translation Pyodide pays per call.
+This is a personal experiment in running upstream CPython 3.13 on Cloudflare Workers via `zig cc` → `wasm32-wasi`. Cloudflare's official Python Workers ship Pyodide and are the supported path; PyMode is not a replacement for them.
 
 <CardGrid>
   <Card title="Upstream CPython 3.13" icon="seti:python">

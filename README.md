@@ -6,7 +6,7 @@
 
 CPython 3.13 compiled to WASM with `zig cc`. Runs on Workers with access to KV, R2, D1, TCP, and HTTP via custom host imports.
 
-> **Why another Python-on-Workers project?** Cloudflare's [Python Workers](https://blog.cloudflare.com/python-workers) ship Pyodide (a CPython fork built with Emscripten) and are the official, supported path. PyMode is a community project that takes a different approach: compile **upstream CPython 3.13** directly to `wasm32-wasi` using `zig cc` — no Emscripten, no Pyodide patches. The trade-off is real: PyMode deploys take minutes (the wasm is built per-app at deploy time), but you get exact upstream-CPython semantics, host imports patched into direct JS stubs at AOT time, and the option to compile any C extension Pyodide doesn't ship. If your workload is well-served by Pyodide's catalog and you want fast deploy iteration, the official Workers will be the easier path. PyMode is the better fit when you want upstream CPython, a specific C extension not in Pyodide, or per-request overhead optimisation.
+> This is a personal experiment in running upstream CPython 3.13 on Cloudflare Workers via `zig cc` → `wasm32-wasi`. Cloudflare's official [Python Workers](https://blog.cloudflare.com/python-workers) ship Pyodide and are the supported path; PyMode is not a replacement for them.
 
 ## Quick Start
 
