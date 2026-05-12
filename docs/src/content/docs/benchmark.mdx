@@ -1,13 +1,72 @@
 ---
 title: Benchmark
-description: Live side-by-side comparison of pymode and Cloudflare's Pyodide-based Python Workers across three realistic serverless workloads.
+description: Honest side-by-side comparison of pymode and Cloudflare's Pyodide-based Python Workers across three realistic workloads.
 ---
 
 import Benchmark from "../../components/Benchmark.astro";
 
-Three realistic Python serverless workloads measured live from your
-browser against two deployed workers — pymode (this domain) and
-Cloudflare's Pyodide-based Python Workers (a separate `*.workers.dev`
-deployment with the same handler source).
+Three Python workloads — log regex extract, markdown rendering with
+`markdown_it_py` + `jinja2`, and HTML scraping with `BeautifulSoup4` —
+running on both runtimes. The same Python source is deployed to each;
+each card shows deploy-time startup cost and live warm-request latency
+from your browser.
 
 <Benchmark />
+
+## What this benchmark says and doesn't say
+
+**Deploy-time startup ≠ production cold start.** The "Cold" column is
+the `Worker Startup Time` Cloudflare reports immediately after
+`wrangler deploy` — it's the cost of bringing up an isolate from
+scratch before the snapshot system kicks in. Production cold-isolate
+spin-ups in both runtimes use memory snapshots and are dramatically
+faster than this number. We surface it because it's an honest
+deploy-time signal and pymode's per-deploy build pipeline keeps it
+small; it is not a claim about live latency.
+
+**Warm latency is the comparable number.** For stdlib-only work
+(`/api/logs`), pymode and Pyodide land within noise of each other.
+For the package-heavy workloads, behaviour will depend on which side
+of the Python ↔ JS boundary the work happens. Run the live benchmark
+to see today's numbers from your network.
+
+**Both runtimes can run popular Python packages.** Earlier versions of
+this page claimed `markdown_it_py`, `jinja2`, and `beautifulsoup4`
+weren't loadable on Cloudflare's Python Workers. That was true under
+the original wrangler flow but **not** under the current
+`pywrangler` + `uv` + `WorkerEntrypoint` workflow, which installs
+arbitrary pure-Python packages from PyPI. Both bench workers above use
+the modern flow.
+
+## Where pymode is meaningfully different
+
+The package-availability gap is closed for pure-Python libraries.
+What remains:
+
+- **Vanilla upstream CPython 3.13.** Pyodide ports CPython on a
+  ~yearly cadence and maintains its own fork. If you want day-one
+  3.14 features (template strings, deferred evaluation, free-threaded
+  mode) or want to avoid Pyodide-specific patches around signal
+  handling / threading / random / fs semantics, pymode is plain
+  CPython from `git`.
+- **AOT-specialised host imports.** pymode's deploy CLI generates a
+  WASM snapshot tailored to the app's imports and patches hot I/O
+  paths (KV, R2, fetch, etc.) into native JS stubs so they bypass
+  the Python ↔ JS FFI translation that Pyodide pays per call. The
+  cost is a longer deploy; the benefit is lower per-request overhead
+  for I/O-bound workers.
+- **C extensions Pyodide doesn't ship.** Pyodide carries a curated
+  set of compiled extensions (numpy, pandas, pillow, lxml…); pymode
+  can compile arbitrary C extensions via `zig cc` against
+  `wasm32-wasi`. The long tail of niche or in-house native modules
+  is the place this matters.
+- **Smaller per-isolate footprint.** Pyodide's base runtime is ~6.4 MB
+  before packages; pymode's stripped CPython sits in a wasm binary
+  tailored per deploy. Fewer megabytes per isolate means more isolates
+  per machine and faster snapshot loads.
+
+If your worker is short, pure-Python, and your packages are already in
+Pyodide's catalog, the official Python Workers will serve you well.
+pymode is the better fit when you need a specific CPython version, a C
+extension Pyodide doesn't carry, or you're willing to trade longer
+deploy time for lower per-request overhead.

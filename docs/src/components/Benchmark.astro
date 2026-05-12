@@ -17,17 +17,22 @@
 const PYMODE_LOGS_URL     = "https://logs.pymode.teamchong.net";
 const PYMODE_MARKDOWN_URL = "https://markdown.pymode.teamchong.net";
 const PYMODE_SCRAPE_URL   = "https://scrape.pymode.teamchong.net";
-const PYODIDE_LOGS_URL    = "https://pyodide-bench.chong1222.workers.dev";
+const PYODIDE_URL         = "https://pyodide-bench.chong1222.workers.dev";
 
-// Cold-start values come from CF's "Worker Startup Time" line in each
-// `wrangler deploy` output. Different per worker because preimports
-// differ — logs preimports nothing extra, markdown preimports
-// markdown_it_py + jinja2, scrape preimports beautifulsoup4.
-// Filled in from real deploy output once each deploy lands.
-const PYMODE_LOGS_COLD     = 43;    // CF reported at deploy
-const PYMODE_MARKDOWN_COLD = null;  // TBD
-const PYMODE_SCRAPE_COLD   = null;  // TBD
-const PYODIDE_COLD = 1134;
+// Cold = CF "Worker Startup Time" reported at deploy. This is NOT
+// per-request cold-isolate latency in production (CF uses memory
+// snapshots in prod). It's the bound on what an isolate costs to
+// instantiate before any traffic hits it.
+//
+// pymode: separate worker per workload, each tailored AOT build.
+// Pyodide: one worker (using pywrangler + WorkerEntrypoint) handles
+//   all three endpoints. Pyodide loads jinja2/markdown_it_py/bs4 fine
+//   under the new flow — the earlier "package unavailable" framing
+//   was incorrect.
+const PYMODE_LOGS_COLD     = 43;
+const PYMODE_MARKDOWN_COLD = 61;
+const PYMODE_SCRAPE_COLD   = 55;
+const PYODIDE_COLD = 1827;  // markdown_it_py + jinja2 + bs4 preloaded
 
 const LOG_SAMPLE = [
   '192.168.1.10 - - [01/Jan/2026:10:00:01 +0000] "GET /index.html HTTP/1.1" 200 1024',
@@ -80,27 +85,27 @@ const WORKLOADS = [
     headers: { "content-type": "text/plain" },
     body: LOG_SAMPLE,
     pymode:  { url: PYMODE_LOGS_URL,     cold: PYMODE_LOGS_COLD },
-    pyodide: { url: PYODIDE_LOGS_URL,    cold: PYODIDE_COLD },
+    pyodide: { url: PYODIDE_URL,         cold: PYODIDE_COLD },
   },
   {
     key: "markdown",
     title: "Markdown → HTML (markdown_it + jinja2)",
-    description: "Real CommonMark renderer + Python template engine. CF Pyodide rejects this deploy with ModuleNotFoundError — pymode runs it from pip.",
+    description: "CommonMark renderer + Python template engine. Both runtimes can run the same packages from pip via uv.",
     method: "POST",
     headers: { "content-type": "text/plain" },
     body: MARKDOWN_SAMPLE,
     pymode:  { url: PYMODE_MARKDOWN_URL, cold: PYMODE_MARKDOWN_COLD },
-    pyodide: null,
+    pyodide: { url: PYODIDE_URL,         cold: PYODIDE_COLD },
   },
   {
     key: "scrape",
     title: "HTML scrape with BeautifulSoup",
-    description: "Real-world page → structured title/headings/links via BeautifulSoup4. CF Pyodide rejects bs4 at deploy time — pymode runs it.",
+    description: "Real-world page → structured title/headings/links via BeautifulSoup4. Both runtimes support bs4 via pip.",
     method: "POST",
     headers: { "content-type": "text/html" },
     body: SCRAPE_SAMPLE,
     pymode:  { url: PYMODE_SCRAPE_URL,   cold: PYMODE_SCRAPE_COLD },
-    pyodide: null,
+    pyodide: { url: PYODIDE_URL,         cold: PYODIDE_COLD },
   },
 ];
 
@@ -112,10 +117,13 @@ const RUNTIMES = [
 
 <div class="bench-root">
   <p class="bench-intro">
-    Each card runs the same Python source on both runtimes. The
-    <strong>Cold</strong> column is the CF-reported Worker Startup Time
-    (measured at deploy, before any traffic). The <strong>p50/p99</strong>
-    are live measurements from your browser when this page loaded.
+    Same Python source on both runtimes. <strong>Cold</strong> is the
+    "Worker Startup Time" CF prints after <code>wrangler deploy</code> —
+    the cost of instantiating an isolate before any traffic hits it. It
+    is <em>not</em> the production cold-isolate latency a user pays
+    (CF uses memory snapshots in prod). <strong>p50/p99</strong> are
+    live warm measurements from your browser. The first request of each
+    measurement is discarded as a warmup.
   </p>
 
   <div class="bench-controls">
@@ -145,15 +153,18 @@ const RUNTIMES = [
             <tr><th></th><th>Cold</th><th>p50</th><th>p99</th><th>OK</th></tr>
           </thead>
           <tbody>
-            {RUNTIMES.map(rt => (
-              <tr data-runtime={rt.key}>
-                <th scope="row">{rt.label}</th>
-                <td>{rt.cold} ms</td>
-                <td data-metric="p50">—</td>
-                <td data-metric="p99">—</td>
-                <td data-metric="samples">—</td>
-              </tr>
-            ))}
+            {RUNTIMES.map(rt => {
+              const entry = w[rt.key];
+              return (
+                <tr data-runtime={rt.key}>
+                  <th scope="row">{rt.label}</th>
+                  <td>{entry == null ? "n/a" : (entry.cold == null ? "…" : `${entry.cold} ms`)}</td>
+                  <td data-metric="p50">{entry == null ? "n/a" : "—"}</td>
+                  <td data-metric="p99">{entry == null ? "n/a" : "—"}</td>
+                  <td data-metric="samples">{entry == null ? "n/a" : "—"}</td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </article>
@@ -210,16 +221,16 @@ const RUNTIMES = [
   }
 
   async function runOne(runtime, workload, iterations, signal) {
-    // Workloads marked pyodide:false don't run on the Pyodide baseline
-    // because CF Pyodide's package list doesn't include the required
-    // library. Show that as static "unsupported" cells.
-    if (runtime.key === "pyodide" && workload.pyodide === false) {
-      setMetric(workload.key, runtime.key, "p50", "—");
-      setMetric(workload.key, runtime.key, "p99", "—");
+    // workload[runtime.key] is null when that runtime can't run the
+    // workload (e.g., CF Pyodide can't load markdown_it_py or bs4).
+    const entry = workload[runtime.key];
+    if (!entry) {
+      setMetric(workload.key, runtime.key, "p50", "n/a");
+      setMetric(workload.key, runtime.key, "p99", "n/a");
       setMetric(workload.key, runtime.key, "samples", "n/a");
       return;
     }
-    const url = `${runtime.base}/api/${workload.key}`;
+    const url = `${entry.url}/api/${workload.key}`;
 
     // Fire one warmup request that we don't count, so the first measured
     // request isn't disproportionately polluted by isolate spin-up. The
