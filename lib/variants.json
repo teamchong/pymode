@@ -20,6 +20,13 @@
       "sitePackages": "pillow-site-packages.zip",
       "extensions": ["pillow"],
       "size": null
+    },
+    "pydantic-core": {
+      "description": "CPython 3.13 + pydantic-core (Rust core compiled to wasm32-wasi)",
+      "wasm": "python-pydantic-core.wasm",
+      "sitePackages": "pydantic-core-site-packages.zip",
+      "extensions": ["pydantic-core"],
+      "size": null
     }
   },
   "extensionPackages": {
@@ -38,6 +45,7 @@
     "orjson": null,
     "ujson": null,
     "markupsafe": null,
-    "pydantic-core": null
+    "pydantic-core": "pydantic-core",
+    "pydantic_core": "pydantic-core"
   }
 }
