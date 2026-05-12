@@ -10,8 +10,24 @@
  * Workloads are stdlib-only (hmac/hashlib/base64/json) so the same
  * Python source ships to both runtimes.
  */
-const PYMODE_BASE = "";  // empty = same origin (pymode.teamchong.net)
-const PYODIDE_BASE = "https://pyodide-bench.chong1222.workers.dev";
+// Per-workload bench workers. Each pymode worker is a SEPARATE deploy
+// with its own AOT-tailored wasm (different preimports) so each has a
+// distinct Worker Startup Time reported by CF at deploy. Pyodide is only
+// usable for the stdlib-only workload — the others fail at deploy time.
+const PYMODE_LOGS_URL     = "https://logs.pymode.teamchong.net";
+const PYMODE_MARKDOWN_URL = "https://markdown.pymode.teamchong.net";
+const PYMODE_SCRAPE_URL   = "https://scrape.pymode.teamchong.net";
+const PYODIDE_LOGS_URL    = "https://pyodide-bench.chong1222.workers.dev";
+
+// Cold-start values come from CF's "Worker Startup Time" line in each
+// `wrangler deploy` output. Different per worker because preimports
+// differ — logs preimports nothing extra, markdown preimports
+// markdown_it_py + jinja2, scrape preimports beautifulsoup4.
+// Filled in from real deploy output once each deploy lands.
+const PYMODE_LOGS_COLD     = 43;    // CF reported at deploy
+const PYMODE_MARKDOWN_COLD = null;  // TBD
+const PYMODE_SCRAPE_COLD   = null;  // TBD
+const PYODIDE_COLD = 1134;
 
 const LOG_SAMPLE = [
   '192.168.1.10 - - [01/Jan/2026:10:00:01 +0000] "GET /index.html HTTP/1.1" 200 1024',
@@ -59,35 +75,38 @@ const WORKLOADS = [
   {
     key: "logs",
     title: "Regex log extract",
-    description: "Stdlib re — both runtimes support this. Real CloudWatch log-scrubbing pattern.",
+    description: "Stdlib re — both runtimes can run it. Real CloudWatch log-scrubbing pattern.",
     method: "POST",
     headers: { "content-type": "text/plain" },
     body: LOG_SAMPLE,
-    pyodide: true,
+    pymode:  { url: PYMODE_LOGS_URL,     cold: PYMODE_LOGS_COLD },
+    pyodide: { url: PYODIDE_LOGS_URL,    cold: PYODIDE_COLD },
   },
   {
     key: "markdown",
     title: "Markdown → HTML (markdown_it + jinja2)",
-    description: "Real CommonMark renderer + Python template engine. Pyodide-on-CF doesn't ship either package — pymode runs both natively from pip.",
+    description: "Real CommonMark renderer + Python template engine. CF Pyodide rejects this deploy with ModuleNotFoundError — pymode runs it from pip.",
     method: "POST",
     headers: { "content-type": "text/plain" },
     body: MARKDOWN_SAMPLE,
-    pyodide: false,
+    pymode:  { url: PYMODE_MARKDOWN_URL, cold: PYMODE_MARKDOWN_COLD },
+    pyodide: null,
   },
   {
     key: "scrape",
     title: "HTML scrape with BeautifulSoup",
-    description: "Real-world page → structured title/headings/links via BeautifulSoup4. Pyodide-on-CF can't load bs4; pymode does it natively.",
+    description: "Real-world page → structured title/headings/links via BeautifulSoup4. CF Pyodide rejects bs4 at deploy time — pymode runs it.",
     method: "POST",
     headers: { "content-type": "text/html" },
     body: SCRAPE_SAMPLE,
-    pyodide: false,
+    pymode:  { url: PYMODE_SCRAPE_URL,   cold: PYMODE_SCRAPE_COLD },
+    pyodide: null,
   },
 ];
 
 const RUNTIMES = [
-  { key: "pymode",  label: "pymode",       base: PYMODE_BASE,  cold: 52,   color: "var(--sl-color-accent)" },
-  { key: "pyodide", label: "Pyodide (CF)", base: PYODIDE_BASE, cold: 1134, color: "var(--sl-color-orange, #f48120)" },
+  { key: "pymode",  label: "pymode",       color: "var(--sl-color-accent)" },
+  { key: "pyodide", label: "Pyodide (CF)", color: "var(--sl-color-orange, #f48120)" },
 ];
 ---
 
@@ -142,12 +161,13 @@ const RUNTIMES = [
   </div>
 
   <p class="bench-footnote">
-    Both endpoints serve the same stdlib-only Python source. pymode runs on
-    this domain; the Pyodide baseline lives at
-    <a href={PYODIDE_BASE}><code>{PYODIDE_BASE}</code></a>. The first request
-    of each measurement is discarded as a warmup so the reported p50/p99
-    reflect steady-state behaviour. Latencies include network round-trip
-    from your browser.
+    Each pymode workload runs on its own deployed worker under
+    <code>*.pymode.teamchong.net</code> with tailored preimports — that
+    way the Worker Startup Time CF reports at deploy varies per workload.
+    The Pyodide comparison runs at <code>pyodide-bench.chong1222.workers.dev</code>.
+    First request of each measurement is a discarded warmup so the
+    reported p50/p99 reflect steady-state behaviour. Latencies include
+    network round-trip from your browser.
   </p>
 </div>
 
