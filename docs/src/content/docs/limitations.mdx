@@ -122,6 +122,30 @@ Full CPython 3.13 language support including:
 
 ## Package Support
 
+### C-extension packages: current state
+
+This is the most important honesty checkpoint. **`pymode deploy` only
+ships pure-Python + stdlib today.** Any project that depends on a C
+extension (numpy, pandas, Pillow, lxml, cryptography, scipy,
+scikit-learn, pydantic, …) cannot be deployed via `pymode deploy`
+end-to-end yet.
+
+The repo contains pre-built variants for `numpy`, `Pillow`,
+`pydantic-core`, and `markupsafe`, plus a recipe system for building
+arbitrary C extensions, plus a dynamic linker in the worker. **The
+plumbing connecting the deploy CLI to these variants is incomplete:**
+the existing variant wasms were built against an older host-import
+surface and don't load in the current worker without a rebuild. Until
+that's fixed, `pymode deploy` rejects projects that list known
+C-extension deps with a clear error rather than producing a broken
+deploy.
+
+For comparison, **Cloudflare's official Python Workers ships pre-built
+wheels for numpy, pandas, scipy, scikit-learn, Pillow, lxml,
+cryptography, matplotlib, and ~80 other packages** via Pyodide. For
+any project that needs these, the official runtime is the working
+answer today.
+
 ### Tested & Working
 
 These packages have conformance tests running in the actual workerd runtime:

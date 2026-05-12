@@ -264,6 +264,28 @@ export async function deploy(args) {
 
     installDeps(projectDir);
 
+    // C-extension variant detection: if the project depends on a package
+    // that needs a pre-built variant (numpy, pillow, pydantic_core, …),
+    // the AOT path below won't include the native code and the deploy
+    // would fail at runtime with ImportError.
+    //
+    // The pre-built variant wasms in worker/src/ exist but were built
+    // against an older host-import surface; the current worker.ts /
+    // wasm-runner.ts don't supply the imports they expect. Until the
+    // variants are rebuilt against the current surface (or the worker
+    // adds back-compat aliases), variant deploys are not viable.
+    //
+    // For now, refuse cleanly instead of producing a broken deploy.
+    if (variant.wasm) {
+      console.error(
+        `\n  C-extension variant "${variantKey}" detected but variant deploy isn't wired ` +
+        `end-to-end yet. The pre-built ${variant.wasm} exists but uses an older ` +
+        `host-import surface than the current worker. See docs/limitations for the ` +
+        `current state of C-extension package support.\n`
+      );
+      process.exit(1);
+    }
+
     console.log("\n  Regenerating wizer preimports + rebuilding python.wasm for this app...\n");
     const headerPath = join(repoRoot, "lib", "wizer", "pymode_wizer_app_preimports.h");
     const genResult = spawnSync(
