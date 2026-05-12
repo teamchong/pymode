@@ -78,21 +78,12 @@ const RUNTIMES = [
 ---
 
 <div class="bench-root">
-  <section class="cold-start-stats">
-    <h3>Cold start (CF-reported at deploy time)</h3>
-    <p class="hint">Cloudflare prints "Worker Startup Time" after every <code>wrangler deploy</code>, measured before any traffic hits the worker. These are the only honest cold-start numbers — a live page-load benchmark always finds the isolate already warmed up by someone else.</p>
-    <table>
-      <thead>
-        <tr><th>Runtime</th><th>Worker Startup Time</th></tr>
-      </thead>
-      <tbody>
-        <tr><th scope="row">pymode</th><td><strong>52 ms</strong></td></tr>
-        <tr><th scope="row">Pyodide (CF)</th><td>1134 ms</td></tr>
-      </tbody>
-    </table>
-  </section>
-
-  <h3 class="warm-bench-heading">Warm latency (live, from your browser)</h3>
+  <p class="bench-intro">
+    Each card runs the same Python source on both runtimes. The
+    <strong>Cold</strong> column is the CF-reported Worker Startup Time
+    (measured at deploy, before any traffic). The <strong>p50/p99</strong>
+    are live measurements from your browser when this page loaded.
+  </p>
 
   <div class="bench-controls">
     <label>
@@ -263,6 +254,13 @@ const RUNTIMES = [
   .bench-root {
     margin: 1.5rem 0;
     font-family: var(--sl-font-system, system-ui);
+  }
+
+  .bench-intro {
+    font-size: 0.85rem;
+    color: var(--sl-color-gray-2);
+    margin: 0 0 1rem;
+    line-height: 1.55;
   }
 
   .cold-start-stats {
@@ -451,9 +449,18 @@ const RUNTIMES = [
     table-layout: fixed;
   }
 
-  /* Explicit widths so every card has identical column geometry. */
-  .workload-card colgroup .col-runtime { width: 38%; }
-  .workload-card colgroup .col-metric  { width: 15.5%; }
+  /* Explicit widths so every card has identical column geometry.
+     Wider metric columns to fit "1134 ms"-class numbers. Drop OK
+     column from the layout (we keep the cell but make it compact). */
+  .workload-card colgroup .col-runtime { width: 32%; }
+  .workload-card colgroup .col-metric  { width: 17%; }
+  .workload-card td,
+  .workload-card th {
+    padding: 0.3rem 0.25rem;
+    font-size: 0.78rem;
+  }
+  .workload-card td[data-metric="samples"],
+  .workload-card thead th:last-child { font-size: 0.7rem; }
 
   .workload-card th,
   .workload-card td {
