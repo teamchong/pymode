@@ -369,14 +369,28 @@ const RUNTIMES = [
 
   .workload-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+    /* Force 3 equal columns so all cards sit in a single row with
+       identical top/bottom edges. The auto-fit minmax variant we had
+       before was wrapping into 2 rows on Starlight's content width,
+       so cards visibly drifted between row 1 and row 2. */
+    grid-template-columns: 1fr 1fr 1fr;
     gap: 1rem;
+    align-items: stretch;
+  }
+
+  @media (max-width: 720px) {
+    /* Stack on narrow viewports — fitting 3 cards horizontally below
+       this width would crush the table. */
+    .workload-grid {
+      grid-template-columns: 1fr;
+    }
   }
 
   /* Use an explicit grid inside each card so every section lives in a
      fixed-height row. Same row template on every card → tables, titles,
      and subtitles all line up across cards regardless of viewport. */
   .workload-card {
+    margin: 0;
     border: 1px solid var(--sl-color-gray-5);
     border-radius: 8px;
     padding: 1rem;
