@@ -1,79 +1,81 @@
 ---
 title: Benchmark
-description: Honest side-by-side comparison of pymode and Cloudflare's Pyodide-based Python Workers across three realistic workloads.
+description: Side-by-side comparison of pymode and Cloudflare's Pyodide-based Python Workers across three workloads. The same Python source on each runtime.
 ---
 
 import Benchmark from "../../components/Benchmark.astro";
 
-Three Python workloads — log regex extract, markdown rendering with
-`markdown_it_py` + `jinja2`, and HTML scraping with `BeautifulSoup4` —
-running on both runtimes. The same Python source is deployed to each;
-each card shows deploy-time startup cost and live warm-request latency
-from your browser.
+The same Python source on both runtimes — log regex extract, markdown
+rendering with `markdown_it_py` + `jinja2`, and HTML scraping with
+`BeautifulSoup4`. Three pymode workers (one per workload, each AOT-built)
+under `*.pymode.teamchong.net`, one Pyodide worker handling all three
+endpoints at `pyodide-bench.chong1222.workers.dev`.
 
 <Benchmark />
 
-## When you actually pay the Cold number
+## What the columns mean
 
-The Cold column is the `Worker Startup Time` Cloudflare reports right
-after `wrangler deploy`. You pay it:
+**Cold** is the `Worker Startup Time` Cloudflare reports right after
+`wrangler deploy`. You pay it on the first request to a fresh deploy,
+and on the next request after an idle isolate is evicted from a PoP.
+You do **not** pay it on every request. In production, Cloudflare's
+Python Workers also use memory snapshots, so an actual cold-isolate
+spin-up in production is faster than this deploy-time signal —
+especially for Pyodide. The pymode number is closer to the real
+cold-isolate cost because pymode's snapshot is baked into the wasm
+at deploy via wizer, so every isolate boot reads from the same
+pre-initialised state.
 
-- **Once per fresh deploy** — the first request after a new version
-  goes live. Both runtimes pay this.
-- **On the next request after isolate eviction** — Cloudflare evicts
-  idle isolates after some minutes of no traffic (the exact threshold
-  isn't published; it's adaptive). The very next request to that PoP
-  triggers a fresh isolate boot.
+**p50 / p99** are warm-request latencies measured live by your browser.
+First request of each measurement is discarded as a warmup. Numbers
+include network RTT from your machine to the closest Cloudflare PoP.
 
-You do **not** pay it on every request. Once an isolate is warm in a
-given PoP, subsequent requests in that PoP go straight to the warm
-path. Cloudflare also uses memory snapshots in production for both
-runtimes, which makes real cold-isolate spin-ups faster than the
-deploy-time number; the deploy-time number is the worst-case
-bound.
+## Honest differences between the two runtimes
 
-Warm latency (the p50 / p99 columns) is what dominates steady-state
-traffic. For stdlib-only work, pymode and Pyodide land within noise
-of each other; for the package-heavy workloads, behaviour depends on
-how much work happens on each side of the Python ↔ JS boundary.
-
-**Both runtimes can run popular Python packages.** Earlier versions of
-this page claimed `markdown_it_py`, `jinja2`, and `beautifulsoup4`
-weren't loadable on Cloudflare's Python Workers. That was true under
-the original wrangler flow but **not** under the current
-`pywrangler` + `uv` + `WorkerEntrypoint` workflow, which installs
-arbitrary pure-Python packages from PyPI. Both bench workers above use
-the modern flow.
+| | pymode | Pyodide on CF |
+|---|---|---|
+| Python | Upstream CPython 3.13 from source | Pyodide's port (currently lagging CPython by ~1 minor version) |
+| Deploy flow | `pymode deploy` — AOT-compiles a wasm tailored to the app's imports (~10 min) | `pywrangler deploy` — Pyodide loads packages at deploy time (~seconds) |
+| Pure-Python pip packages | Any (uv pip install at deploy) | Any compatible with Pyodide |
+| Compiled C extensions | Compile via `zig cc` to `wasm32-wasi` (manual) | Curated set Cloudflare ships (numpy, pandas, Pillow, lxml, etc.) |
+| Host imports (KV, R2, D1, fetch) | AOT-specialised: hot-path call sites patched into direct JS stubs | JsProxy/PyProxy translation per call |
+| DurableObject classes | yes | yes (via `workers-py` SDK) |
+| Per-deploy startup | tens of ms | ~1-2 seconds |
+| Vendored deploy artifact | one wasm per workload (~10 MB raw) | ~1.5 MB modules + Pyodide runtime loaded by CF |
 
 ## Where pymode is meaningfully different
 
-The package-availability gap is closed for pure-Python libraries.
-What remains:
-
-- **Vanilla upstream CPython 3.13.** Pyodide ports CPython on a
-  ~yearly cadence and maintains its own fork. If you want day-one
-  3.14 features (template strings, deferred evaluation, free-threaded
-  mode) or want to avoid Pyodide-specific patches around signal
-  handling / threading / random / fs semantics, pymode is plain
-  CPython from `git`.
+- **Upstream CPython.** No Pyodide-specific patches around signal
+  handling, threading, random, or filesystem semantics. If you care
+  about exact CPython behaviour, pymode is `git`-CPython compiled via
+  `zig cc`. If you want 3.13 features today, you get them; Pyodide's
+  CPython port lags the upstream release cadence.
 - **AOT-specialised host imports.** pymode's deploy CLI generates a
-  WASM snapshot tailored to the app's imports and patches hot I/O
-  paths (KV, R2, fetch, etc.) into native JS stubs so they bypass
-  the Python ↔ JS FFI translation that Pyodide pays per call. The
-  cost is a longer deploy; the benefit is lower per-request overhead
-  for I/O-bound workers.
-- **C extensions Pyodide doesn't ship.** Pyodide carries a curated
-  set of compiled extensions (numpy, pandas, pillow, lxml…); pymode
-  can compile arbitrary C extensions via `zig cc` against
-  `wasm32-wasi`. The long tail of niche or in-house native modules
-  is the place this matters.
-- **Smaller per-isolate footprint.** Pyodide's base runtime is ~6.4 MB
-  before packages; pymode's stripped CPython sits in a wasm binary
-  tailored per deploy. Fewer megabytes per isolate means more isolates
-  per machine and faster snapshot loads.
+  wasm tailored to the app's imports and patches I/O hot paths
+  (KV, R2, fetch, etc.) into direct JS stubs. The trade-off is a much
+  longer deploy in exchange for skipping the Python ↔ JS FFI
+  translation that Pyodide pays per host call. The page doesn't
+  currently include a workload that exercises this; it shows up in
+  I/O-bound handlers that do many small KV / R2 / fetch operations
+  per request.
+- **Compile-anything C extensions.** Pyodide ships a curated set of
+  compiled extensions. pymode lets you build any C extension that
+  cross-compiles to `wasm32-wasi` via `zig cc`. The long tail of
+  niche scientific libs or internal C modules is where this matters.
+
+## Where Pyodide is the easier choice
+
+- Deploy iteration. pymode's AOT build is minutes; Pyodide's is
+  seconds.
+- Numpy / pandas / Pillow / lxml today. Pyodide ships them; pymode
+  has the `python-numpy.wasm` variant but hasn't wired numpy into
+  the AOT deploy path yet, so a non-stdlib numpy app deploys cleanly
+  on Pyodide and doesn't on pymode.
+- The official integration. Cloudflare maintains `workers-py`; pymode
+  is a community project against the same platform.
 
 If your worker is short, pure-Python, and your packages are already in
-Pyodide's catalog, the official Python Workers will serve you well.
-pymode is the better fit when you need a specific CPython version, a C
-extension Pyodide doesn't carry, or you're willing to trade longer
-deploy time for lower per-request overhead.
+Pyodide's catalog, Cloudflare's Python Workers are the easier path.
+pymode is the better fit when you want upstream CPython, a C extension
+Pyodide doesn't ship, or are willing to trade deploy iteration for
+per-request overhead optimisation.
