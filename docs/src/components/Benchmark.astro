@@ -50,32 +50,32 @@ const WORKLOADS = [
     title: "CSV → JSON aggregate",
     description: "POST a CSV chunk, parse with stdlib csv.DictReader, return aggregated JSON (row count + numeric column means). Real S3 / Kinesis ETL ingest pattern. Both runtimes use stdlib.",
     method: "POST",
-    headers: () => ({ "content-type": "text/csv" }),
-    body: () => CSV_SAMPLE,
+    headers: { "content-type": "text/csv" },
+    body: CSV_SAMPLE,
   },
   {
     key: "logs",
     title: "Regex log extract",
     description: "POST nginx-style access logs, regex-extract IPs and HTTP status codes, return per-status counts and unique-IP count. Real CloudWatch / log scrubbing pattern. Stdlib re.",
     method: "POST",
-    headers: () => ({ "content-type": "text/plain" }),
-    body: () => LOG_SAMPLE,
+    headers: { "content-type": "text/plain" },
+    body: LOG_SAMPLE,
   },
   {
     key: "scrape",
     title: "HTML link extract",
     description: "POST HTML, parse with stdlib html.parser, return list of <a href> targets. Real RSS / sitemap scraping pattern. Stdlib only.",
     method: "POST",
-    headers: () => ({ "content-type": "text/html" }),
-    body: () => HTML_SAMPLE,
+    headers: { "content-type": "text/html" },
+    body: HTML_SAMPLE,
   },
   {
     key: "image",
     title: "Image thumbnail (Pillow)",
     description: "POST a JPEG, resize with Pillow. Real S3-image-upload trigger pattern. Requires Pillow — neither runtime has it deployed yet (pymode needs the variant wired into AOT; CF Pyodide can't load it). Both cells will be HTTP 501.",
     method: "POST",
-    headers: () => ({ "content-type": "image/jpeg" }),
-    body: () => "",
+    headers: { "content-type": "image/jpeg" },
+    body: "",
   },
 ];
 
@@ -158,10 +158,9 @@ const RUNTIMES = [
   async function timeReq(url, workload) {
     const init = {
       method: workload.method,
-      headers: workload.headers(),
+      headers: workload.headers,
     };
-    const body = workload.body();
-    if (body) init.body = body;
+    if (workload.body) init.body = workload.body;
     const t0 = performance.now();
     const res = await fetch(url, init);
     await res.text();
