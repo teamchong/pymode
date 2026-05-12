@@ -98,6 +98,63 @@ function buildVariantViaWizer(recipeNames: string[]): void {
     }
   }
 
+  // Generate config_variant.c so each recipe's PyInit_<module> is in
+  // the CPython inittab. Without this, every variant build inherits
+  // the prior variant's module list — leading to "undefined symbol:
+  // PyInit_<previous-recipe-module>" at link time.
+  const allModules: Array<[string, string]> = [];
+  for (const r of recipeNames) {
+    const recipeFile = path.join(ROOT_DIR, "recipes", `${r}.json`);
+    if (!fs.existsSync(recipeFile)) {
+      console.log(`  ERROR: recipe ${r}.json not found`);
+      process.exit(1);
+    }
+    const recipe = JSON.parse(fs.readFileSync(recipeFile, "utf-8"));
+    const modules = (recipe.modules ?? {}) as Record<string, string>;
+    for (const [modPath, initFunc] of Object.entries(modules)) {
+      allModules.push([modPath, initFunc]);
+    }
+  }
+
+  const configVariantC = path.join(BUILD_DIR, "Modules", "config_variant.c");
+  const configBase = path.join(BUILD_DIR, "Modules", "config.c.base");
+  const configFallback = path.join(BUILD_DIR, "Modules", "config.c");
+  fs.copyFileSync(fs.existsSync(configBase) ? configBase : configFallback, configVariantC);
+
+  let externDecls = "";
+  let inittabEntries = "";
+  for (const [modPath, initFunc] of allModules) {
+    externDecls += `extern PyObject* ${initFunc}(void);\n`;
+    inittabEntries += `    {"${modPath}", ${initFunc}},\n`;
+  }
+  let configContent = fs.readFileSync(configVariantC, "utf-8");
+  if (!configContent.includes("PyInit__pymode")) {
+    externDecls = "extern PyObject* PyInit__pymode(void);\n" + externDecls;
+    inittabEntries = '    {"_pymode", PyInit__pymode},\n' + inittabEntries;
+  }
+  configContent = configContent
+    .replace("/* -- ADDMODULE MARKER 1 -- */", externDecls + "/* -- ADDMODULE MARKER 1 -- */")
+    .replace("/* -- ADDMODULE MARKER 2 -- */", inittabEntries + "/* -- ADDMODULE MARKER 2 -- */");
+  fs.writeFileSync(configVariantC, configContent);
+
+  // Compile config_variant.c -> config_variant.o (build-wizer.ts copies
+  // it into its link inputs).
+  const compileRes = spawnSync(
+    "bash",
+    [ZIG_CC, "-c", "-Os", "-DPy_BUILD_CORE",
+     `-I${CPYTHON}/Include`,
+     `-I${CPYTHON}/Include/internal`,
+     `-I${BUILD_DIR}`,
+     "-o", path.join(BUILD_DIR, "Modules", "config_variant.o"),
+     configVariantC],
+    { stdio: "inherit" },
+  );
+  if (compileRes.status !== 0) {
+    console.log("  ERROR: config_variant.c compile failed");
+    process.exit(1);
+  }
+  console.log(`  Generated config_variant.c with ${allModules.length} module(s): ${allModules.map(([m]) => m).join(", ")}`);
+
   // Hand off to build-wizer.ts in variant mode. It will compile
   // pymode_wizer.c with -DPYMODE_VARIANT_PREIMPORT, link all .o files
   // + the variant recipe objects, run wizer, and write the result to

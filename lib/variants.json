@@ -33,7 +33,14 @@
       "wasm": "python-ujson.wasm",
       "sitePackages": null,
       "extensions": ["ujson"],
-      "size": "5.1MB"
+      "size": "17MB (wizer-warmed)"
+    },
+    "zstandard": {
+      "description": "CPython 3.13 + zstandard 0.23.0 (zstd amalgamated source statically linked)",
+      "wasm": "python-zstandard.wasm",
+      "sitePackages": "zstandard-site-packages.zip",
+      "extensions": ["zstandard"],
+      "size": "17.5MB (wizer-warmed)"
     }
   },
   "extensionPackages": {
@@ -49,6 +56,7 @@
     "cffi": null,
     "orjson": null,
     "ujson": "ujson",
+    "zstandard": "zstandard",
     "pydantic-core": "pydantic-core",
     "pydantic_core": "pydantic-core"
   }

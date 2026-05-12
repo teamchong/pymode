@@ -8,11 +8,7 @@
   ],
   "includes": [
     "c-ext/",
-    "zstd/",
-    "zstd/common/",
-    "zstd/compress/",
-    "zstd/decompress/",
-    "zstd/dictBuilder/"
+    "zstd/"
   ],
   "cflags": [
     "-DZSTD_MULTITHREAD=0",
@@ -22,10 +18,7 @@
     "-DZSTDERRORLIB_VISIBLE="
   ],
   "vendor_sources": [
-    "zstd/common/*.c",
-    "zstd/compress/*.c",
-    "zstd/decompress/*.c",
-    "zstd/dictBuilder/*.c"
+    "zstd/*.c"
   ],
   "modules": {
     "zstandard.backend_c": "PyInit_backend_c"
