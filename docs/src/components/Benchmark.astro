@@ -17,7 +17,9 @@
 const PYMODE_LOGS_URL     = "https://logs.pymode.teamchong.net";
 const PYMODE_MARKDOWN_URL = "https://markdown.pymode.teamchong.net";
 const PYMODE_SCRAPE_URL   = "https://scrape.pymode.teamchong.net";
+const PYMODE_KV_URL       = "https://kv.pymode.teamchong.net";
 const PYODIDE_URL         = "https://pyodide-bench.chong1222.workers.dev";
+const PYODIDE_KV_URL      = "https://pyodide-kv-bench.chong1222.workers.dev";
 
 // Cold = CF "Worker Startup Time" reported at deploy. This is NOT
 // per-request cold-isolate latency in production (CF uses memory
@@ -32,7 +34,9 @@ const PYODIDE_URL         = "https://pyodide-bench.chong1222.workers.dev";
 const PYMODE_LOGS_COLD     = 43;
 const PYMODE_MARKDOWN_COLD = 61;
 const PYMODE_SCRAPE_COLD   = 55;
-const PYODIDE_COLD = 1827;  // markdown_it_py + jinja2 + bs4 preloaded
+const PYMODE_KV_COLD       = 60;
+const PYODIDE_COLD = 1827;
+const PYODIDE_KV_COLD = 545;   // CF Worker Startup Time on pyodide-kv-bench
 
 const LOG_SAMPLE = [
   '192.168.1.10 - - [01/Jan/2026:10:00:01 +0000] "GET /index.html HTTP/1.1" 200 1024',
@@ -106,6 +110,16 @@ const WORKLOADS = [
     body: SCRAPE_SAMPLE,
     pymode:  { url: PYMODE_SCRAPE_URL,   cold: PYMODE_SCRAPE_COLD },
     pyodide: { url: PYODIDE_URL,         cold: PYODIDE_COLD },
+  },
+  {
+    key: "kv-fanout",
+    title: "KV fan-out: 20 reads per request",
+    description: "Read 20 keys from CF KV in a loop, aggregate to JSON. Exercises the Python ↔ JS boundary 20× per request — host-import overhead shows up here.",
+    method: "POST",
+    headers: { "content-type": "text/plain" },
+    body: "",
+    pymode:  { url: PYMODE_KV_URL,       cold: PYMODE_KV_COLD },
+    pyodide: { url: PYODIDE_KV_URL,      cold: PYODIDE_KV_COLD },
   },
 ];
 
