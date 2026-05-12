@@ -27,6 +27,13 @@
       "sitePackages": "pydantic-core-site-packages.zip",
       "extensions": ["pydantic-core"],
       "size": null
+    },
+    "ujson": {
+      "description": "CPython 3.13 + ujson 5.10.0 (statically linked, with double-conversion C++ deps)",
+      "wasm": "python-ujson.wasm",
+      "sitePackages": null,
+      "extensions": ["ujson"],
+      "size": "5.1MB"
     }
   },
   "extensionPackages": {
@@ -41,7 +48,7 @@
     "cryptography": null,
     "cffi": null,
     "orjson": null,
-    "ujson": null,
+    "ujson": "ujson",
     "pydantic-core": "pydantic-core",
     "pydantic_core": "pydantic-core"
   }

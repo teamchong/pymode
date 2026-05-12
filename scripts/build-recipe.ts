@@ -305,32 +305,39 @@ function main(): void {
   let success = 0;
   let fail = 0;
 
+  // Build zig invocation per source — `cc` for C, `c++` for C++ sources.
+  const isCxx = (p: string) => /\.(cc|cpp|cxx)$/.test(p);
+
   for (const src of sources) {
-    const outname = path.basename(src).replace(/\.c$/, "");
+    // .pyx sources were cythonized above into sibling .c files; compile those instead.
+    const compileSrc = src.endsWith(".pyx") ? src.replace(/\.pyx$/, ".c") : src;
+    const outname = path.basename(compileSrc).replace(/\.(c|cc|cpp|cxx)$/, "");
     const outfile = path.join(objDir, `${name}_${outname}.o`);
-    const srcPath = path.join(pkgSrc, src);
+    const srcPath = path.join(pkgSrc, compileSrc);
 
     if (!fs.existsSync(srcPath)) {
-      console.log(`  SKIP: ${src} (not found)`);
+      console.log(`  SKIP: ${compileSrc} (not found)`);
       continue;
     }
 
-    const result = run("zig", ["cc", ...cflags, "-o", outfile, srcPath], { capture: true });
+    const driver = isCxx(srcPath) ? "c++" : "cc";
+    const result = run("zig", [driver, ...cflags, "-o", outfile, srcPath], { capture: true });
     if (result.returncode === 0) {
       success++;
     } else {
-      console.log(`  FAIL: ${src}`);
+      console.log(`  FAIL: ${compileSrc}: ${result.stderr?.slice(0, 200) || ''}`);
       fail++;
     }
   }
 
-  // Compile vendor sources (e.g., bundled zstd)
+  // Compile vendor sources (e.g., bundled zstd / double-conversion)
   for (const pattern of recipe.vendor_sources ?? []) {
     const matched = findFiles(pkgSrc, pattern);
     for (const srcPath of matched) {
-      const outname = path.basename(srcPath).replace(/\.c$/, "");
+      const outname = path.basename(srcPath).replace(/\.(c|cc|cpp|cxx)$/, "");
       const outfile = path.join(objDir, `vendor_${outname}.o`);
-      const result = run("zig", ["cc", ...cflags, "-o", outfile, srcPath], { capture: true });
+      const driver = isCxx(srcPath) ? "c++" : "cc";
+      const result = run("zig", [driver, ...cflags, "-o", outfile, srcPath], { capture: true });
       if (result.returncode === 0) {
         success++;
       } else {

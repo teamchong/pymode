@@ -1,0 +1,19 @@
+{
+  "name": "pandas-minimal",
+  "version": "2.2.3",
+  "pypi": "pandas",
+  "type": "cython",
+  "sources": [
+    "pandas/_libs/properties.pyx"
+  ],
+  "cython_sources": [
+    "pandas/_libs/properties.pyx"
+  ],
+  "includes": ["pandas/_libs/"],
+  "cflags": [],
+  "modules": {
+    "pandas._libs.properties": "PyInit_properties"
+  },
+  "python_packages": ["pandas/"],
+  "depends": ["numpy"]
+}

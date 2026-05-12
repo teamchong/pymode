@@ -1,0 +1,25 @@
+{
+  "name": "ujson",
+  "version": "5.10.0",
+  "pypi": "ujson",
+  "type": "c",
+  "sources": [
+    "lib/ultrajsonenc.c",
+    "lib/ultrajsondec.c",
+    "lib/dconv_wrapper.cc",
+    "python/JSONtoObj.c",
+    "python/objToJSON.c",
+    "python/ujson.c"
+  ],
+  "includes": ["python/", "lib/", "deps/double-conversion/double-conversion/"],
+  "cflags": [],
+  "vendor_sources": [
+    "deps/double-conversion/double-conversion/*.cc"
+  ],
+  "extra_link_flags": ["-lc++", "-lc++abi"],
+  "modules": {
+    "ujson": "PyInit_ujson"
+  },
+  "python_packages": [],
+  "depends": []
+}
