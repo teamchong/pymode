@@ -4,11 +4,18 @@ import { connect } from "cloudflare:sockets";
 import { ProcExit, createWasi } from "./wasi";
 import type { WasiResult } from "./wasi";
 import { encoder as _encoder, decoder as _decoder, stdlibBin, stdlibDirIndex, extensionPackagesBin } from "./stdlib-bin";
+import { WasmRunner } from "./wasm-runner";
 
 // Re-export DOs so wrangler can find them
 export { PythonDO } from "./python-do";
 export { ThreadDO } from "./thread-do";
 export { SandboxDO } from "./sandbox-do";
+
+// Module-scope singleton. Each isolate keeps its own instance + cached
+// wasm Instance across requests. Avoids the DO RPC round-trip that
+// PythonDO requires (~50ms) for handler invocations that don't need
+// stateful host imports (TCP, /data R2 filesystem).
+const _inlineRunner = new WasmRunner();
 
 /** Block requests to private/internal networks (SSRF prevention). */
 function isPrivateHost(hostname: string): boolean {
@@ -637,44 +644,25 @@ export default {
         return sandbox.fetch(new Request(sandboxUrl.toString(), request));
       }
 
-      // ---- Project mode: route through PythonDO for full host imports ----
+      // ---- Project mode: run inline in the worker isolate ----
+      // Skips the DO RPC round-trip by running wasm directly in the
+      // module-scope WasmRunner. The persistent-instance cache lives
+      // in the runner so each isolate amortises instance setup across
+      // every request it handles.
+      //
+      // PythonDO is still used for paths that need cross-isolate
+      // stateful resources (sandbox sessions, TCP pools).
       if (userFilesModule) {
         const requestJson = await serializeRequest(request, env);
-
-        // Route through PythonDO if available (full host imports + Asyncify).
-        // Only serializable data crosses the RPC boundary.
-        if (env.PYTHON_DO) {
-          const doId = env.PYTHON_DO.idFromName("default");
-          const pythonDO = env.PYTHON_DO.get(doId) as any;
-          const result = await pythonDO.handleRequest(
-            userFilesModule.entryModule,
-            userFilesModule.userFiles,
-            pythonPath,
-            requestJson,
-          );
-
-          if (result.stderr) console.error("[PyMode stderr]", result.stderr);
-          return deserializeResponse(result.stdout, result.stderr);
-        }
-
-        // Fallback: run without host imports (no KV/R2/D1/TCP, but works)
-        const stdinData = _encoder.encode(requestJson);
-        const result = await runWasm(
-          ["python", "-S", "-m", "pymode._handler", userFilesModule.entryModule],
-          { PYTHONPATH: pythonPath, PYTHONDONTWRITEBYTECODE: "1", PYTHONNOUSERSITE: "1" },
-          files,
-          stdinData
+        const result = await _inlineRunner.handleRequest(
+          userFilesModule.entryModule,
+          userFilesModule.userFiles,
+          pythonPath,
+          requestJson,
+          env as unknown as Record<string, unknown>,
         );
-
-        const stdout = _decoder.decode(result.stdout);
-        const stderr = _decoder.decode(result.stderr);
-        if (stderr) console.error("[PyMode stderr]", stderr);
-
-        if (env.PYMODE_DATA) {
-          await flushDataToKV(env.PYMODE_DATA, result.writtenFiles);
-        }
-
-        return deserializeResponse(stdout, stderr);
+        if (result.stderr) console.error("[PyMode stderr]", result.stderr);
+        return deserializeResponse(result.stdout, result.stderr);
       }
 
       // ---- Legacy mode: POST code string ----
