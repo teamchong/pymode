@@ -257,16 +257,12 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
     const userFilesKey = userFiles
       ? Object.keys(userFiles).sort().join("\n")
       : "";
-    console.log("[PR] enter handleRequest, persistentRunner=" +
-      (this.persistentRunner ? "set" : "null") +
-      " matches=" + (this.persistentRunner?.userFilesKey === userFilesKey));
     // Recover the entry module from args: python -S -m pymode._handler <entryModule>.
     const mIdx = args.indexOf("-m");
     const entryModule = mIdx >= 0 && mIdx + 2 < args.length ? args[mIdx + 2] : "";
     const warmRunFn = this.persistentRunner?.instance.exports.pymode_warm_run as
       ((ptr: number, len: number) => number) | undefined;
     if (this.persistentRunner && this.persistentRunner.userFilesKey === userFilesKey && warmRunFn && entryModule) {
-      console.log("[PR] taking persistent fast path via pymode_warm_run, entry=" + entryModule);
       const { instance, wasiState, wasi, initialStackPointer } = this.persistentRunner;
       // Reset per-request state.
       wasiState.stdinData = stdinData;
@@ -300,8 +296,8 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
         }
       } catch (e) {
         const trapStderr = _decoder.decode(wasi.getStderr());
-        console.log("[PR] TRAP on pymode_warm_run:", e instanceof Error ? e.message : String(e));
-        if (trapStderr) console.log("[PR] trap stderr:", trapStderr.slice(0, 1500));
+        console.error("[pymode] persistent path trap:", e instanceof Error ? e.message : String(e));
+        if (trapStderr) console.error("[pymode] trap stderr:", trapStderr.slice(0, 1500));
         this.persistentRunner = null;
         trapped = true;
       }
@@ -461,7 +457,6 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
       // If no pending async calls, we're done. Promote the instance to
       // the persistent cache so the next request can skip instantiation.
       if (!fanout.hasPending) {
-        console.log("[PR] slow path complete, promoting to cache, SP=" + freshStackPointer);
         this.persistentRunner = {
           instance,
           wasiState: slowPathWasiState,

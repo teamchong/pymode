@@ -72,8 +72,8 @@ const WORKLOADS = [
 ];
 
 const RUNTIMES = [
-  { key: "pymode",  label: "pymode",                                 base: PYMODE_BASE,  color: "var(--sl-color-accent)" },
-  { key: "pyodide", label: "Cloudflare Python Workers (Pyodide)",   base: PYODIDE_BASE, color: "var(--sl-color-orange, #f48120)" },
+  { key: "pymode",  label: "pymode",       base: PYMODE_BASE,  color: "var(--sl-color-accent)" },
+  { key: "pyodide", label: "Pyodide (CF)", base: PYODIDE_BASE, color: "var(--sl-color-orange, #f48120)" },
 ];
 ---
 
@@ -87,7 +87,7 @@ const RUNTIMES = [
       </thead>
       <tbody>
         <tr><th scope="row">pymode</th><td><strong>52 ms</strong></td></tr>
-        <tr><th scope="row">Cloudflare Python Workers (Pyodide)</th><td>1134 ms</td></tr>
+        <tr><th scope="row">Pyodide (CF)</th><td>1134 ms</td></tr>
       </tbody>
     </table>
   </section>
@@ -110,6 +110,12 @@ const RUNTIMES = [
         <p class="subtitle">POST <code>/api/{w.key}</code></p>
         <p class="description">{w.description}</p>
         <table>
+          <colgroup>
+            <col class="col-runtime" />
+            <col class="col-metric" />
+            <col class="col-metric" />
+            <col class="col-metric" />
+          </colgroup>
           <thead>
             <tr><th></th><th>p50</th><th>p99</th><th>OK</th></tr>
           </thead>
@@ -423,7 +429,15 @@ const RUNTIMES = [
     width: 100%;
     border-collapse: collapse;
     font-size: 0.82rem;
+    /* table-layout: fixed makes every card's table columns identical
+       in width regardless of the cell content, so the metric columns
+       (p50/p99/OK) line up across cards visually. */
+    table-layout: fixed;
   }
+
+  /* Explicit widths so every card has identical column geometry. */
+  .workload-card colgroup .col-runtime { width: 45%; }
+  .workload-card colgroup .col-metric  { width: calc(55% / 3); }
 
   .workload-card th,
   .workload-card td {
