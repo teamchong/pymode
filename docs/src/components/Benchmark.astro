@@ -117,13 +117,12 @@ const RUNTIMES = [
 
 <div class="bench-root">
   <p class="bench-intro">
-    Same Python source on both runtimes. <strong>Cold</strong> is the
-    "Worker Startup Time" CF prints after <code>wrangler deploy</code> —
-    the cost of instantiating an isolate before any traffic hits it. It
-    is <em>not</em> the production cold-isolate latency a user pays
-    (CF uses memory snapshots in prod). <strong>p50/p99</strong> are
-    live warm measurements from your browser. The first request of each
-    measurement is discarded as a warmup.
+    Same Python source on both runtimes. Each card runs N back-to-back
+    requests from your browser; <strong>p50/p99</strong> are computed
+    from the warm responses (the first request is discarded as a warmup).
+    Cold-start latency isn't shown because the only number we can measure
+    here is a deploy-time signal, not the per-request cold-isolate cost
+    a user actually pays in production.
   </p>
 
   <div class="bench-controls">
@@ -147,10 +146,9 @@ const RUNTIMES = [
             <col class="col-metric" />
             <col class="col-metric" />
             <col class="col-metric" />
-            <col class="col-metric" />
           </colgroup>
           <thead>
-            <tr><th></th><th>Cold</th><th>p50</th><th>p99</th><th>OK</th></tr>
+            <tr><th></th><th>p50</th><th>p99</th><th>OK</th></tr>
           </thead>
           <tbody>
             {RUNTIMES.map(rt => {
@@ -158,7 +156,6 @@ const RUNTIMES = [
               return (
                 <tr data-runtime={rt.key}>
                   <th scope="row">{rt.label}</th>
-                  <td>{entry == null ? "n/a" : (entry.cold == null ? "…" : `${entry.cold} ms`)}</td>
                   <td data-metric="p50">{entry == null ? "n/a" : "—"}</td>
                   <td data-metric="p99">{entry == null ? "n/a" : "—"}</td>
                   <td data-metric="samples">{entry == null ? "n/a" : "—"}</td>

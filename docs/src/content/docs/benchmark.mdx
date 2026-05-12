@@ -15,14 +15,14 @@ from your browser.
 
 ## What this benchmark says and doesn't say
 
-**Deploy-time startup ≠ production cold start.** The "Cold" column is
-the `Worker Startup Time` Cloudflare reports immediately after
-`wrangler deploy` — it's the cost of bringing up an isolate from
-scratch before the snapshot system kicks in. Production cold-isolate
-spin-ups in both runtimes use memory snapshots and are dramatically
-faster than this number. We surface it because it's an honest
-deploy-time signal and pymode's per-deploy build pipeline keeps it
-small; it is not a claim about live latency.
+**We measure warm request latency only.** Cold-start numbers aren't
+shown because the value we can read (Cloudflare's deploy-time
+`Worker Startup Time`) isn't what users experience per cold isolate
+in production — both runtimes use memory snapshots that make
+real cold spin-ups much faster than the deploy-time signal. Quoting
+the deploy number would overstate the gap; quoting the production
+number would require a measurement methodology this page can't
+honestly provide from a browser.
 
 **Warm latency is the comparable number.** For stdlib-only work
 (`/api/logs`), pymode and Pyodide land within noise of each other.
