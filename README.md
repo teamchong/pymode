@@ -400,12 +400,15 @@ Cloudflare's Python Workers use Pyodide (a CPython fork compiled via Emscripten)
 | Threading | `asyncio` cooperative | `pymode.parallel` (real parallelism via child DOs) |
 | Deploy artifact | ~1.5 MB modules + ~6.4 MB Pyodide runtime loaded at request time | one tailored wasm per deploy (~5-8 MB gzipped) |
 | Deploy iteration | seconds | minutes (full AOT rebuild per project) |
-| Worker Startup Time at deploy | ~1-2 s | tens of ms |
 
-The "Worker Startup Time" line is the CF-reported deploy-time signal —
-it bounds the cold-isolate cost but isn't paid on every request, and
-Cloudflare's production snapshotting can reduce real cold-isolate
-spin-up further.
+We deliberately left cold-start latency off this table. The number CF
+reports as "Worker Startup Time" after `wrangler deploy` is a deploy-time
+signal — not what users pay per request. Production cold-isolate
+spin-ups use memory snapshots that both runtimes leverage, and the
+real cost depends on traffic patterns (how often isolates evict from
+a PoP) more than on the raw deploy-time number. If cold-start matters
+for your workload, measure it under controlled conditions; we don't
+publish numbers we can't honestly compare.
 
 ## License
 
