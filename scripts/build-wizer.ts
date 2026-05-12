@@ -358,6 +358,10 @@ function main(): void {
     "bash",
     ZIG_CC,
     "-s",
+    // --gc-sections drops unreachable functions/data sections from the
+    // link. Pairs with -ffunction-sections / -fdata-sections in the
+    // recipe builds; saves ~1-2 MB on numpy/pandas variants.
+    "-Wl,--gc-sections",
     "-o",
     wizerRaw,
     ...linkObjs,
