@@ -117,12 +117,21 @@ const RUNTIMES = [
 
 <div class="bench-root">
   <p class="bench-intro">
-    Same Python source on both runtimes. Each card runs N back-to-back
-    requests from your browser; <strong>p50/p99</strong> are computed
-    from the warm responses (the first request is discarded as a warmup).
-    Cold-start latency isn't shown because the only number we can measure
-    here is a deploy-time signal, not the per-request cold-isolate cost
-    a user actually pays in production.
+    Same Python source on both runtimes. <strong>p50/p99</strong> come
+    from N back-to-back requests sent by your browser when this page
+    loaded (first request discarded as a warmup, so the numbers
+    reflect steady-state warm behaviour).
+    <br /><br />
+    <strong>Cold</strong> is the "Worker Startup Time" Cloudflare
+    reports immediately after <code>wrangler deploy</code> — it's the
+    cost of bringing an isolate up <em>before</em> any snapshot system
+    kicks in. You pay it on the very first request to a fresh deploy,
+    or the next request after CF evicts an idle isolate (typically a
+    few minutes of no traffic). You do <em>not</em> pay it on every
+    request — once an isolate is warm in a PoP, subsequent requests in
+    that PoP skip the startup entirely. In production both runtimes
+    also use memory snapshots that reduce this number further than the
+    deploy-time signal shows.
   </p>
 
   <div class="bench-controls">
@@ -146,9 +155,10 @@ const RUNTIMES = [
             <col class="col-metric" />
             <col class="col-metric" />
             <col class="col-metric" />
+            <col class="col-metric" />
           </colgroup>
           <thead>
-            <tr><th></th><th>p50</th><th>p99</th><th>OK</th></tr>
+            <tr><th></th><th title="CF Worker Startup Time at deploy — paid on first request to a fresh deploy / evicted isolate, not on every request">Cold</th><th>p50</th><th>p99</th><th>OK</th></tr>
           </thead>
           <tbody>
             {RUNTIMES.map(rt => {
@@ -156,6 +166,7 @@ const RUNTIMES = [
               return (
                 <tr data-runtime={rt.key}>
                   <th scope="row">{rt.label}</th>
+                  <td>{entry == null ? "n/a" : (entry.cold == null ? "…" : `${entry.cold} ms`)}</td>
                   <td data-metric="p50">{entry == null ? "n/a" : "—"}</td>
                   <td data-metric="p99">{entry == null ? "n/a" : "—"}</td>
                   <td data-metric="samples">{entry == null ? "n/a" : "—"}</td>

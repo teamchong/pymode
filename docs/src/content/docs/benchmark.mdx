@@ -13,22 +13,29 @@ from your browser.
 
 <Benchmark />
 
-## What this benchmark says and doesn't say
+## When you actually pay the Cold number
 
-**We measure warm request latency only.** Cold-start numbers aren't
-shown because the value we can read (Cloudflare's deploy-time
-`Worker Startup Time`) isn't what users experience per cold isolate
-in production — both runtimes use memory snapshots that make
-real cold spin-ups much faster than the deploy-time signal. Quoting
-the deploy number would overstate the gap; quoting the production
-number would require a measurement methodology this page can't
-honestly provide from a browser.
+The Cold column is the `Worker Startup Time` Cloudflare reports right
+after `wrangler deploy`. You pay it:
 
-**Warm latency is the comparable number.** For stdlib-only work
-(`/api/logs`), pymode and Pyodide land within noise of each other.
-For the package-heavy workloads, behaviour will depend on which side
-of the Python ↔ JS boundary the work happens. Run the live benchmark
-to see today's numbers from your network.
+- **Once per fresh deploy** — the first request after a new version
+  goes live. Both runtimes pay this.
+- **On the next request after isolate eviction** — Cloudflare evicts
+  idle isolates after some minutes of no traffic (the exact threshold
+  isn't published; it's adaptive). The very next request to that PoP
+  triggers a fresh isolate boot.
+
+You do **not** pay it on every request. Once an isolate is warm in a
+given PoP, subsequent requests in that PoP go straight to the warm
+path. Cloudflare also uses memory snapshots in production for both
+runtimes, which makes real cold-isolate spin-ups faster than the
+deploy-time number; the deploy-time number is the worst-case
+bound.
+
+Warm latency (the p50 / p99 columns) is what dominates steady-state
+traffic. For stdlib-only work, pymode and Pyodide land within noise
+of each other; for the package-heavy workloads, behaviour depends on
+how much work happens on each side of the Python ↔ JS boundary.
 
 **Both runtimes can run popular Python packages.** Earlier versions of
 this page claimed `markdown_it_py`, `jinja2`, and `beautifulsoup4`
