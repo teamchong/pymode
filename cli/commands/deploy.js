@@ -231,6 +231,10 @@ export async function deploy(args) {
   Variant:  ${variantKey} (${variant.description})
   `);
 
+  if (variant.note) {
+    console.log(`  Note:     ${variant.note}\n`);
+  }
+
   try {
     // Copy extension site-packages if variant needs them (numpy/pillow);
     // otherwise drop an empty zip so the worker bundle stays slim.
@@ -248,23 +252,19 @@ export async function deploy(args) {
       writeFileSync(extDst, EMPTY_ZIP);
     }
 
-    // python-do.ts unconditionally imports worker/src/extensions/numpy/*.wasm
-    // so wrangler bundles them on every deploy. Canonical artifacts live
-    // in build/extensions/numpy/ (gitignored) — we stage real ones in
-    // worker/src/extensions/numpy/ for numpy deploys, stubs otherwise.
+    // python-do.ts unconditionally imports worker/src/extensions/numpy/*.wasm,
+    // a leftover from the pre-static-link era when numpy shipped as a side
+    // module. Modern variants statically link numpy and the SideModuleFinder
+    // polyfill (_wasi_compat._install_side_module_finder) defers to the
+    // inittab when _imp.is_builtin returns True, so the side module is dead
+    // weight (~7 MB raw / ~3 MB gzipped). Always stub it — this is what
+    // keeps the bundle under CF Workers' 10 MiB compressed limit.
     const numpyExtDir = join(workerSrc, "extensions", "numpy");
-    const numpyCanonical = join(repoRoot, "build", "extensions", "numpy", "_multiarray_umath.wasm");
     if (existsSync(numpyExtDir)) {
-      const isNumpy = (variant.extensions || []).includes("numpy");
-      if (isNumpy && existsSync(numpyCanonical)) {
-        copyFileSync(numpyCanonical, join(numpyExtDir, "_multiarray_umath.wasm"));
-        copyFileSync(numpyCanonical, join(numpyExtDir, "_multiarray_umath.wasm.dat"));
-      } else {
-        const STUB_WASM = Buffer.from([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
-        for (const name of ["_multiarray_umath.wasm", "_multiarray_umath.wasm.dat"]) {
-          const file = join(numpyExtDir, name);
-          if (existsSync(file)) writeFileSync(file, STUB_WASM);
-        }
+      const STUB_WASM = Buffer.from([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
+      for (const name of ["_multiarray_umath.wasm", "_multiarray_umath.wasm.dat"]) {
+        const file = join(numpyExtDir, name);
+        if (existsSync(file)) writeFileSync(file, STUB_WASM);
       }
     }
 

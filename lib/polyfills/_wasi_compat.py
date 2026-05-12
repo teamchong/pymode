@@ -230,6 +230,48 @@ _install_zip_metadata_finder()
 del _install_zip_metadata_finder
 
 
+def _install_builtin_submodule_finder():
+    """Make CPython's inittab cover qualified submodule names too.
+
+    Variant builds (numpy, pandas, ...) statically link C extensions and
+    register them in the inittab with full dotted names like
+    "numpy._core._multiarray_umath". CPython's stock BuiltinImporter
+    short-circuits when `path` is provided (line: `if path is not None:
+    return None`), so submodule imports via `from . import _foo` skip
+    inittab entirely and fall through to PathFinder, which in pymode
+    routes to dl_open / pymode_dl_open. The host import is unavailable
+    at wizer-init time, so wizer traps.
+
+    Install a finder ahead of everything else that asks `_imp.is_builtin`
+    by full name and returns a BuiltinImporter spec when it answers yes.
+    """
+    import sys
+    import _imp
+    from importlib.abc import MetaPathFinder
+    from importlib.machinery import BuiltinImporter
+    from importlib.util import spec_from_loader
+
+    class BuiltinSubmoduleFinder(MetaPathFinder):
+        @classmethod
+        def find_spec(cls, fullname, path, target=None):
+            if "." not in fullname:
+                # The stock BuiltinImporter already handles top-level.
+                return None
+            if not _imp.is_builtin(fullname):
+                return None
+            return spec_from_loader(fullname, BuiltinImporter, origin="built-in")
+
+        @classmethod
+        def invalidate_caches(cls):
+            pass
+
+    sys.meta_path.insert(0, BuiltinSubmoduleFinder)
+
+
+_install_builtin_submodule_finder()
+del _install_builtin_submodule_finder
+
+
 def _install_side_module_finder():
     """Bridge PyPI-style extension imports (e.g. numpy._core._multiarray_umath)
     to dlopen-loaded .wasm side modules.
@@ -260,6 +302,12 @@ def _install_side_module_finder():
         def find_spec(cls, fullname, path, target=None):
             wasm_name = _BRIDGES.get(fullname)
             if wasm_name is None:
+                return None
+            # Variant builds statically link extensions and register them
+            # in the inittab. If the name is in the inittab, defer to the
+            # builtin loader rather than routing to dl_open.
+            import _imp
+            if _imp.is_builtin(fullname):
                 return None
             loader = ExtensionFileLoader(fullname, wasm_name)
             return spec_from_loader(fullname, loader, origin=wasm_name)

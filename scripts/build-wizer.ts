@@ -135,13 +135,17 @@ function main(): void {
     // The header sits next to pymode_wizer.c so #include "pymode_wizer_app_preimports.h" resolves.
     wizerCompileFlags.push(`-I${path.dirname(APP_PREIMPORTS_HEADER)}`);
   }
-  if (BUILD_MODE === "variant" && VARIANT_NAME) {
-    // Import the variant's package at wizer time. The recipe's package
-    // name might differ from the variant name (e.g., variant
-    // "pydantic-core" → import name "pydantic_core") so we use the
-    // first VARIANT_RECIPES entry's normalised module name where set,
-    // falling back to VARIANT_NAME.
-    const importName = (VARIANT_RECIPES[0] || VARIANT_NAME).replace(/-/g, "_");
+  if (BUILD_MODE === "variant" && VARIANT_NAME && process.env.PYMODE_VARIANT_PREIMPORT === "1") {
+    // Optional variant pre-import. Disabled by default because pre-importing
+    // numpy/pandas adds ~12 MB of snapshot state, pushing the wasm over CF
+    // Workers' 10 MiB compressed bundle limit. The runtime cost of importing
+    // these packages on first request is significant (multiple seconds), but
+    // not so bad that the binary becomes unusable. When you've trimmed enough
+    // elsewhere to make room, set PYMODE_VARIANT_PREIMPORT=1 to opt in.
+    //
+    // Dashes are normalised for Python module names: "pydantic-core" ->
+    // "pydantic_core".
+    const importName = VARIANT_NAME.replace(/-/g, "_");
     wizerCompileFlags.push(`-DPYMODE_VARIANT_PREIMPORT="${importName}"`);
   }
   wizerCompileFlags.push(
@@ -198,7 +202,10 @@ function main(): void {
 
   for (const filePath of walkDir(BUILD_DIR)) {
     const rel = filePath.slice(BUILD_DIR.length);
-    if (rel.includes("/recipes/") || rel.includes("/Modules/numpy/")) {
+    // Modules/<recipe>/ holds objects from custom build scripts (numpy, pandas).
+    // The variant-recipe loop below picks them up — skip them here to avoid
+    // double inclusion, and to keep them out of the kitchen-sink test build.
+    if (rel.includes("/recipes/") || /^\/Modules\/(numpy|pandas)\//.test(rel)) {
       continue;
     }
     // Skip in-tree native modules in slim deploys — they're for the test
@@ -249,15 +256,23 @@ function main(): void {
     }
   }
 
-  // Include numpy objects only in test mode.
-  const numpyDir = path.join(BUILD_DIR, "Modules", "numpy");
-  if (BUILD_MODE === "test" && fs.existsSync(numpyDir)) {
-    for (const f of fs.readdirSync(numpyDir)) {
-      if (f.endsWith(".o")) {
-        linkObjs.push(path.join(numpyDir, f));
-      }
-    }
-    console.log(`    Including numpy: ${fs.readdirSync(numpyDir).filter(f => f.endsWith(".o")).length} objects`);
+  // Custom-recipe objects live in BUILD_DIR/Modules/<recipe>/ (numpy and pandas
+  // use this layout because their build scripts dump straight there). Pull
+  // them in for either:
+  //   - test mode  — include numpy by default (matches legacy behavior)
+  //   - variant mode — include any recipe listed in PYMODE_VARIANT_RECIPES
+  //                    that has a Modules/<name>/ directory
+  const customRecipeDirs = new Set<string>();
+  if (BUILD_MODE === "test") customRecipeDirs.add("numpy");
+  if (BUILD_MODE === "variant") {
+    for (const r of VARIANT_RECIPES) customRecipeDirs.add(r);
+  }
+  for (const name of customRecipeDirs) {
+    const dir = path.join(BUILD_DIR, "Modules", name);
+    if (!fs.existsSync(dir)) continue;
+    const objs = fs.readdirSync(dir).filter((f) => f.endsWith(".o"));
+    for (const f of objs) linkObjs.push(path.join(dir, f));
+    if (objs.length > 0) console.log(`    Including ${name}: ${objs.length} objects`);
   }
 
   console.log(`    ${linkObjs.length} total link inputs`);

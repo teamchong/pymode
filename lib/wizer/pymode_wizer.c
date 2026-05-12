@@ -173,7 +173,7 @@ void wizer_initialize(void) {
      * runtime zip-mount paths (/stdlib/site-packages.zip/<pkg>, …) so
      * submodule lookups succeed at runtime. Only needed when something
      * was preimported from a wizer-mounted directory. */
-#if defined(PYMODE_HEAVY_PREIMPORTS) || defined(PYMODE_APP_PREIMPORTS)
+#if defined(PYMODE_HEAVY_PREIMPORTS) || defined(PYMODE_APP_PREIMPORTS) || defined(PYMODE_VARIANT_PREIMPORT)
     _preimport("pymode._path_fixup");
 #endif
 

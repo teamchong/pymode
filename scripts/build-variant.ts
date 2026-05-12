@@ -76,15 +76,43 @@ function run(cmd: string[], opts?: { captureOutput?: boolean }): {
  */
 function buildVariantViaWizer(recipeNames: string[]): void {
   const variantName = recipeNames.join("-");
+
+  // Resolve transitive depends. A recipe like pandas declares `depends:
+  // ["numpy"]` — the variant name stays "pandas" (so the deploy looks for
+  // python-pandas.wasm) but the link must pull numpy's objects too.
+  const allRecipes: string[] = [];
+  const visited = new Set<string>();
+  function addRecipe(name: string): void {
+    if (visited.has(name)) return;
+    visited.add(name);
+    const recipePath = path.join(ROOT_DIR, "recipes", `${name}.json`);
+    if (!fs.existsSync(recipePath)) {
+      console.log(`  ERROR: recipe ${name}.json not found`);
+      process.exit(1);
+    }
+    const recipe = JSON.parse(fs.readFileSync(recipePath, "utf-8"));
+    for (const dep of recipe.depends ?? []) addRecipe(dep);
+    allRecipes.push(name);
+  }
+  for (const r of recipeNames) addRecipe(r);
+
   console.log(`Building variant via wizer: python-${variantName}.wasm`);
-  console.log(`  Recipes: ${recipeNames.join(" ")}`);
+  console.log(`  Primary: ${recipeNames.join(" ")}`);
+  if (allRecipes.length !== recipeNames.length) {
+    const extra = allRecipes.filter((r) => !recipeNames.includes(r));
+    console.log(`  Depends: ${extra.join(" ")}`);
+  }
   console.log();
 
-  // First make sure each recipe's objects exist; if a recipe has no
-  // build/recipes/<name>/obj/, run build-recipe.ts to produce them.
-  for (const r of recipeNames) {
-    const objDir = path.join(ROOT_DIR, "build", "recipes", r, "obj");
-    const hasObjs = fs.existsSync(objDir) && fs.readdirSync(objDir).some((f) => f.endsWith(".o"));
+  // Custom-recipe build scripts (numpy, pandas) stash objects under
+  // BUILD_DIR/Modules/<name>/; other recipes use build/recipes/<name>/obj/.
+  // Trigger a rebuild for any recipe that has neither.
+  for (const r of allRecipes) {
+    const objDirA = path.join(ROOT_DIR, "build", "recipes", r, "obj");
+    const objDirB = path.join(BUILD_DIR, "Modules", r);
+    const hasObjs =
+      (fs.existsSync(objDirA) && fs.readdirSync(objDirA).some((f) => f.endsWith(".o"))) ||
+      (fs.existsSync(objDirB) && fs.readdirSync(objDirB).some((f) => f.endsWith(".o")));
     if (!hasObjs) {
       console.log(`  Recipe ${r} not built — invoking build-recipe.ts...`);
       const res = spawnSync("npx", ["tsx", path.join(SCRIPT_DIR, "build-recipe.ts"), r], {
@@ -101,9 +129,10 @@ function buildVariantViaWizer(recipeNames: string[]): void {
   // Generate config_variant.c so each recipe's PyInit_<module> is in
   // the CPython inittab. Without this, every variant build inherits
   // the prior variant's module list — leading to "undefined symbol:
-  // PyInit_<previous-recipe-module>" at link time.
+  // PyInit_<previous-recipe-module>" at link time. Walk transitive
+  // depends so pandas pulls in numpy's PyInit__multiarray_umath too.
   const allModules: Array<[string, string]> = [];
-  for (const r of recipeNames) {
+  for (const r of allRecipes) {
     const recipeFile = path.join(ROOT_DIR, "recipes", `${r}.json`);
     if (!fs.existsSync(recipeFile)) {
       console.log(`  ERROR: recipe ${r}.json not found`);
@@ -155,6 +184,59 @@ function buildVariantViaWizer(recipeNames: string[]): void {
   }
   console.log(`  Generated config_variant.c with ${allModules.length} module(s): ${allModules.map(([m]) => m).join(", ")}`);
 
+  // Merge every dependent recipe's *-site-packages.zip into
+  // extension-site-packages.zip so build-wizer.ts mounts the union at
+  // /wizer-ext-sp during wizer init. Without this the variant's Python
+  // files (pandas/, numpy/, pytz/, dateutil/) aren't all visible, and
+  // the _preimport call in pymode_wizer.c fails silently (e.g. pandas
+  // top-level imports numpy — both zips need to be on the path).
+  const registryPath = path.join(ROOT_DIR, "lib", "variants.json");
+  const registry = JSON.parse(fs.readFileSync(registryPath, "utf-8"));
+  const extSitePackagesDst = path.join(ROOT_DIR, "worker", "src", "extension-site-packages.zip");
+  const zipsToMerge: string[] = [];
+  for (const r of allRecipes) {
+    const candidates = [
+      path.join(ROOT_DIR, "build", "recipes", r, `${r}-site-packages.zip`),
+      path.join(ROOT_DIR, "worker", "src", `${r}-site-packages.zip`),
+      path.join(ROOT_DIR, "worker", "src", "extensions", r, `${r}-site-packages.zip`),
+    ];
+    const src = candidates.find((p) => fs.existsSync(p));
+    if (src) zipsToMerge.push(src);
+  }
+  if (zipsToMerge.length > 0) {
+    // Concatenate every recipe's zip entries into one ZIP_STORED archive.
+    // Use the same mtime epoch as build-pandas-wasm.sh to keep entries
+    // valid for the ZipInfo constraint (pre-1980 dates throw).
+    const allEntries: Record<string, Uint8Array> = {};
+    let totalBytes = 0;
+    for (const z of zipsToMerge) {
+      const buf = fs.readFileSync(z);
+      const entries: Unzipped = unzipSync(new Uint8Array(buf));
+      for (const [name, data] of Object.entries(entries)) {
+        // Last writer wins on collision — but if numpy and pandas both
+        // shipped a sibling __init__.py, that's a real conflict and
+        // we'd rather know via test failures.
+        allEntries[name] = data;
+        totalBytes += data.length;
+      }
+    }
+    const merged = zipSync(allEntries, { level: 0 });
+    fs.writeFileSync(extSitePackagesDst, merged);
+    // Also overwrite worker/src/<variantName>-site-packages.zip so
+    // deploy.js (which copies <variant.sitePackages> -> ext zip) picks
+    // up the merged version. Without this, depending on the deploy
+    // order, deploy.js could replace the merged zip with a single-recipe
+    // zip — and numpy code would disappear at runtime.
+    const variantSpName = registry.variants[variantName]?.sitePackages;
+    if (variantSpName) {
+      fs.writeFileSync(
+        path.join(ROOT_DIR, "worker", "src", variantSpName),
+        merged,
+      );
+    }
+    console.log(`  Staged ${zipsToMerge.length} site-packages zip(s) (${Object.keys(allEntries).length} entries, ${Math.round(totalBytes/1024)} KB raw)`);
+  }
+
   // Hand off to build-wizer.ts in variant mode. It will compile
   // pymode_wizer.c with -DPYMODE_VARIANT_PREIMPORT, link all .o files
   // + the variant recipe objects, run wizer, and write the result to
@@ -163,7 +245,7 @@ function buildVariantViaWizer(recipeNames: string[]): void {
     ...process.env,
     PYMODE_BUILD_MODE: "variant",
     PYMODE_VARIANT_NAME: variantName,
-    PYMODE_VARIANT_RECIPES: recipeNames.join(","),
+    PYMODE_VARIANT_RECIPES: allRecipes.join(","),
   };
   const res = spawnSync("npx", ["tsx", path.join(SCRIPT_DIR, "build-wizer.ts")], {
     stdio: "inherit",
