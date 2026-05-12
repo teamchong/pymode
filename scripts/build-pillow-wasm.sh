@@ -330,12 +330,21 @@ RECIPE_DIR="$ROOT_DIR/build/recipes/pillow"
 mkdir -p "$RECIPE_DIR"
 cp "$BUILD_DIR/pillow-site-packages.zip" "$RECIPE_DIR/"
 
-# Copy objects for variant builder
+# Copy objects for variant builder. Wipe stale ones first (rerunning with
+# different sources would leave orphans here that wasm-ld would still grab).
+# Exclude imaging_Except.o for the same reason the side-module link above
+# excludes it: ImagingError_* / ImagingSection* are also defined inline in
+# _imaging.c (compiled to pillow_imaging.o), so including both raises
+# duplicate-symbol errors at static link time.
 VARIANT_OBJ_DIR="$ROOT_DIR/build/zig-wasi/Modules/pillow"
 mkdir -p "$VARIANT_OBJ_DIR"
-cp "$BUILD_DIR"/obj/*.o "$VARIANT_OBJ_DIR/"
+rm -f "$VARIANT_OBJ_DIR"/*.o
+for obj in "$BUILD_DIR"/obj/*.o; do
+    [ "$(basename "$obj")" = "imaging_Except.o" ] && continue
+    cp "$obj" "$VARIANT_OBJ_DIR/"
+done
 OBJ_COUNT=$(ls "$VARIANT_OBJ_DIR"/*.o 2>/dev/null | wc -l | tr -d ' ')
-echo "  $OBJ_COUNT objects copied for variant linking"
+echo "  $OBJ_COUNT objects copied for variant linking (Except.o excluded)"
 
 echo ""
 echo "Done! Pillow for wasm32-wasi:"

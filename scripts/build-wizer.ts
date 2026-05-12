@@ -200,12 +200,27 @@ function main(): void {
   ]);
   const linkObjs: string[] = [];
 
+  // Modules/<recipe>/ subdirectories hold objects from custom recipe build
+  // scripts (numpy, pandas, pillow, etc.). The customRecipeDirs loop below
+  // picks up only the ones the current build wants; skip every such dir
+  // here to avoid grabbing leftover objects from a previously built variant.
+  const modulesDir = path.join(BUILD_DIR, "Modules");
+  const customRecipeRoots = new Set<string>();
+  if (fs.existsSync(modulesDir)) {
+    for (const entry of fs.readdirSync(modulesDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      // Recipe dirs match recipes/<name>.json; CPython tree dirs (_io,
+      // _decimal, _sqlite, …) don't have a corresponding recipe.
+      const recipeJson = path.join(ROOT_DIR, "recipes", `${entry.name}.json`);
+      if (fs.existsSync(recipeJson)) customRecipeRoots.add(entry.name);
+    }
+  }
+
   for (const filePath of walkDir(BUILD_DIR)) {
     const rel = filePath.slice(BUILD_DIR.length);
-    // Modules/<recipe>/ holds objects from custom build scripts (numpy, pandas).
-    // The variant-recipe loop below picks them up — skip them here to avoid
-    // double inclusion, and to keep them out of the kitchen-sink test build.
-    if (rel.includes("/recipes/") || /^\/Modules\/(numpy|pandas)\//.test(rel)) {
+    if (rel.includes("/recipes/")) continue;
+    const recipeRootMatch = rel.match(/^\/Modules\/([^/]+)\//);
+    if (recipeRootMatch && customRecipeRoots.has(recipeRootMatch[1])) {
       continue;
     }
     // Skip in-tree native modules in slim deploys — they're for the test

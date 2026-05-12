@@ -91,7 +91,15 @@ function buildVariantViaWizer(recipeNames: string[]): void {
       process.exit(1);
     }
     const recipe = JSON.parse(fs.readFileSync(recipePath, "utf-8"));
-    for (const dep of recipe.depends ?? []) addRecipe(dep);
+    // Filter `depends` to entries that look like a recipe name (bare
+    // identifier with no version specifier). The recipe format has
+    // historically used this field for both build-linking deps (pandas
+    // → numpy) and PyPI-style runtime hints (pydantic-core → "pydantic>=2.11");
+    // only the former should drive recipe inclusion.
+    const recipeDeps = (recipe.depends ?? []).filter(
+      (d: string) => /^[a-zA-Z0-9_-]+$/.test(d),
+    );
+    for (const dep of recipeDeps) addRecipe(dep);
     allRecipes.push(name);
   }
   for (const r of recipeNames) addRecipe(r);

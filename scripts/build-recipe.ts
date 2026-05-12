@@ -194,8 +194,8 @@ function main(): void {
 
   console.log(`Building ${name} ${version} (type: ${rtype})...`);
 
-  // Custom recipes use their own build script
-  if (rtype === "custom") {
+  // Custom and Rust recipes use their own build script
+  if (rtype === "custom" || rtype === "rust") {
     const buildScript = recipe.build_script!;
     console.log(`  Running custom build: ${buildScript}`);
     execFileSync("bash", [path.join(ROOT_DIR, buildScript)], { stdio: "inherit" });
