@@ -682,26 +682,21 @@ export default {
       //
       // For pure-Python + stdlib deploys, run wasm inline in the worker
       // isolate (no DO RPC overhead). For deploys using a C-extension
-      // variant (numpy, Pillow, etc.) — detected by getExtensionPackagesBin()
-      // being present — route through PythonDO because the dynamic
-      // linker for side modules lives there.
+      // All variants (numpy, pandas, Pillow, …) and pure-Python deploys
+      // run inline in the worker isolate now. The historical "route to
+      // PythonDO for C extensions" path was needed when extensions came
+      // as side modules loaded via pymode.dl_open — that required the
+      // dynamic linker that lives in PythonDO. Modern variants statically
+      // link the extensions and the SideModuleFinder polyfill defers to
+      // CPython's inittab via _imp.is_builtin, so no dynamic loading
+      // happens. Skipping the DO RPC cuts ~20-50 ms per request and
+      // serialises through one fewer code path.
+      //
+      // PythonDO is still useful for workloads that need /data R2
+      // persistence or TcpPoolDO connection reuse; those route via
+      // env.PYTHON_DO directly (not through this fetch handler).
       if (userFilesModule) {
         const requestJson = await serializeRequest(request, env);
-        const needsDynamicLinker = getExtensionPackagesBin() != null;
-
-        if (needsDynamicLinker && env.PYTHON_DO) {
-          const doId = env.PYTHON_DO.idFromName("default");
-          const pythonDO = env.PYTHON_DO.get(doId) as any;
-          const result = await pythonDO.handleRequest(
-            userFilesModule.entryModule,
-            userFilesModule.userFiles,
-            pythonPath,
-            requestJson,
-          );
-          if (result.stderr) console.error("[PyMode stderr]", result.stderr);
-          return deserializeResponse(result.stdout, result.stderr);
-        }
-
         const result = await _inlineRunner.handleRequest(
           userFilesModule.entryModule,
           userFilesModule.userFiles,
