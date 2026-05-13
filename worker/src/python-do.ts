@@ -11,9 +11,9 @@
  */
 
 import { DurableObject } from "cloudflare:workers";
-import pythonWasm from "./python.wasm";
+import { getPythonWasm } from "./python-wasm-loader";
 import { ProcExit, createWasi, makeWasiState, type WasiState } from "./wasi";
-import { encoder as _encoder, decoder as _decoder, stdlibBin, stdlibDirIndex, extensionPackagesBin } from "./stdlib-bin";
+import { encoder as _encoder, decoder as _decoder, stdlibBin, stdlibDirIndex, getExtensionPackagesBin, getStdlibBin, warmExtensionPackages } from "./stdlib-bin";
 import { buildHostImports, zbReadResponse } from "./host-imports";
 import type { MemoryAccessor } from "./host-imports";
 import { FanoutContext, resolveAll } from "./fanout";
@@ -225,8 +225,8 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
     }
 
     // Mount extension site-packages (numpy, etc.)
-    if (extensionPackagesBin) {
-      baseFiles["extension-site-packages.zip"] = extensionPackagesBin;
+    if (getExtensionPackagesBin()) {
+      baseFiles["extension-site-packages.zip"] = getExtensionPackagesBin();
       if (wasmEnv.PYTHONPATH && !wasmEnv.PYTHONPATH.includes("extension-site-packages.zip")) {
         wasmEnv = { ...wasmEnv, PYTHONPATH: wasmEnv.PYTHONPATH + ":/stdlib/extension-site-packages.zip" };
       }
@@ -424,7 +424,7 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
       };
 
       // Async instantiation required — workerd blocks sync instantiation for >4MB modules.
-      const result = await WebAssembly.instantiate(pythonWasm, imports);
+      const result = await WebAssembly.instantiate(await getPythonWasm(), imports);
       const instance = (result as any).exports ? result as WebAssembly.Instance : (result as any).instance;
       this.wasmInstance = instance;
       this.wasmMemory = instance.exports.memory as WebAssembly.Memory;
@@ -491,9 +491,18 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
     stderr: string;
     exitCode: number;
   }> {
+    // Warm the brotli-decompressed stdlib + the assets-hosted extension
+    // site-packages zip (cached after first call). The DO runs in its own
+    // isolate from the entry worker, so even if worker.ts already warmed
+    // them in the entry isolate, this isolate hasn't.
+    const _envAssets = this.env as unknown as { ASSETS?: { fetch: (r: Request) => Promise<Response> } };
+    await Promise.all([
+      getStdlibBin(_envAssets),
+      warmExtensionPackages(_envAssets),
+    ]);
     let pythonPath = "/stdlib";
     if (sitePackagesData || _sitePackagesBin) pythonPath += ":/stdlib/site-packages.zip";
-    if (extensionPackagesBin) pythonPath += ":/stdlib/extension-site-packages.zip";
+    if (getExtensionPackagesBin()) pythonPath += ":/stdlib/extension-site-packages.zip";
     return this.run(
       ["python", "-S", "-c", "import _wasi_compat\n" + code],
       { PYTHONPATH: pythonPath, PYTHONDONTWRITEBYTECODE: "1", PYTHONNOUSERSITE: "1", PY_KEY_VALUE_DISABLE_BEARTYPE: "1" },
@@ -520,6 +529,13 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
     stderr: string;
     exitCode: number;
   }> {
+    // Warm the brotli-decompressed stdlib + the assets-hosted extension
+    // site-packages zip (cached after first call).
+    const _envAssets = this.env as unknown as { ASSETS?: { fetch: (r: Request) => Promise<Response> } };
+    await Promise.all([
+      getStdlibBin(_envAssets),
+      warmExtensionPackages(_envAssets),
+    ]);
     // Parse the request JSON once on the JS side
     const parsed = JSON.parse(requestJson);
     const req = parsed.request || {};

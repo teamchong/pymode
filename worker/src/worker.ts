@@ -1,9 +1,9 @@
-import pythonWasm from "./python.wasm";
+import { getPythonWasm } from "./python-wasm-loader";
 import { DurableObject } from "cloudflare:workers";
 import { connect } from "cloudflare:sockets";
 import { ProcExit, createWasi } from "./wasi";
 import type { WasiResult } from "./wasi";
-import { encoder as _encoder, decoder as _decoder, stdlibBin, stdlibDirIndex, extensionPackagesBin } from "./stdlib-bin";
+import { encoder as _encoder, decoder as _decoder, stdlibBin, stdlibDirIndex, getExtensionPackagesBin, getStdlibBin, warmExtensionPackages } from "./stdlib-bin";
 import { WasmRunner } from "./wasm-runner";
 
 // Re-export DOs so wrangler can find them
@@ -182,7 +182,7 @@ async function runWasm(
   };
   let exitCode = 0;
   try {
-    const { instance } = await WebAssembly.instantiate(pythonWasm, {
+    const { instance } = await WebAssembly.instantiate(await getPythonWasm(), {
       wasi_snapshot_preview1: wasi.imports,
       pymode,
     });
@@ -611,7 +611,17 @@ function addCorsHeaders(headers: Record<string, string>): void {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    // Build VFS: stdlib + pymode runtime (pre-encoded at module load)
+    // Warm everything that lives outside the worker bundle (ASSETS) or
+    // ships brotli-compressed in the bundle. All three are cached at
+    // module scope after the first request. Done in parallel because
+    // they're independent.
+    const _envAssets = env as unknown as { ASSETS?: { fetch: (r: Request) => Promise<Response> } };
+    await Promise.all([
+      getPythonWasm(_envAssets),
+      getStdlibBin(_envAssets),
+      warmExtensionPackages(_envAssets),
+    ]);
+    // Build VFS: stdlib + pymode runtime
     const files: Record<string, Uint8Array> = { ...stdlibBin };
 
     // Mount user project files at /app/ in VFS
@@ -627,8 +637,8 @@ export default {
       files["site-packages.zip"] = sitePackagesBin;
       pythonPath += ":/stdlib/site-packages.zip";
     }
-    if (extensionPackagesBin) {
-      files["extension-site-packages.zip"] = extensionPackagesBin;
+    if (getExtensionPackagesBin()) {
+      files["extension-site-packages.zip"] = getExtensionPackagesBin();
       pythonPath += ":/stdlib/extension-site-packages.zip";
     }
 
@@ -674,12 +684,12 @@ export default {
       //
       // For pure-Python + stdlib deploys, run wasm inline in the worker
       // isolate (no DO RPC overhead). For deploys using a C-extension
-      // variant (numpy, Pillow, etc.) — detected by extensionPackagesBin
+      // variant (numpy, Pillow, etc.) — detected by getExtensionPackagesBin()
       // being present — route through PythonDO because the dynamic
       // linker for side modules lives there.
       if (userFilesModule) {
         const requestJson = await serializeRequest(request, env);
-        const needsDynamicLinker = extensionPackagesBin != null;
+        const needsDynamicLinker = getExtensionPackagesBin() != null;
 
         if (needsDynamicLinker && env.PYTHON_DO) {
           const doId = env.PYTHON_DO.idFromName("default");

@@ -18,9 +18,9 @@
  */
 
 import { DurableObject } from "cloudflare:workers";
-import pythonWasm from "./python.wasm";
+import { getPythonWasm } from "./python-wasm-loader";
 import { ProcExit, createWasi } from "./wasi";
-import { encoder as _encoder, decoder as _decoder, stdlibBin, stdlibDirIndex } from "./stdlib-bin";
+import { encoder as _encoder, decoder as _decoder, stdlibBin, stdlibDirIndex, getStdlibBin } from "./stdlib-bin";
 import { buildHostImports } from "./host-imports";
 import type { MemoryAccessor } from "./host-imports";
 import { FanoutContext, resolveAll } from "./fanout";
@@ -69,6 +69,8 @@ export class ThreadDO extends DurableObject<ThreadDOEnv> {
     code: string,
     input: Uint8Array
   ): Promise<{ stdout: Uint8Array; stderr: Uint8Array; exitCode: number }> {
+    // Warm the brotli-decompressed stdlib (cached after first call).
+    await getStdlibBin();
     const fanout = new FanoutContext();
     const MAX_REPLAY_PASSES = 10;
 
@@ -109,7 +111,7 @@ export class ThreadDO extends DurableObject<ThreadDOEnv> {
         pymode: pymodeImports,
       };
 
-      const result = await WebAssembly.instantiate(pythonWasm, imports);
+      const result = await WebAssembly.instantiate(await getPythonWasm(), imports);
       const instance = (result as any).exports ? result as WebAssembly.Instance : (result as any).instance;
       this.wasmMemory = instance.exports.memory as WebAssembly.Memory;
 

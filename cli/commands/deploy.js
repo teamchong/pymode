@@ -4,10 +4,22 @@
 // via wizer, then bundles deps + user code and runs `wrangler deploy`.
 
 import { execSync, spawnSync } from "child_process";
-import { existsSync, readFileSync, mkdirSync, writeFileSync, cpSync, copyFileSync } from "fs";
+import { existsSync, readFileSync, mkdirSync, writeFileSync, cpSync, copyFileSync, unlinkSync } from "fs";
 import { join, dirname, resolve } from "path";
 import { fileURLToPath } from "url";
+import { gzipSync } from "zlib";
 import { parseDeps, resolveVariant, checkPackage } from "../lib/variants.js";
+
+// CF Workers requires wasm to be a CompiledWasm Module bundled by wrangler
+// (runtime WebAssembly.compile is disallowed), so python.wasm stays in the
+// worker bundle. The larger site-packages zips, however, can move to the
+// [assets] binding — its 25-MiB-per-asset cap is plenty once each zip is
+// gzipped, and that's enough to keep heavy variants like pandas under the
+// 10-MiB worker-bundle limit.
+const EMPTY_ZIP = Buffer.from([
+  0x50, 0x4b, 0x05, 0x06,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+]);
 
 function findRepoRoot() {
   const cliDir = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -261,10 +273,10 @@ export async function deploy(args) {
     // keeps the bundle under CF Workers' 10 MiB compressed limit.
     const numpyExtDir = join(workerSrc, "extensions", "numpy");
     if (existsSync(numpyExtDir)) {
-      const STUB_WASM = Buffer.from([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
+      const stub = Buffer.from([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
       for (const name of ["_multiarray_umath.wasm", "_multiarray_umath.wasm.dat"]) {
         const file = join(numpyExtDir, name);
-        if (existsSync(file)) writeFileSync(file, STUB_WASM);
+        if (existsSync(file)) writeFileSync(file, stub);
       }
     }
 
@@ -286,7 +298,16 @@ export async function deploy(args) {
           `  Build it with: npx tsx scripts/build-variant.ts ${variantKey}`
         );
       }
+      // python.wasm stays in the bundle (CompiledWasm). The extension
+      // site-packages zip stages out to ASSETS so the bundle doesn't carry
+      // ~3 MB of compressed Python source. Staging happens *after*
+      // buildDocs (below) — Astro regenerates docs/dist on every deploy.
       copyFileSync(variantWasm, join(workerSrc, "python.wasm"));
+      const extSp = join(workerSrc, "extension-site-packages.zip");
+      if (existsSync(extSp) && readFileSync(extSp).length > 22) {
+        copyFileSync(extSp, join(workerSrc, ".pending-extension-site-packages.zip"));
+        writeFileSync(extSp, EMPTY_ZIP);
+      }
     } else {
       console.log("\n  Regenerating wizer preimports + rebuilding python.wasm for this app...\n");
       const headerPath = join(repoRoot, "lib", "wizer", "pymode_wizer_app_preimports.h");
@@ -316,6 +337,11 @@ export async function deploy(args) {
       const appWasm = join(workerSrc, "python-app.wasm");
       if (!existsSync(appWasm)) throw new Error("python-app.wasm not produced");
       copyFileSync(appWasm, join(workerSrc, "python.wasm"));
+      const extSp = join(workerSrc, "extension-site-packages.zip");
+      if (existsSync(extSp) && readFileSync(extSp).length > 22) {
+        copyFileSync(extSp, join(workerSrc, ".pending-extension-site-packages.zip"));
+        writeFileSync(extSp, EMPTY_ZIP);
+      }
     }
 
     // Replace the test-runtime site-packages.zip with one assembled from
@@ -334,6 +360,37 @@ export async function deploy(args) {
 
     bundleProject(projectDir, repoRoot);
     buildDocs(repoRoot);
+
+    // Astro just regenerated docs/dist/. Move the pending site-packages
+    // zip + stdlib data into dist/_pymode/ so wrangler's [assets] binding
+    // ships them. Both go in gzipped — the worker decompresses on first
+    // request via DecompressionStream("gzip").
+    const assetsDir = join(repoRoot, "docs", "dist", "_pymode");
+    mkdirSync(assetsDir, { recursive: true });
+    const pendingExt = join(workerSrc, ".pending-extension-site-packages.zip");
+    if (existsSync(pendingExt)) {
+      const gz = gzipSync(readFileSync(pendingExt), { level: 9 });
+      writeFileSync(join(assetsDir, "extension-site-packages.zip.gz"), gz);
+      unlinkSync(pendingExt);
+    }
+    // stdlib-data.dat: regenerate it (last deploy stubbed the local copy)
+    // then stage to ASSETS and replace the in-bundle file with a tiny stub.
+    // The worker decompresses the assets copy via DecompressionStream("gzip")
+    // on first request, then caches at module scope.
+    const stdlibDat = join(workerSrc, "stdlib-data.dat");
+    const genResult = spawnSync(
+      "npx",
+      ["tsx", join(repoRoot, "scripts", "generate-stdlib-fs.ts")],
+      { stdio: "inherit", cwd: repoRoot },
+    );
+    if (genResult.status !== 0) {
+      throw new Error("generate-stdlib-fs.ts failed");
+    }
+    if (existsSync(stdlibDat)) {
+      copyFileSync(stdlibDat, join(assetsDir, "stdlib-data.dat.gz"));
+      writeFileSync(stdlibDat, gzipSync(Buffer.from("{}"), { level: 9 }));
+    }
+
     ensureWorkerDeps(repoRoot);
     deployWorker(repoRoot);
     console.log("\n  Deploy complete!\n");

@@ -34,6 +34,7 @@ worker/src/stdlib-data.dat
 
 # WASM symlinks, zips, and extension artifacts in worker
 worker/src/*.wasm
+worker/src/*.wasm.br
 worker/src/*.zip
 worker/src/extensions/
 

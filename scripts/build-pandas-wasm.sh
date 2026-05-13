@@ -130,17 +130,20 @@ fi
 
 # Step 2: Cythonize every .pyx
 echo "  Cythonizing .pyx files (this takes a minute)..."
-CYTHON_CMD=""
-if command -v cython3 &>/dev/null; then
-    CYTHON_CMD="cython3"
-elif command -v cython &>/dev/null; then
-    CYTHON_CMD="cython"
-elif python3 -c "import Cython" 2>/dev/null; then
-    CYTHON_CMD="python3 -m cython"
-else
-    echo "Error: cython not found. Install with: pip3 install cython"
+# Pandas 2.2.3 was authored against Cython 3.0.x; newer Cython 3.2+ changed
+# generator-expression scoping, causing NameError: 'elt' is not defined at
+# import time for tslibs/period.pyx. Pin to 3.0.x. We install it under
+# /tmp/cython-pandas/ so the user's system Cython isn't disturbed.
+CYTHON_PIN_DIR="/tmp/cython-pandas"
+if [ ! -d "$CYTHON_PIN_DIR/Cython" ]; then
+    pip3 install "cython>=3.0,<3.1" --target "$CYTHON_PIN_DIR" >/dev/null 2>&1
+fi
+if [ ! -d "$CYTHON_PIN_DIR/Cython" ]; then
+    echo "Error: failed to install cython 3.0.x to $CYTHON_PIN_DIR"
     exit 1
 fi
+CYTHON_CMD="python3 -m cython"
+export PYTHONPATH="$CYTHON_PIN_DIR:${PYTHONPATH:-}"
 
 # numpy must be importable for Cython's `import numpy as cnp` directives.
 NUMPY_PYTHON_DIR=$(python3 -c "import numpy, os; print(os.path.dirname(os.path.dirname(numpy.__file__)))" 2>/dev/null || true)
@@ -159,6 +162,7 @@ cythonize_pyx() {
     local errfile="$BUILD_DIR/cython-errors/$(basename "$pyx").err"
     if [ -f "$cfile" ]; then return 0; fi
     if $CYTHON_CMD \
+        -3 \
         -I "$NUMPY_PYTHON_DIR" \
         -I "$PANDAS_SRC/pandas/_libs" \
         -I "$PANDAS_SRC/pandas/_libs/tslibs" \
@@ -177,6 +181,9 @@ for pyx in pandas/_libs/*.pyx; do
     cythonize_pyx "$pyx"
 done
 for pyx in pandas/_libs/tslibs/*.pyx; do
+    cythonize_pyx "$pyx"
+done
+for pyx in pandas/_libs/window/*.pyx; do
     cythonize_pyx "$pyx"
 done
 echo "  Cython: $CYTHONIZED_OK ok, $CYTHONIZED_FAIL failed"
@@ -220,6 +227,23 @@ compile_c() {
     fi
 }
 
+# Some pandas .c files (e.g. window/aggregations.c which #includes "ios")
+# are actually C++; need -x c++ -std=c++17 to override the extension-based
+# language detection.
+compile_cpp() {
+    local src="$1" out="$2"
+    local errfile="$BUILD_DIR/obj/${out}.err"
+    if zig c++ -x c++ -std=c++17 $CFLAGS -o "$BUILD_DIR/obj/$out" "$src" 2>"$errfile"; then
+        SUCCESS=$((SUCCESS + 1))
+        rm -f "$errfile"
+    else
+        FAIL=$((FAIL + 1))
+        FAILED_FILES="$FAILED_FILES $out"
+        echo "    FAIL (cpp): $out"
+        grep -E "error:|fatal:" "$errfile" | head -3 || true
+    fi
+}
+
 # Each .pyx becomes a stand-alone extension module .o
 for pyx in pandas/_libs/*.pyx; do
     cfile="${pyx%.pyx}.c"
@@ -233,6 +257,19 @@ for pyx in pandas/_libs/tslibs/*.pyx; do
     [ -f "$cfile" ] || continue
     name=$(basename "${pyx%.pyx}")
     compile_c "$PANDAS_SRC/$cfile" "tslibs_${name}.o"
+done
+
+for pyx in pandas/_libs/window/*.pyx; do
+    cfile="${pyx%.pyx}.c"
+    [ -f "$cfile" ] || continue
+    name=$(basename "${pyx%.pyx}")
+    # window/aggregations.c uses C++ STL (`#include "ios"`); the indexers
+    # file is plain C.
+    if [ "$name" = "aggregations" ]; then
+        compile_cpp "$PANDAS_SRC/$cfile" "window_${name}.o"
+    else
+        compile_c "$PANDAS_SRC/$cfile" "window_${name}.o"
+    fi
 done
 
 # C-only sources: parser + datetime helpers + vendored np_datetime
@@ -267,11 +304,12 @@ fi
 echo "  Bundling Python files..."
 mkdir -p "$RECIPE_DIR"
 
-# Locate pytz and dateutil from host python
+# Locate pytz, dateutil, six from host python. dateutil depends on six.
 PYTZ_DIR=$(python3 -c "import pytz, os; print(os.path.dirname(pytz.__file__))" 2>/dev/null || true)
 DATEUTIL_DIR=$(python3 -c "import dateutil, os; print(os.path.dirname(dateutil.__file__))" 2>/dev/null || true)
-if [ -z "$PYTZ_DIR" ] || [ -z "$DATEUTIL_DIR" ]; then
-    echo "Error: pytz / python-dateutil must be installed (pip3 install pytz python-dateutil)"
+SIX_FILE=$(python3 -c "import six; print(six.__file__)" 2>/dev/null || true)
+if [ -z "$PYTZ_DIR" ] || [ -z "$DATEUTIL_DIR" ] || [ -z "$SIX_FILE" ]; then
+    echo "Error: pytz / python-dateutil / six must be installed (pip3 install pytz python-dateutil six)"
     exit 1
 fi
 
@@ -279,36 +317,19 @@ ZIP_PATH="$BUILD_DIR/pandas-site-packages.zip"
 rm -f "$ZIP_PATH"
 
 cd "$PANDAS_SRC"
-python3 - "$ZIP_PATH" "$PYTZ_DIR" "$DATEUTIL_DIR" <<'PYEOF'
+python3 - "$ZIP_PATH" "$PYTZ_DIR" "$DATEUTIL_DIR" "$SIX_FILE" <<'PYEOF'
 import os, sys, zipfile
-zip_path, pytz_dir, dateutil_dir = sys.argv[1], sys.argv[2], sys.argv[3]
+zip_path, pytz_dir, dateutil_dir, six_file = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 SKIP_DIRS = {"tests", "testing", "test", "__pycache__", "_pyinstaller"}
 # Optional pandas subtrees that depend on heavy unavailable libraries
 # (SQLAlchemy, openpyxl, pyarrow, matplotlib, etc.) or aren't typically
 # used in a CF Worker. Dropping them saves ~1.8 MB compressed and gets
 # the bundle under CF's 10 MiB limit. CSV/JSON I/O and core DataFrame
 # ops still work.
-SKIP_PANDAS_SUBDIRS = {
-    "pandas/io/excel",        # openpyxl/xlrd
-    "pandas/io/sql",          # SQLAlchemy
-    "pandas/io/parquet",      # pyarrow
-    "pandas/io/feather_format",
-    "pandas/io/orc",          # pyarrow
-    "pandas/io/stata",
-    "pandas/io/sas",          # binary SAS
-    "pandas/io/spss",
-    "pandas/io/html",         # bs4/lxml
-    "pandas/io/clipboard",
-    "pandas/io/gbq",          # google bigquery
-    "pandas/io/formats/excel",
-    "pandas/io/formats/html",
-    "pandas/io/formats/latex",
-    "pandas/io/formats/info",
-    "pandas/io/formats/style",
-    "pandas/io/formats/style_render",
-    "pandas/plotting",        # matplotlib
-    "pandas/tseries/holiday", # rarely used
-}
+# Skip nothing for now — pandas's io.api imports stata/excel/parquet at
+# top level, so the modules must exist even if their backends aren't
+# available. The minifier still strips docstrings, which saves ~25%.
+SKIP_PANDAS_SUBDIRS = set()
 EPOCH = (1980, 1, 1, 0, 0, 0)
 
 def should_skip(rel_path):
@@ -321,7 +342,61 @@ def should_skip(rel_path):
             return True
     return False
 
-def add_dir(zf, root):
+import ast
+
+def strip_docstrings_and_blank_lines(source: bytes) -> bytes:
+    # Cheap minifier: drop module/class/function docstrings whose body
+    # contains other statements (otherwise removing the docstring leaves
+    # an empty body and Python raises IndentationError), + comment-only
+    # lines + blank lines. Saves ~20-30% on pandas/numpy.
+    try:
+        text = source.decode("utf-8")
+    except UnicodeDecodeError:
+        return source
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return source
+
+    def is_docstring(stmt):
+        return (
+            isinstance(stmt, ast.Expr)
+            and isinstance(stmt.value, ast.Constant)
+            and isinstance(stmt.value.value, str)
+        )
+
+    doc_ranges = []
+    for node in ast.walk(tree):
+        body = getattr(node, "body", None)
+        if not body or not isinstance(body, list):
+            continue
+        first = body[0]
+        if is_docstring(first) and len(body) > 1:
+            # Only drop the docstring when other statements would survive.
+            # If the docstring is the *only* body member, dropping it would
+            # leave an empty class/function/module body and Python would
+            # raise IndentationError.
+            start = first.lineno
+            end = getattr(first, "end_lineno", start)
+            doc_ranges.append((start, end))
+
+    drop = set()
+    for s, e in doc_ranges:
+        for ln in range(s, e + 1):
+            drop.add(ln)
+
+    out = []
+    for idx, ln in enumerate(text.splitlines(), 1):
+        if idx in drop:
+            continue
+        stripped = ln.rstrip()
+        if not stripped or stripped.lstrip().startswith("#"):
+            continue
+        out.append(stripped)
+    return ("\n".join(out) + "\n").encode("utf-8")
+
+
+def add_dir(zf, root, *, minify=True):
     base = os.path.dirname(root)
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
@@ -334,6 +409,8 @@ def add_dir(zf, root):
                 continue
             with open(full, "rb") as fp:
                 data = fp.read()
+            if minify and f.endswith(".py"):
+                data = strip_docstrings_and_blank_lines(data)
             zi = zipfile.ZipInfo(rel, date_time=EPOCH)
             zi.compress_type = zipfile.ZIP_STORED
             zf.writestr(zi, data)
@@ -342,6 +419,13 @@ with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_STORED) as zf:
     add_dir(zf, "pandas")
     add_dir(zf, pytz_dir)
     add_dir(zf, dateutil_dir)
+    # six.py is a single-file module — add it directly.
+    if os.path.isfile(six_file):
+        with open(six_file, "rb") as fp:
+            data = fp.read()
+        zi = zipfile.ZipInfo("six.py", date_time=EPOCH)
+        zi.compress_type = zipfile.ZIP_STORED
+        zf.writestr(zi, data)
 
 count = len(zipfile.ZipFile(zip_path).namelist())
 size_kb = os.path.getsize(zip_path) // 1024

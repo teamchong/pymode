@@ -46,7 +46,9 @@
     "pandas._libs.tslibs.timestamps": "PyInit_timestamps",
     "pandas._libs.tslibs.timezones": "PyInit_timezones",
     "pandas._libs.tslibs.tzconversion": "PyInit_tzconversion",
-    "pandas._libs.tslibs.vectorized": "PyInit_vectorized"
+    "pandas._libs.tslibs.vectorized": "PyInit_vectorized",
+    "pandas._libs.window.aggregations": "PyInit_aggregations",
+    "pandas._libs.window.indexers": "PyInit_indexers"
   },
   "python_packages": ["pandas/"],
   "depends": ["numpy"]

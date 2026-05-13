@@ -18,6 +18,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import os from "node:os";
+import zlib from "node:zlib";
 import { fileURLToPath } from "node:url";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -436,10 +437,28 @@ function main(): void {
   const mergedStdlib = path.join(wizerTmp, "stdlib");
   fs.mkdirSync(mergedStdlib, { recursive: true });
 
-  // Copy stdlib data from generate-stdlib-fs output (includes polyfills + patches)
+  // Copy stdlib data from generate-stdlib-fs output (includes polyfills + patches).
+  // The .dat is gzipped JSON. The deploy CLI stubs it to a 22-byte gzip-of-"{}"
+  // after staging to ASSETS, so we regenerate first if the bundled file looks
+  // empty — wizer needs the full stdlib at build time to bootstrap Python
+  // and capture a complete snapshot.
   const stdlibDat = path.join(ROOT_DIR, "worker", "src", "stdlib-data.dat");
+  if (!fs.existsSync(stdlibDat) || fs.statSync(stdlibDat).size < 1024) {
+    console.log("    Regenerating stdlib-data.dat (was missing/stubbed)...");
+    const res = spawnSync("npx", ["tsx", path.join(__dirname, "generate-stdlib-fs.ts")], {
+      stdio: "inherit",
+      cwd: ROOT_DIR,
+    });
+    if (res.status !== 0) {
+      console.log("    ERROR: generate-stdlib-fs.ts failed");
+      process.exit(1);
+    }
+  }
   if (fs.existsSync(stdlibDat)) {
-    const data = JSON.parse(fs.readFileSync(stdlibDat, "utf-8"));
+    const raw = fs.readFileSync(stdlibDat);
+    const isGzip = raw.length >= 2 && raw[0] === 0x1f && raw[1] === 0x8b;
+    const jsonBuf = isGzip ? zlib.gunzipSync(raw) : raw;
+    const data = JSON.parse(jsonBuf.toString("utf-8"));
     for (const [relPath, content] of Object.entries(data)) {
       const fullPath = path.join(mergedStdlib, relPath);
       fs.mkdirSync(path.dirname(fullPath), { recursive: true });
