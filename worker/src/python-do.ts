@@ -13,16 +13,14 @@
 import { DurableObject } from "cloudflare:workers";
 import { getPythonWasm } from "./python-wasm-loader";
 import { ProcExit, createWasi, makeWasiState, type WasiState } from "./wasi";
-import { encoder as _encoder, decoder as _decoder, stdlibBin, stdlibDirIndex, getExtensionPackagesBin, getStdlibBin, warmExtensionPackages } from "./stdlib-bin";
+import { encoder as _encoder, decoder as _decoder, stdlibBin, stdlibDirIndex, getExtensionPackagesBin, getSitePackagesBin, getStdlibBin, warmExtensionPackages, warmSitePackages } from "./stdlib-bin";
 import { buildHostImports, zbReadResponse } from "./host-imports";
 import type { MemoryAccessor } from "./host-imports";
 import { FanoutContext, resolveAll } from "./fanout";
 
-// Site-packages loaded directly as Data module — avoids 32MB RPC limit
-// @ts-ignore — Data module import (ArrayBuffer)
-import sitePackagesZip from "./site-packages.zip";
-const _sitePackagesBin: Uint8Array | undefined =
-  sitePackagesZip.byteLength > 22 ? new Uint8Array(sitePackagesZip) : undefined;
+// Site-packages are now fetched via env.ASSETS at request time (see
+// warmSitePackages call in handleRequest). The DO runs in its own
+// isolate from the entry worker, so it warms separately.
 
 // Pre-compiled side modules for C extensions that go through the
 // pymode.dl_open path (numpy, etc). Each is bundled twice:
@@ -217,16 +215,19 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
       }
     }
 
-    // Mount site-packages (loaded directly, not via RPC)
+    // Mount site-packages — explicit RPC payload wins (legacy path),
+    // otherwise fall back to the assets-warmed copy.
     if (sitePackagesData) {
       baseFiles["site-packages.zip"] = new Uint8Array(sitePackagesData);
-    } else if (_sitePackagesBin) {
-      baseFiles["site-packages.zip"] = _sitePackagesBin;
+    } else {
+      const sp = getSitePackagesBin();
+      if (sp) baseFiles["site-packages.zip"] = sp;
     }
 
     // Mount extension site-packages (numpy, etc.)
-    if (getExtensionPackagesBin()) {
-      baseFiles["extension-site-packages.zip"] = getExtensionPackagesBin();
+    const _extBin = getExtensionPackagesBin();
+    if (_extBin) {
+      baseFiles["extension-site-packages.zip"] = _extBin;
       if (wasmEnv.PYTHONPATH && !wasmEnv.PYTHONPATH.includes("extension-site-packages.zip")) {
         wasmEnv = { ...wasmEnv, PYTHONPATH: wasmEnv.PYTHONPATH + ":/stdlib/extension-site-packages.zip" };
       }
@@ -499,9 +500,10 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
     await Promise.all([
       getStdlibBin(_envAssets),
       warmExtensionPackages(_envAssets),
+      warmSitePackages(_envAssets),
     ]);
     let pythonPath = "/stdlib";
-    if (sitePackagesData || _sitePackagesBin) pythonPath += ":/stdlib/site-packages.zip";
+    if (sitePackagesData || getSitePackagesBin()) pythonPath += ":/stdlib/site-packages.zip";
     if (getExtensionPackagesBin()) pythonPath += ":/stdlib/extension-site-packages.zip";
     return this.run(
       ["python", "-S", "-c", "import _wasi_compat\n" + code],
@@ -529,12 +531,14 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
     stderr: string;
     exitCode: number;
   }> {
-    // Warm the brotli-decompressed stdlib + the assets-hosted extension
-    // site-packages zip (cached after first call).
+    // Warm the gzip-decompressed stdlib + the assets-hosted extension &
+    // user site-packages (all cached after first call). The DO runs in
+    // its own isolate from the entry worker, so it warms separately.
     const _envAssets = this.env as unknown as { ASSETS?: { fetch: (r: Request) => Promise<Response> } };
     await Promise.all([
       getStdlibBin(_envAssets),
       warmExtensionPackages(_envAssets),
+      warmSitePackages(_envAssets),
     ]);
     // Parse the request JSON once on the JS side
     const parsed = JSON.parse(requestJson);

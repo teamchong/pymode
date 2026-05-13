@@ -22,15 +22,12 @@
 
 import { getPythonWasm } from "./python-wasm-loader";
 import { ProcExit, createWasi, makeWasiState, type WasiState } from "./wasi";
-import { encoder as _encoder, decoder as _decoder, stdlibBin, stdlibDirIndex, getExtensionPackagesBin, getStdlibBin, warmExtensionPackages } from "./stdlib-bin";
+import { encoder as _encoder, decoder as _decoder, stdlibBin, stdlibDirIndex, getExtensionPackagesBin, getSitePackagesBin, getStdlibBin, warmExtensionPackages, warmSitePackages } from "./stdlib-bin";
 import { buildHostImports } from "./host-imports";
 import { FanoutContext, resolveAll } from "./fanout";
 
-// Site-packages bytes baked at module load (same as python-do.ts).
-// @ts-ignore — Data module import (ArrayBuffer)
-import sitePackagesZip from "./site-packages.zip";
-const _sitePackagesBin: Uint8Array | undefined =
-  sitePackagesZip.byteLength > 22 ? new Uint8Array(sitePackagesZip) : undefined;
+// Site-packages now come from env.ASSETS via warmSitePackages — see the
+// handleRequest body.
 
 interface PersistentInstance {
   instance: WebAssembly.Instance;
@@ -83,13 +80,14 @@ export class WasmRunner {
     requestJson: string,
     env: Record<string, unknown>,
   ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-    // Warm the gzip-decompressed stdlib + assets-hosted extension zip
-    // before the first run. Worker.ts already awaited these in the entry
-    // path, but the persistent path can land here cold.
+    // Warm the gzip-decompressed stdlib + assets-hosted site/extension
+    // zips before the first run. Worker.ts already awaited these in the
+    // entry path, but the persistent path can land here cold.
     const envAssets = env as { ASSETS?: { fetch: (r: Request) => Promise<Response> } };
     await Promise.all([
       getStdlibBin(envAssets),
       warmExtensionPackages(envAssets),
+      warmSitePackages(envAssets),
     ]);
     // Serialise — wasm execution is synchronous within an isolate, but
     // the async setup around it can interleave between calls.
@@ -159,7 +157,8 @@ export class WasmRunner {
     for (const [path, content] of Object.entries(userFiles)) {
       baseFiles[path] = _encoder.encode(content);
     }
-    if (_sitePackagesBin) baseFiles["site-packages.zip"] = _sitePackagesBin;
+    const _spBin = getSitePackagesBin();
+    if (_spBin) baseFiles["site-packages.zip"] = _spBin;
     if (getExtensionPackagesBin()) {
       baseFiles["extension-site-packages.zip"] = getExtensionPackagesBin();
     }

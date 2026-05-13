@@ -358,6 +358,15 @@ export async function deploy(args) {
       console.log("  WARN: bundle-app-packages failed — keeping existing site-packages.zip\n");
     }
 
+    // Defer site-packages staging: stash the real zip and stub the
+    // in-bundle copy so wrangler doesn't ship user PyPI deps (which can
+    // be megabytes for big frameworks) inside the 10 MiB worker bundle.
+    // The post-buildDocs block below moves the .pending file to ASSETS.
+    if (existsSync(slimZip) && readFileSync(slimZip).length > 22) {
+      copyFileSync(slimZip, join(workerSrc, ".pending-site-packages.zip"));
+      writeFileSync(slimZip, EMPTY_ZIP);
+    }
+
     bundleProject(projectDir, repoRoot);
     buildDocs(repoRoot);
 
@@ -372,6 +381,17 @@ export async function deploy(args) {
       const gz = gzipSync(readFileSync(pendingExt), { level: 9 });
       writeFileSync(join(assetsDir, "extension-site-packages.zip.gz"), gz);
       unlinkSync(pendingExt);
+    }
+    const pendingSp = join(workerSrc, ".pending-site-packages.zip");
+    if (existsSync(pendingSp)) {
+      const gz = gzipSync(readFileSync(pendingSp), { level: 9 });
+      writeFileSync(join(assetsDir, "site-packages.zip.gz"), gz);
+      unlinkSync(pendingSp);
+    } else {
+      // No deps to ship — make sure a stale asset from a prior deploy
+      // doesn't get served. Delete the file so warmSitePackages sees a 404.
+      const staleSp = join(assetsDir, "site-packages.zip.gz");
+      if (existsSync(staleSp)) unlinkSync(staleSp);
     }
     // stdlib-data.dat: regenerate it (last deploy stubbed the local copy)
     // then stage to ASSETS and replace the in-bundle file with a tiny stub.

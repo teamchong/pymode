@@ -76,7 +76,9 @@ info "Module:      $ENTRY_MODULE"
 PY_FILES=()
 while IFS= read -r -d '' file; do
     PY_FILES+=("$file")
-done < <(find "$PROJECT_DIR" -name "*.py" -not -path "*/__pycache__/*" -not -path "*/.venv/*" -not -path "*/node_modules/*" -print0)
+# .pymode/ holds the unpacked uv-pip wheels — those same files already go
+# into site-packages.zip, so excluding here avoids MB-bloating user-files.ts.
+done < <(find "$PROJECT_DIR" -name "*.py" -not -path "*/__pycache__/*" -not -path "*/.venv/*" -not -path "*/node_modules/*" -not -path "*/.pymode/*" -print0)
 
 if [ ${#PY_FILES[@]} -eq 0 ]; then
     error "No .py files found in $PROJECT_DIR"
