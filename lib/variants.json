@@ -19,8 +19,7 @@
       "wasm": "python-pandas.wasm",
       "sitePackages": "pandas-site-packages.zip",
       "extensions": ["numpy", "pandas"],
-      "size": "30MB raw / 8.4MB gz wasm",
-      "note": "Wasm builds and links cleanly, but the total worker bundle (~12 MiB gzipped) exceeds Cloudflare Workers' 10 MiB paid-plan limit. Use Workers for Platforms (100 MiB) or load assets externally. Local execution via wasmtime works."
+      "size": "32MB raw / 9.4MB gz bundle (with assets staging)"
     },
     "pillow": {
       "description": "CPython 3.13 + Pillow 11.1.0 (_imaging + libjpeg-turbo + libpng + zlib statically linked)",
