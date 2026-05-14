@@ -501,6 +501,7 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
       getStdlibBin(_envAssets),
       warmExtensionPackages(_envAssets),
       warmSitePackages(_envAssets),
+      this._keepAlive(),
     ]);
     let pythonPath = "/stdlib";
     if (sitePackagesData || getSitePackagesBin()) pythonPath += ":/stdlib/site-packages.zip";
@@ -539,6 +540,7 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
       getStdlibBin(_envAssets),
       warmExtensionPackages(_envAssets),
       warmSitePackages(_envAssets),
+      this._keepAlive(),
     ]);
     // Parse the request JSON once on the JS side
     const parsed = JSON.parse(requestJson);
@@ -647,10 +649,44 @@ export class PythonDO extends DurableObject<PythonDOEnv> {
   }
 
   /**
-   * Clean up TCP connections when DO is evicted.
+   * Alarm handler — fired periodically to keep this DO instance warm.
+   *
+   * CF evicts idle DOs after ~70s of no activity. For pandas-class
+   * variants where the cold-start cost (`import pandas`) is 20-30
+   * seconds, keeping the DO instance warm via a periodic alarm is far
+   * cheaper than paying that cost on a real request.
+   *
+   * The alarm reschedules itself, so once seeded (by the first request)
+   * the DO stays alive until CF actively evicts it (rare; happens on
+   * deploys and occasional zone-level evictions). Real requests reset
+   * the schedule.
    */
   async alarm(): Promise<void> {
-    this.dlModules.clear();
-    this.threadResults.clear();
+    // Wake-up tap: ensure stdlib + extensions are warmed in this isolate.
+    // Doesn't run user code — the persistentRunner caches the wasm
+    // instance from prior requests anyway, so we just need to keep the
+    // isolate alive.
+    const envAssets = this.env as unknown as { ASSETS?: { fetch: (r: Request) => Promise<Response> } };
+    await Promise.all([
+      getStdlibBin(envAssets),
+      warmExtensionPackages(envAssets),
+      warmSitePackages(envAssets),
+    ]).catch(() => undefined);
+
+    // Reschedule. 30s is well under CF's eviction window (~70s) so we
+    // never miss a wake-up.
+    await this.ctx.storage.setAlarm(Date.now() + 30_000);
+  }
+
+  /**
+   * Seed the alarm from the first request — `handleRequest`, `executeCode`,
+   * and `callFunction` all call this. setAlarm is idempotent for the same
+   * timestamp, so it's safe to call on every request.
+   */
+  private async _keepAlive(): Promise<void> {
+    const existing = await this.ctx.storage.getAlarm();
+    if (existing === null || existing < Date.now() + 10_000) {
+      await this.ctx.storage.setAlarm(Date.now() + 30_000);
+    }
   }
 }

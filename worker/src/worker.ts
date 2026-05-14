@@ -618,10 +618,10 @@ export default {
       warmExtensionPackages(_envAssets),
       warmSitePackages(_envAssets),
     ]);
-    // Invoke the entry module once on a synthetic warmup request so the
-    // wasm Instance gets primed (imports user code → pandas → numpy →
-    // populated sys.modules; persistent runner caches the instance for
-    // subsequent real requests).
+    // Synthetic warmup request — primes the wasm instance with user
+    // code imports (pandas/numpy/etc.). Routes through PythonDO when
+    // it's a variant deploy so the DO's persistent runner gets the
+    // cached instance; falls back to inline runner otherwise.
     if (userFilesModule) {
       const warmupReq = JSON.stringify({
         request: {
@@ -634,13 +634,25 @@ export default {
       let pythonPath = "/stdlib:/stdlib/app";
       if (getSitePackagesBin()) pythonPath += ":/stdlib/site-packages.zip";
       if (getExtensionPackagesBin()) pythonPath += ":/stdlib/extension-site-packages.zip";
-      await _inlineRunner.handleRequest(
-        userFilesModule.entryModule,
-        userFilesModule.userFiles,
-        pythonPath,
-        warmupReq,
-        env as unknown as Record<string, unknown>,
-      ).catch(() => undefined);
+      const useDO = getExtensionPackagesBin() != null && env.PYTHON_DO;
+      if (useDO) {
+        const doId = env.PYTHON_DO!.idFromName("default");
+        const pythonDO = env.PYTHON_DO!.get(doId) as any;
+        await pythonDO.handleRequest(
+          userFilesModule.entryModule,
+          userFilesModule.userFiles,
+          pythonPath,
+          warmupReq,
+        ).catch(() => undefined);
+      } else {
+        await _inlineRunner.handleRequest(
+          userFilesModule.entryModule,
+          userFilesModule.userFiles,
+          pythonPath,
+          warmupReq,
+          env as unknown as Record<string, unknown>,
+        ).catch(() => undefined);
+      }
     }
   },
 
@@ -721,21 +733,29 @@ export default {
       //
       // For pure-Python + stdlib deploys, run wasm inline in the worker
       // isolate (no DO RPC overhead). For deploys using a C-extension
-      // All variants (numpy, pandas, Pillow, …) and pure-Python deploys
-      // run inline in the worker isolate now. The historical "route to
-      // PythonDO for C extensions" path was needed when extensions came
-      // as side modules loaded via pymode.dl_open — that required the
-      // dynamic linker that lives in PythonDO. Modern variants statically
-      // link the extensions and the SideModuleFinder polyfill defers to
-      // CPython's inittab via _imp.is_builtin, so no dynamic loading
-      // happens. Skipping the DO RPC cuts ~20-50 ms per request and
-      // serialises through one fewer code path.
-      //
-      // PythonDO is still useful for workloads that need /data R2
-      // persistence or TcpPoolDO connection reuse; those route via
-      // env.PYTHON_DO directly (not through this fetch handler).
+      // Routing:
+      //   - Variants (extensionPackagesBin present): always route to
+      //     PythonDO. The DO uses an alarm-driven warm loop to keep its
+      //     isolate alive between requests — for pandas-class workloads
+      //     where cold-import is 20-30 s, paying ~50 ms RPC per request
+      //     to stay warm is a massive net win.
+      //   - Pure-Python: still inline. No expensive imports → cold start
+      //     is ~500 ms anyway; the RPC hop would be a regression.
       if (userFilesModule) {
         const requestJson = await serializeRequest(request, env);
+        const useDO = getExtensionPackagesBin() != null && env.PYTHON_DO;
+        if (useDO) {
+          const doId = env.PYTHON_DO!.idFromName("default");
+          const pythonDO = env.PYTHON_DO!.get(doId) as any;
+          const result = await pythonDO.handleRequest(
+            userFilesModule.entryModule,
+            userFilesModule.userFiles,
+            pythonPath,
+            requestJson,
+          );
+          if (result.stderr) console.error("[PyMode stderr]", result.stderr);
+          return deserializeResponse(result.stdout, result.stderr);
+        }
         const result = await _inlineRunner.handleRequest(
           userFilesModule.entryModule,
           userFilesModule.userFiles,
