@@ -1,9 +1,9 @@
 ---
 title: pymode
-description: Upstream CPython 3.13 on Cloudflare Workers, compiled to WebAssembly via zig cc.
+description: Upstream CPython 3.13 on Cloudflare Workers, compiled to WebAssembly via zig cc. Experimental.
 template: splash
 hero:
-  tagline: Upstream CPython 3.13 on Cloudflare Workers. Write Python handlers with access to KV, R2, D1, and TCP — compiled to wasm via zig cc, deployed as a single AOT-built worker per app.
+  tagline: Upstream CPython 3.13 on Cloudflare Workers via zig cc → wasm32-wasi. Personal experiment, parked. Cloudflare's official Python Workers (Pyodide-based, with memory snapshots and the uv-first workflow) are now the recommended path for production Python on CF.
   actions:
     - text: Get Started
       link: /getting-started/
@@ -18,50 +18,60 @@ import { Card, CardGrid } from "@astrojs/starlight/components";
 
 ## About this project
 
-This is a personal experiment in running upstream CPython 3.13 on Cloudflare Workers via `zig cc` → `wasm32-wasi`. Cloudflare's official Python Workers ship Pyodide and are the supported path; PyMode is not a replacement for them.
+PyMode is a personal experiment in running upstream CPython 3.13 directly on Cloudflare Workers via `zig cc` → `wasm32-wasi` — no Pyodide, no Emscripten, no CPython fork. It went as far as compiling pandas to wasm and deploying it on a Workers Paid plan via the Workers Assets binding.
+
+Where pymode lands in 2026:
+
+- **Cloudflare's Python Workers** ship Pyodide compiled into workerd itself (the runtime doesn't count against your 10 MiB worker bundle). They added memory snapshots that drop pandas-class cold start from ~10 s to ~1 s, and the `pywrangler` + `uv` workflow that handles arbitrary Pyodide-compatible packages. For most "real Python on CF" use cases, that is the working answer.
+- **PyMode** stays interesting only where you specifically want upstream CPython, want to self-host the wasm so it isn't locked to CF, or want a smaller bundle for narrow API workloads where Pyodide's 25 MB runtime is overkill.
+
+This site documents how pymode works, what it can run today, and the architectural constraints. It is not actively developed.
 
 <CardGrid>
   <Card title="Upstream CPython 3.13" icon="seti:python">
-    Vanilla CPython compiled with `zig cc` to `wasm32-wasi`. No Pyodide-specific patches; semantics match what `python3.13` does on a normal machine. [See bundled modules](/limitations/).
+    Vanilla CPython compiled with `zig cc` to `wasm32-wasi`. No Pyodide-specific patches; semantics match what `python3.13` does on a normal machine.
   </Card>
   <Card title="AOT host imports" icon="rocket">
-    `pymode deploy` patches host import sites (KV, R2, D1, fetch) into direct JS stubs in the wasm. Skips the JsProxy/PyProxy translation Pyodide pays per call.
+    `pymode deploy` patches host import sites (KV, R2, D1, fetch) into direct JS stubs in the wasm. No JsProxy/PyProxy translation per call.
   </Card>
-  <Card title="Compile any C extension" icon="puzzle">
-    Pyodide ships a curated set of compiled wheels (numpy, pandas, Pillow…). PyMode lets you build arbitrary C extensions via `zig cc` to wasm32-wasi when you need a package Pyodide doesn't carry.
+  <Card title="Variants for C extensions" icon="puzzle">
+    Statically linked: numpy, pandas, pillow, ujson, zstandard. Build script per recipe; not a generalised packager. Scipy / sklearn / lxml / cryptography are out of scope.
   </Card>
-  <Card title="Wizer snapshot at deploy" icon="star">
-    The build pre-imports stdlib + your project's modules into a memory snapshot baked into the wasm. Worker Startup Time on CF (the cost of bringing an isolate up) is typically 40–60 ms.
-  </Card>
-</CardGrid>
-
-## How It Works
-
-```
-Request → Worker (stateless) → PythonDO (Durable Object)
-                                    ↓
-                            python.wasm (_start)
-                                    ↓
-                            on_fetch(request, env)
-                                    ↓
-                            KV / R2 / D1 / TCP
-                                    ↓
-                            Response → Client
-```
-
-Each request gets its own sandboxed Python runtime inside a Durable Object. The WASM stack is instrumented with Asyncify so host imports (HTTP fetch, KV reads, TCP recv) suspend and resume transparently.
-
-<CardGrid>
-  <Card title="HTTP Fetch" icon="external">
-    `fetch("https://api.example.com")` calls the host directly — no network stack in WASM.
-  </Card>
-  <Card title="Parallel Execution" icon="random">
-    `spawn()` launches child Durable Objects with separate 30s CPU budgets and 128MB memory.
-  </Card>
-  <Card title="Package Ecosystem" icon="setting">
-    Pure-Python packages work out of the box. C/Rust extensions (numpy, pydantic_core) compile to WASM variants. AI frameworks (langchain, langgraph, instructor) tested and working.
-  </Card>
-  <Card title="Multi-File Projects" icon="document">
-    Standard Python imports work. Organize your project with packages, modules, and `pyproject.toml`.
+  <Card title="Workers Assets for the heavy bits" icon="setting">
+    stdlib, variant Python layer, and user PyPI deps all stage to the Assets binding (25 MiB-per-file budget). Worker bundle stays under the 10 MiB hard cap.
   </Card>
 </CardGrid>
+
+## How it works
+
+```
+CF Request
+  → Worker (in bundle):
+      python.wasm (CompiledWasm)
+      user-files.ts (your .py files)
+      thin stubs for stdlib + site-packages
+  → ASSETS binding (off-bundle):
+      stdlib-data.dat.gz
+      extension-site-packages.zip.gz   ← variant Python layer
+      site-packages.zip.gz             ← user PyPI deps
+  → Promise.all([fetch+gunzip each, instantiate wasm])
+  → Variant deploys: route through PythonDO with alarm-driven keep-alive
+  → Pure-Python deploys: run inline in the worker isolate
+  → on_fetch(request, env) → JSON-encoded Response
+```
+
+Variants stay warm because PythonDO sets a 30 s alarm on every request, well inside CF's ~70 s eviction window. Cold-isolate latency is ~25 s (mostly `import pandas` itself); warm-isolate latency is 75–200 ms.
+
+## Honest comparison
+
+| | pymode | CF Python Workers (Pyodide) |
+|---|---|---|
+| Runtime in your bundle | yes, 8 MB gz | no — compiled into workerd |
+| Pandas-class cold start | ~25 s on a fresh isolate | ~1 s with memory snapshots |
+| Package catalog | 5 C-ext variants + ~40 pure-Python | full Pyodide catalog including scipy/sklearn/lxml |
+| C extensions | per-recipe; you cross-compile | provided |
+| Python flavor | upstream CPython 3.13 | Pyodide's fork (Emscripten) |
+| Self-hostable | yes (any wasm32-wasi runtime) | CF-only |
+| Maintained | no | yes |
+
+If you'd asked me in 2024, pymode had a clearer story. In 2026 the Pyodide path got significantly better and now wins for typical Python apps on CF. We document this honestly so people don't pick the wrong tool.

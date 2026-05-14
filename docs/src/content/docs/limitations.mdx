@@ -16,7 +16,8 @@ PyMode runs upstream CPython 3.13 compiled to `wasm32-wasi` inside Cloudflare Wo
 | **No signals** | Signal handling is emulated (`-lwasi-emulated-signal`), limited functionality. |
 | **30s CPU limit** | Per-request CPU time is capped at 30 seconds (CF Workers limit). |
 | **128MB memory** | Per-DO memory limit. Large data processing should use `pymode.parallel` to distribute across DOs. |
-| **10MB bundle size** | CF Workers' paid-tier limit on compressed deploy. A typical `pymode deploy` produces a 6-8 MB gzipped wasm depending on which packages are AOT-preimported; the remainder is your project sources + site-packages. Heavy native deps (numpy/pandas) consume more of the budget. |
+| **10MB bundle size** | CF Workers' paid-tier limit on compressed deploy. `pymode deploy` keeps the worker bundle at ~6-9.4 MB gz by staging stdlib, variant Python, and user PyPI deps to the Workers Assets binding (separate 25 MiB-per-file budget). Pandas + a typical pure-Python dep set (jinja2, httpx, etc.) lands at 9.4 MB gz. FastAPI + SQLAlchemy + pandas does **not** fit — CF Python Workers (which ships Pyodide as part of workerd, not your bundle) is the working path for those. |
+| **Cold-isolate latency** | Variants pay ~25 s on a fresh isolate (~80% of that is `import pandas` itself executing in fresh Python — same cost on native CPython). Warm isolates serve 75-200 ms. PythonDO + 30 s alarm keeps active regions warm, but CF can still spawn new isolates anywhere. If cold start matters for your workload, CF Python Workers' memory snapshots drop the same workload to ~1 s. |
 
 ## Bundled Stdlib Modules
 
@@ -131,20 +132,22 @@ end-to-end as of this writing.
 
 | Package | How it's served | Verified deployable today |
 |---|---|---|
-| numpy | `python-numpy.wasm` variant | ✅ (linalg stubbed) |
+| numpy | `python-numpy.wasm` variant | ✅ (linalg stubbed — no LAPACK) |
 | Pillow | `python-pillow.wasm` variant | ✅ |
-| pydantic_core | `python-pydantic-core.wasm` variant | ✅ |
+| pydantic_core | `python-pydantic-core.wasm` variant | ✅ (rebuild currently fails on libc `_CLOCK_*_CPUTIME_ID`; pre-built wasm works) |
 | pyyaml | pure-Python fallback (uv pip) | ✅ |
 | multidict / yarl / frozenlist / propcache | pure-Python fallback (uv pip) | likely (same pattern as pyyaml) |
 | msgpack | pure-Python fallback (uv pip) | likely |
-| markupsafe | statically linked | yes |
-| regex / xxhash | statically linked | yes |
-| pandas | needs numpy + Cython compile pass | no |
+| markupsafe | statically linked | ✅ |
+| regex / xxhash | statically linked | ✅ |
+| ujson | `python-ujson.wasm` variant | ✅ |
+| zstandard | `python-zstandard.wasm` variant | ✅ |
+| **pandas** | `python-pandas.wasm` variant (numpy + pandas 2.2.3) | ✅ DataFrame/Series ops work; bundle 9.4 MB gz |
 | scipy | needs Fortran cross-compile | no |
 | scikit-learn | depends on scipy | no |
 | lxml | needs libxml2 + libxslt cross-compile | no |
 | cryptography | needs OpenSSL cross-compile | no |
-| orjson / ujson | Rust/C-only (no pure-Python fallback) | no |
+| orjson | Rust-only (no pure-Python fallback) | no |
 | cffi | runtime C-compile model incompatible with WASM | no |
 
 **numpy caveats**: the variant ships `_multiarray_umath` (array core +
@@ -152,11 +155,18 @@ random + FFT) but does not ship `_umath_linalg`. Linear algebra
 functions in `numpy.linalg` are stubbed and raise `ImportError` if
 called. Everything else (arrays, math, FFT, random) works.
 
-For projects needing pandas / scipy / scikit-learn / lxml /
-cryptography, **Cloudflare's official Python Workers ships pre-built
-wheels for those via Pyodide** — that's the working answer today.
-Closing pymode's catalog gap is a multi-month engineering project; we
-do it package-by-package as needed.
+For projects needing scipy / scikit-learn / lxml / cryptography,
+**Cloudflare's official Python Workers ships pre-built wheels for those
+via Pyodide** — that's the working answer today. Pyodide's runtime is
+compiled into workerd itself, so it doesn't eat the user's 10 MiB worker
+bundle the way pymode's `python.wasm` does. As of 2026 they also added
+memory snapshots that drop pandas-class cold start to ~1s (vs pymode's
+~25 s for a cold isolate).
+
+Closing pymode's catalog gap is a multi-month engineering project per
+package (scipy needs a Fortran toolchain to wasm; lxml needs libxml2
++ libxslt cross-compile; cryptography needs OpenSSL). Not on the
+roadmap — the project is parked.
 
 ### Tested & Working
 
@@ -218,3 +228,20 @@ opt in by calling `spawn()` / `gather()` from your handler.
 | **scipy** | Needs BLAS/LAPACK (Fortran), complex C |
 
 For ML inference, use **Workers AI** (`env.AI.run()`) instead.
+
+## Recommended path for real Python apps on CF
+
+If you got this far reading the constraints — pymode is honestly **not** the
+right tool for most "real Python apps on CF" in 2026. Use:
+
+- **CF Python Workers** (`pywrangler` + `uv`) for the standard web-app shape
+  (FastAPI, Pydantic, httpx, pandas-class data work). Their Pyodide runtime
+  doesn't count against your bundle, cold start is ~1s with memory snapshots,
+  and they ship the full Pyodide package catalog.
+- **CF Containers** if you need scipy / sklearn / SQLAlchemy / anything that
+  doesn't fit Pyodide. Trade global edge distribution for native Python and
+  no size cap. Cold start 2-10 s.
+- **pymode** if you specifically want upstream CPython 3.13 (not a Pyodide
+  fork), want to self-host the wasm so the runtime isn't locked to CF, or
+  want a smaller bundle for narrow API workloads where Pyodide's 25 MB is
+  overkill.
