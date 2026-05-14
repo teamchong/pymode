@@ -16,8 +16,8 @@ PyMode runs upstream CPython 3.13 compiled to `wasm32-wasi` inside Cloudflare Wo
 | **No signals** | Signal handling is emulated (`-lwasi-emulated-signal`), limited functionality. |
 | **30s CPU limit** | Per-request CPU time is capped at 30 seconds (CF Workers limit). |
 | **128MB memory** | Per-DO memory limit. Large data processing should use `pymode.parallel` to distribute across DOs. |
-| **10MB bundle size** | CF Workers' paid-tier limit on compressed deploy. `pymode deploy` keeps the worker bundle at ~6-9.4 MB gz by staging stdlib, variant Python, and user PyPI deps to the Workers Assets binding (separate 25 MiB-per-file budget). Pandas + a typical pure-Python dep set (jinja2, httpx, etc.) lands at 9.4 MB gz. FastAPI + SQLAlchemy + pandas does **not** fit — CF Python Workers (which ships Pyodide as part of workerd, not your bundle) is the working path for those. |
-| **Cold-isolate latency** | Variants pay ~25 s on a fresh isolate (~80% of that is `import pandas` itself executing in fresh Python — same cost on native CPython). Warm isolates serve 75-200 ms. PythonDO + 30 s alarm keeps active regions warm, but CF can still spawn new isolates anywhere. If cold start matters for your workload, CF Python Workers' memory snapshots drop the same workload to ~1 s. |
+| **10MB bundle size** | CF Workers' paid-tier limit on compressed deploy. `pymode deploy` keeps the worker bundle at ~6-9.4 MB gz by staging stdlib, variant Python, and user PyPI deps to the Workers Assets binding (separate 25 MiB-per-file budget). Pandas + a typical pure-Python dep set (jinja2, httpx, etc.) lands at 9.4 MB gz. FastAPI + SQLAlchemy + pandas does **not** fit. CF Python Workers (which ships Pyodide as part of workerd, not your bundle) is the working path for those. |
+| **Cold-isolate latency** | Variants pay ~25 s on a fresh isolate (~80% of that is `import pandas` itself executing in fresh Python, same cost on native CPython). Warm isolates serve 75-200 ms. PythonDO + 30 s alarm keeps active regions warm, but CF can still spawn new isolates anywhere. If cold start matters for your workload, CF Python Workers' memory snapshots drop the same workload to ~1 s. |
 
 ## Bundled Stdlib Modules
 
@@ -59,7 +59,7 @@ These are C extension modules linked directly into the WASM binary:
 | `threading` | Pure Python (`lib/polyfills/threading.py`) | No-op locks within a DO. `Thread.start()` spawns child DOs via `pymode.parallel` for real parallelism. |
 | `logging` | Pure Python (`lib/polyfills/logging/`) | Threading-free logging that writes to stderr. Full API: `getLogger`, `basicConfig`, handlers. |
 | `multiprocessing` | Pure Python (`lib/polyfills/multiprocessing/`) | `cpu_count()` returns 1, exception classes. Use `pymode.parallel` for real parallelism. |
-| `ssl` | Pure Python (`lib/polyfills/ssl.py`) | TLS termination handled by CF's edge — Python code doesn't need raw TLS. |
+| `ssl` | Pure Python (`lib/polyfills/ssl.py`) | TLS termination handled by CF's edge. Python code doesn't need raw TLS. |
 | `zlib` | Pure Python (`lib/polyfills/zlib.py`) | Minimal compression polyfill for packages that import zlib at module level. |
 
 ### Not Available
@@ -68,11 +68,11 @@ These stdlib modules require OS features that WASI doesn't provide:
 
 | Module | Reason |
 |--------|--------|
-| `socket` | Polyfilled — routes through `pymode.tcp` host imports. |
-| `ssl` | Polyfilled — TLS termination handled by CF's edge. |
+| `socket` | Polyfilled, routes through `pymode.tcp` host imports. |
+| `ssl` | Polyfilled, TLS termination handled by CF's edge. |
 | `subprocess` | No process spawning in WASI. |
-| `multiprocessing` | Polyfilled — `cpu_count()` returns 1. Use `pymode.parallel` for real parallelism via child DOs. |
-| `threading` | Polyfilled — no-op locks within a DO. `Thread.start()` spawns child DOs via `pymode.parallel`. |
+| `multiprocessing` | Polyfilled, `cpu_count()` returns 1. Use `pymode.parallel` for real parallelism via child DOs. |
+| `threading` | Polyfilled, no-op locks within a DO. `Thread.start()` spawns child DOs via `pymode.parallel`. |
 | `sqlite3` | C extension not compiled for WASM. Use D1 binding instead. |
 | `ctypes` | No dynamic linking for arbitrary shared libraries. |
 | `tkinter` | No GUI in Workers. |
@@ -80,7 +80,7 @@ These stdlib modules require OS features that WASI doesn't provide:
 | `readline` | No interactive terminal. |
 | `mmap` | Not available in WASI. |
 | `fcntl`, `termios`, `grp`, `pwd` | Unix-specific, not in WASI. |
-| `select`, `selectors` | Polyfilled — `selectors` bundled in stdlib. |
+| `select`, `selectors` | Polyfilled, `selectors` bundled in stdlib. |
 | `signal` | Emulated only, limited functionality. |
 | `resource` | No resource limits API in WASI. |
 
@@ -127,12 +127,12 @@ Full CPython 3.13 language support including:
 
 `pymode deploy` auto-detects when your project depends on a C-extension
 package and, if a variant wasm exists, uses that variant directly (fast
-deploy — no AOT rebuild). The numpy variant is wired and verified
+deploy, no AOT rebuild). The numpy variant is wired and verified
 end-to-end as of this writing.
 
 | Package | How it's served | Verified deployable today |
 |---|---|---|
-| numpy | `python-numpy.wasm` variant | ✅ (linalg stubbed — no LAPACK) |
+| numpy | `python-numpy.wasm` variant | ✅ (linalg stubbed, no LAPACK) |
 | Pillow | `python-pillow.wasm` variant | ✅ |
 | pydantic_core | `python-pydantic-core.wasm` variant | ✅ (rebuild currently fails on libc `_CLOCK_*_CPUTIME_ID`; pre-built wasm works) |
 | pyyaml | pure-Python fallback (uv pip) | ✅ |
@@ -157,7 +157,7 @@ called. Everything else (arrays, math, FFT, random) works.
 
 For projects needing scipy / scikit-learn / lxml / cryptography,
 **Cloudflare's official Python Workers ships pre-built wheels for those
-via Pyodide** — that's the working answer today. Pyodide's runtime is
+via Pyodide**, that's the working answer today. Pyodide's runtime is
 compiled into workerd itself, so it doesn't eat the user's 10 MiB worker
 bundle the way pymode's `python.wasm` does. As of 2026 they also added
 memory snapshots that drop pandas-class cold start to ~1s (vs pymode's
@@ -166,7 +166,7 @@ memory snapshots that drop pandas-class cold start to ~1s (vs pymode's
 Closing pymode's catalog gap is a multi-month engineering project per
 package (scipy needs a Fortran toolchain to wasm; lxml needs libxml2
 + libxslt cross-compile; cryptography needs OpenSSL). Not on the
-roadmap — the project is parked.
+roadmap. The project is parked.
 
 ### Tested & Working
 
@@ -214,7 +214,7 @@ packages run comfortably; CPython itself plus a typical handler costs
 ~20-40 MB depending on imports. Packages that allocate large arrays
 (pandas, numpy) reach the limit faster.
 
-The `pymode.parallel` API spawns child DOs for compute parallelism —
+The `pymode.parallel` API spawns child DOs for compute parallelism . 
 each child has its own memory budget. This pattern can in principle
 fan out work that's too large for one DO, but isn't automatic; you
 opt in by calling `spawn()` / `gather()` from your handler.
@@ -231,7 +231,7 @@ For ML inference, use **Workers AI** (`env.AI.run()`) instead.
 
 ## Recommended path for real Python apps on CF
 
-If you got this far reading the constraints — pymode is honestly **not** the
+If you got this far reading the constraints. PyMode is honestly **not** the
 right tool for most "real Python apps on CF" in 2026. Use:
 
 - **CF Python Workers** (`pywrangler` + `uv`) for the standard web-app shape

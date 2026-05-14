@@ -1,39 +1,47 @@
-# PyMode (Experimental)
+# PyMode
 
-**Upstream CPython 3.13 on Cloudflare Workers** — `zig cc` → `wasm32-wasi`.
+Tool for compiling C extensions as wasm Python modules. Runs on Cloudflare Workers and anywhere else wasm32-wasi runs.
 
-> Personal experiment, parked. Cloudflare's [Python Workers](https://blog.cloudflare.com/python-workers-advancements/) (Pyodide-based, with memory snapshots and packaged uv workflow as of 2026) are the supported path for production Python on CF and ship a much larger package catalog (their runtime is compiled into workerd itself, so it doesn't eat your 10 MiB bundle). PyMode stays interesting only where you specifically want upstream CPython, want to self-host the wasm runtime, or need a smaller-than-Pyodide deploy for narrow API workloads.
+> Personal experiment. Cloudflare's [Python Workers](https://blog.cloudflare.com/python-workers-advancements/) (Pyodide based) are the supported path for production Python on CF. They ship a much larger package catalog and their runtime is compiled into workerd, so it doesn't eat your 10 MiB worker bundle. If your packages are in Pyodide, use that.
 
-## What works
+## Where this is useful
 
-- Pure-Python deploys with `pymode deploy`: handler pattern, multi-file projects, KV/R2/D1 via direct WASM host imports.
-- Variants for C-extension packages (statically linked, deployable end-to-end):
-  - `numpy` (multiarray_umath + random + fft; linalg stubbed — no LAPACK)
-  - `pandas` (numpy + pandas 2.2.3, ~9.4 MB gz bundle; DataFrame/Series ops, IO module structure present)
-  - `pillow` (libjpeg-turbo + libpng + zlib statically linked)
-  - `ujson`, `zstandard`
-  - `pydantic-core` (pre-built wasm works; rebuild currently fails on a libc CLOCK_*_CPUTIME_ID symbol)
-- ~40 pure-Python packages tested working (jinja2, httpx, requests, beautifulsoup4, pyyaml, click, attrs, fastapi, langchain-core, pydantic, …).
-- Wizer-warmed memory snapshot per deploy → fast warm-isolate latency (75–200 ms).
-- Workers Assets staging for `stdlib-data.dat`, `extension-site-packages.zip`, `site-packages.zip` — pulled out of the 10 MiB worker bundle so user code + deps have room.
-- PythonDO with alarm-driven warm loop keeps the variant runtime warm in active regions.
+You have a C extension that isn't in Pyodide's catalog. Maybe it's internal, proprietary, a custom codec, or just hasn't been packaged upstream yet. PyMode lets you write a small recipe and produce a wasm Python module from it.
 
-## What doesn't work / isn't worth it
+For Rust extensions the picture is less interesting. PyO3's bridge between Python and Rust adds the same per call cost regardless of which runtime hosts it, so PyMode doesn't really win there. C extensions are where the value shows up because they go directly through CPython's C ABI without a PyO3 layer in between.
 
-- **Cold-isolate latency for variants is ~25 s** (dominated by `import pandas` itself — same on native Python). DO + alarms reduce hit rate but can't eliminate it. CF Python Workers solves this with memory snapshots → ~1 s for fastapi + httpx + pydantic. If cold start matters, use them, not pymode.
-- **10 MiB hard ceiling**: pandas + small pure-Python deps fits at 9.4 MB gz; FastAPI + SQLAlchemy + pandas does not. CF Python Workers gets around it by compiling Pyodide into workerd — not a path available to third parties. No `[[unsafe.bindings]]` / `compatibility_flags` / Worker Loader trick changes this for custom wasm.
-- **scipy / scikit-learn / lxml / cryptography / orjson / cffi**: no variants. Cross-compiling Fortran (scipy), libxml2 (lxml), OpenSSL (cryptography) is multi-week work each. CF Python Workers ships these via Pyodide.
-- **Single-isolate concurrency**: requests queue inside one wasm Instance. `pymode.parallel` spawns child DOs for explicit parallelism but it's opt-in.
+## Building a C extension
 
-## Quick start
+Write a recipe in `recipes/your-package.json`:
 
-```bash
-npx pymode init my-worker
-cd my-worker
-pymode deploy
+```json
+{
+  "name": "your-package",
+  "version": "1.0.0",
+  "pypi": "your-package",
+  "type": "c",
+  "sources": ["src/your_module.c"],
+  "includes": ["src/"],
+  "modules": {
+    "your_package._native": "PyInit__native"
+  },
+  "python_packages": ["your_package/"],
+  "depends": []
+}
 ```
 
-Your handler (`src/entry.py`):
+Then:
+
+```bash
+npx tsx scripts/build-recipe.ts your-package
+npx tsx scripts/build-variant.ts your-package
+```
+
+You get a `python-your-package.wasm` you can ship.
+
+## Other things that work
+
+Pure Python on CF Workers with the usual handler pattern:
 
 ```python
 from pymode.workers import Response
@@ -42,102 +50,96 @@ def on_fetch(request, env):
     return Response("Hello from PyMode!")
 ```
 
-For pandas:
-
-```toml
-# pyproject.toml
-[project]
-dependencies = ["pandas==2.2.3", "jinja2", "httpx"]
-
-[tool.pymode]
-main = "src/entry.py"
+```bash
+npx pymode init my-worker
+cd my-worker
+pymode deploy
 ```
 
-```python
-# src/entry.py
-import pandas as pd
-from pymode.workers import Response
-import json
+About 40 pure Python packages have been tested (jinja2, httpx, requests, beautifulsoup4, pyyaml, click, attrs, fastapi, langchain-core, pydantic, etc.). They install at deploy time via `uv` and bundle into a zip that ships through the Workers Assets binding so it doesn't count against the 10 MiB worker cap.
 
-def on_fetch(request, env):
-    df = pd.DataFrame({"a": [1, 2, 3]})
-    return Response(json.dumps({"sum": int(df["a"].sum())}))
+Five C extension variants ship with the repo as examples of the recipe system. They work end to end on CF Workers:
+
+| Variant | What's in it |
+|---|---|
+| numpy | multiarray_umath + random + fft, linalg stubbed (no LAPACK) |
+| pandas | numpy + pandas 2.2.3, DataFrame and Series ops |
+| pillow | PIL.Image with libjpeg-turbo + libpng + zlib statically linked |
+| ujson | encode/decode |
+| zstandard | compress/decompress |
+
+These are demos. If you actually need pandas in production, use CF Python Workers. Their Pyodide based runtime gets pandas at ~1 second cold start via memory snapshots, and they ship scipy, sklearn, lxml, cryptography too. PyMode's pandas variant fits at 9.4 MB gz but pays ~25 seconds on a cold isolate (most of that is `import pandas` itself running in fresh Python).
+
+## What doesn't work
+
+The 10 MiB worker bundle cap is real. CPython itself is about 8 MB gzipped, so adding more variants gets tight fast. FastAPI plus SQLAlchemy plus pandas doesn't fit. Pyodide gets around this by being compiled into workerd, but that path isn't open to third parties.
+
+scipy, scikit-learn, lxml, cryptography, orjson, cffi all need toolchains we don't have (Fortran for scipy, libxml2 for lxml, OpenSSL for cryptography, Rust runtime quirks for orjson). Cross compiling them is multi-week work per package. Not planned.
+
+Cold isolate latency for variants is roughly 25 seconds. PythonDO with a 30 second alarm keeps the runtime warm in active regions, but new isolates in new regions still pay the cost. CF Python Workers' memory snapshots avoid this.
+
+## Quick reference
+
+```bash
+pymode init <name>       # Scaffold a new project
+pymode dev               # Local dev server (native Python)
+pymode deploy            # Bundle and deploy to CF Workers
+pymode add <package>     # Add a Python package dependency
+pymode install           # Install all deps from pyproject.toml
 ```
 
-`pymode deploy` auto-detects the pandas variant, stages the site-packages zips into Workers Assets, and routes requests through PythonDO so the runtime stays warm between requests.
-
-## Architecture (current)
+## Architecture
 
 ```
 CF Request
-  ├─ Worker (stateless, in-bundle):
-  │    ├─ wasm CompiledWasm (python.wasm, 8 MB gz)
-  │    ├─ user-files.ts (your .py files, inlined)
-  │    └─ thin stubs for stdlib + site-packages
-  └─ ASSETS binding (separate budget):
-       ├─ stdlib-data.dat.gz       (~1.2 MB gz, 5 MB raw)
-       ├─ extension-site-packages.zip.gz  (variant Python: pandas/numpy/…)
-       └─ site-packages.zip.gz     (user's PyPI deps, fetched via uv)
+  Worker bundle (in 10 MiB cap):
+    python.wasm (CompiledWasm, about 8 MB gz)
+    user-files.ts (your .py files inlined)
+    thin stubs for stdlib + site-packages
 
-Per request:
-  Worker.fetch
-    ├─ Promise.all([
-    │    getPythonWasm(env),       // CompiledWasm import (cached per isolate)
-    │    getStdlibBin(env),         // fetch + gunzip stdlib from Assets
-    │    warmExtensionPackages(env),// fetch + gunzip variant Python from Assets
-    │    warmSitePackages(env),     // fetch + gunzip user deps from Assets
-    │  ])
-    └─ Route:
-         ├─ variant (extensionPackagesBin != null) → PythonDO (alarm-warmed)
-         └─ pure-Python → inline runner (same isolate, no RPC hop)
+  Workers Assets (25 MiB per file, separate budget):
+    stdlib-data.dat.gz       (gzipped JSON of CPython stdlib)
+    extension-site-packages.zip.gz  (variant Python layer)
+    site-packages.zip.gz     (your PyPI deps)
 
-PythonDO:
-  - storage.setAlarm() every 30s keeps the DO instance alive past CF's
-    ~70s eviction window
-  - persistentRunner caches the wasm Instance across requests so
-    `import pandas` only runs once per DO lifetime
+  Per request:
+    Promise.all fetches and gunzips the assets, instantiates the wasm
+    Variant deploys route through PythonDO with alarm based keep alive
+    Pure Python deploys run inline in the worker isolate
+    on_fetch(request, env) returns a Response
 ```
+
+PythonDO's `storage.setAlarm(now + 30000)` keeps the instance alive past CF's eviction window. The wasm `persistentRunner` caches the instance so `import pandas` only runs once per DO lifetime.
 
 ## Building from source
 
-Only needed if you're hacking on pymode itself. End users get a prebuilt
-`python.wasm` per variant.
+Only needed if you're hacking on PyMode itself. End users get a prebuilt wasm per variant.
 
 ```bash
-# Build CPython base wasm (zig cc)
-npx tsx scripts/build-phase2.ts
-
-# Generate stdlib bundle for worker
-npx tsx scripts/generate-stdlib-fs.ts
-
-# Build a variant
-npx tsx scripts/build-variant.ts pandas
-
-# Test
+npx tsx scripts/build-phase2.ts          # CPython base
+npx tsx scripts/generate-stdlib-fs.ts    # stdlib bundle
+npx tsx scripts/build-variant.ts <name>  # specific variant
 npm test
 ```
 
-## When to use pymode vs CF Python Workers
-
-| | pymode | CF Python Workers (Pyodide) |
-|---|---|---|
-| Runtime ships in your bundle | yes (8 MB gz) | no (compiled into workerd, free) |
-| Cold-isolate latency for pandas | ~25 s | ~1 s (with memory snapshots) |
-| Package catalog | 5 variants + ~40 pure-Python | full Pyodide catalog |
-| C-extension wheels | per-recipe; you build them | provided |
-| Python flavor | upstream CPython 3.13 | Pyodide's CPython fork (Emscripten) |
-| Self-hostable | yes (works in any wasm32-wasi runtime) | CF-only |
-| Use it for | narrow API endpoints, pandas-class transforms, niche cases where you want CPython exactly | most "real Python apps on CF" |
-
-If you'd asked me a year ago, pymode had a clearer story. As of 2026 CF Python Workers' Pyodide path got significantly better and now wins for typical Python web apps on CF.
+Prerequisites: python3, wasmtime, zig 0.15+, wasm-opt, optionally wizer.
 
 ## Status
 
-This repo is an experiment. The runtime works end-to-end for the variants
-listed above. It is not under active feature development. PRs welcome
-for variant recipes (e.g. lxml, scipy, cryptography) but the architectural
-constraints — 10 MiB bundle, ~25s cold start — are not going away without
-upstream CF support.
+The runtime works for what's documented. The project isn't under active feature development. PRs welcome for recipe additions if you have a C extension that fits the model. Don't expect quick replies.
+
+Comparing honestly to CF Python Workers:
+
+| | PyMode | CF Python Workers |
+|---|---|---|
+| Runtime location | in your worker bundle (8 MB gz) | compiled into workerd, free of bundle |
+| Cold start (pandas) | ~25 s | ~1 s with memory snapshots |
+| Package catalog | 5 variants plus ~40 pure Python | full Pyodide catalog |
+| Custom C extensions | recipe based, you build them | upstream Pyodide PR required |
+| Python flavor | upstream CPython 3.13 | Pyodide's CPython fork (Emscripten) |
+| Self hostable | yes, runs on any wasm32-wasi runtime | CF only |
+
+If you're picking a tool and your packages are in Pyodide, use CF Python Workers. If your C extension isn't, PyMode might save you a Pyodide upstream PR.
 
 ## License
 
