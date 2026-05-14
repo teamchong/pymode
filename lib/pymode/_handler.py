@@ -81,6 +81,16 @@ def _run():
         _error_response(500, f"Error loading '{module_name}': {traceback.format_exc()}")
         return
 
+    # Warmup short-circuit: the worker.ts scheduled() handler sends a
+    # synthetic request with X-Pymode-Warmup so the import + on_fetch
+    # dependencies are loaded into the isolate without running the user's
+    # handler (which might have side effects like calling external APIs).
+    # We've already imported the entry module above — that's the part
+    # that's expensive — so return 204 here.
+    if (request.headers.get("x-pymode-warmup") or "").lower() in ("1", "true"):
+        _write_response(Response("", status=204))
+        return
+
     # Check for workflow
     from pymode.workflows import Workflow
     wf = getattr(mod, "workflow", None)

@@ -605,6 +605,45 @@ function addCorsHeaders(headers: Record<string, string>): void {
 }
 
 export default {
+  // Scheduled handler — wrangler.toml's [triggers] crons hits this every
+  // minute. We just warm the worker isolate (decompress assets, instantiate
+  // the wasm) so a real request landing on this isolate doesn't pay the
+  // 25s cold-start cost for `import pandas` / `import numpy`. The cron
+  // runs on CF's dime; the user's request runs in <200 ms.
+  async scheduled(_event: ScheduledEvent, env: Env, _ctx: ExecutionContext): Promise<void> {
+    const _envAssets = env as unknown as { ASSETS?: { fetch: (r: Request) => Promise<Response> } };
+    await Promise.all([
+      getPythonWasm(_envAssets),
+      getStdlibBin(_envAssets),
+      warmExtensionPackages(_envAssets),
+      warmSitePackages(_envAssets),
+    ]);
+    // Invoke the entry module once on a synthetic warmup request so the
+    // wasm Instance gets primed (imports user code → pandas → numpy →
+    // populated sys.modules; persistent runner caches the instance for
+    // subsequent real requests).
+    if (userFilesModule) {
+      const warmupReq = JSON.stringify({
+        request: {
+          method: "GET",
+          url: "https://pymode.internal/_warmup",
+          headers: { "x-pymode-warmup": "1" },
+          body: "",
+        },
+      });
+      let pythonPath = "/stdlib:/stdlib/app";
+      if (getSitePackagesBin()) pythonPath += ":/stdlib/site-packages.zip";
+      if (getExtensionPackagesBin()) pythonPath += ":/stdlib/extension-site-packages.zip";
+      await _inlineRunner.handleRequest(
+        userFilesModule.entryModule,
+        userFilesModule.userFiles,
+        pythonPath,
+        warmupReq,
+        env as unknown as Record<string, unknown>,
+      ).catch(() => undefined);
+    }
+  },
+
   async fetch(request: Request, env: Env): Promise<Response> {
     // Warm everything that lives outside the worker bundle (ASSETS) or
     // ships brotli-compressed in the bundle. All three are cached at

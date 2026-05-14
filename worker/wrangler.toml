@@ -19,6 +19,23 @@ not_found_handling = "single-page-application"
 [limits]
 cpu_ms = 30000
 
+# Smart Placement: CF picks the region with the lowest latency to the
+# worker's actual data sources (R2 buckets, KV namespaces, downstream
+# APIs). Hint "smart" keeps isolates warm in those regions and routes
+# repeat traffic to them — which directly reduces the cold-start hit
+# rate that's the dominant tail-latency cost for pandas-class variants
+# (cold isolate: ~25s for `import pandas`; warm: ~100 ms).
+[placement]
+mode = "smart"
+
+# Warmup cron: ping /api/_warmup every minute so at least one isolate
+# per region stays warm. The handler is a no-op that just imports the
+# user module (paying the ~25s cold-start cost on the cron's dime, not
+# the user's). Without this, traffic-thin endpoints spend most cold-isolate
+# hits on the actual request path. Free Workers Cron in CF Paid plan.
+[triggers]
+crons = ["* * * * *"]
+
 [[rules]]
 type = "CompiledWasm"
 globs = ["**/*.wasm"]
