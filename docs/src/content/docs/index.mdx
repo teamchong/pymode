@@ -26,6 +26,16 @@ PyMode is useful where Pyodide isn't, which mostly means custom C extensions. Yo
 
 For Rust extensions PyO3's bridge adds the same per call cost regardless of which runtime hosts it, so PyMode doesn't have an edge there. C extensions are where the value shows up.
 
+## Lessons from the experiment
+
+The runtime works as documented, but the experiment is parked because the shape is wrong for the workload that matters now: AI agents writing Python ad-hoc. Agents want a stateful REPL session — `exec` a code string against live `globals()` — not a `wrangler deploy` round-trip.
+
+The root cause is at the bottom of the stack. PyMode targets `wasm32-wasi`, which has no `dlopen`. Every C extension must be statically linked into `python.wasm` at build time. That forces a variant-profile model (one prebuilt wasm per package combination), which forces a compile step, which forces a deploy round-trip, which kills the REPL shape. Pyodide targets `wasm32-emscripten`, has `dlopen`, lazy-loads `.so` files, and Cloudflare compiled the whole thing into workerd — a moat a third party can't cross from user space.
+
+Don't use PyMode for real work. It's a personal experiment that the post-mortem explains the failure shape of. If you landed here looking for Python on Cloudflare, use CF Python Workers. If you're here because you have one obscure C extension and want to see how the recipe system works, the code still runs.
+
+Full retrospective on GitHub: [`docs/post-mortem.md`](https://github.com/teamchong/pymode/blob/main/docs/post-mortem.md).
+
 ## When to use which tool
 
 If your packages are all in Pyodide, use CF Python Workers (`pywrangler` + `uv`). Faster cold start, larger catalog, no need to maintain wasm builds.

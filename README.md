@@ -4,6 +4,14 @@ Tool for compiling C extensions as wasm Python modules. Runs on Cloudflare Worke
 
 > Personal experiment. Cloudflare's [Python Workers](https://blog.cloudflare.com/python-workers-advancements/) (Pyodide based) are the supported path for production Python on CF. They ship a much larger package catalog and their runtime is compiled into workerd, so it doesn't eat your 10 MiB worker bundle. If your packages are in Pyodide, use that.
 
+## Lessons from the experiment
+
+PyMode works as documented but is the wrong shape for the workload that actually matters now (AI agents writing Python ad-hoc). The compile-and-deploy step is the structural problem: agents want a stateful REPL session, not a `wrangler deploy`. The wasm32-wasi choice at the bottom of the stack (no `dlopen`, every C extension statically linked into a variant) propagated up into a per-variant build step, which propagated up into a deploy round-trip, which kills the REPL shape. Pyodide-in-workerd wins on cold start, package catalog, and developer loop because Cloudflare put the interpreter inside the runtime — a moat a third party can't cross from user space.
+
+Full retrospective: [docs/post-mortem.md](docs/post-mortem.md).
+
+Don't use PyMode for real work. If you landed here looking for Python on Cloudflare, use CF Python Workers. If you're here because you have one obscure C extension and want to see how the recipe system works, the code still runs.
+
 ## Where this is useful
 
 You have a C extension that isn't in Pyodide's catalog. Maybe it's internal, proprietary, a custom codec, or just hasn't been packaged upstream yet. PyMode lets you write a small recipe and produce a wasm Python module from it.
